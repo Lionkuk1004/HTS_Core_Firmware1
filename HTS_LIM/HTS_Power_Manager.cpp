@@ -1,0 +1,449 @@
+/// @file  HTS_Power_Manager.cpp
+/// @brief HTS Power Manager -- IoT Low-Power Sleep Management Implementation
+/// @note  ARM only. Pure ASCII. No PC/server code.
+/// @author Lim Young-jun
+/// @copyright INNOViD 2026. All rights reserved.
+
+#include "HTS_Power_Manager.h"
+#include <new>
+#include <atomic>
+
+namespace ProtectedEngine {
+
+    // ============================================================
+    //  Impl Structure
+    // ============================================================
+
+    struct HTS_Power_Manager::Impl {
+        // --- HAL Callbacks ---
+        Power_HAL_Callbacks    hal_cb;
+        Power_Notify_Callbacks notify_cb;
+
+        // --- CFI State ---
+        PowerState state;
+        uint8_t    cfi_violation_count;
+        uint8_t    pad_[2];
+
+        // --- Current Configuration ---
+        PowerMode current_mode;
+        PVD_Level pvd_level;
+        uint16_t  last_wake_source;
+        uint32_t  active_clock_mask;
+
+        // --- Statistics ---
+        uint32_t sleep_count;
+        uint16_t last_battery_mv;
+        uint16_t pad2_;
+
+        // ============================================================
+        //  CFI Transition
+        // ============================================================
+        bool Transition_State(PowerState target) noexcept
+        {
+            if (!Power_Is_Legal_Transition(state, target)) {
+                if (Power_Is_Legal_Transition(state, PowerState::ERROR)) {
+                    state = PowerState::ERROR;
+                }
+                else {
+                    state = PowerState::UNINITIALIZED;
+                }
+                cfi_violation_count++;
+                return false;
+            }
+            state = target;
+            return true;
+        }
+
+        // ============================================================
+        //  Execute Sleep Sequence
+        // ============================================================
+        bool Execute_Sleep(PowerMode mode, uint32_t wakeup_sec) noexcept
+        {
+            // Validate mode range
+            const uint8_t mi = static_cast<uint8_t>(mode);
+            if (mi < static_cast<uint8_t>(PowerMode::SLEEP) ||
+                mi > static_cast<uint8_t>(PowerMode::STANDBY))
+            {
+                return false;
+            }
+
+            // CFI: ACTIVE -> SLEEPING
+            if (!Transition_State(PowerState::SLEEPING)) { return false; }
+
+            // Pre-sleep notification (external modules save state)
+            if (notify_cb.on_pre_sleep != nullptr) {
+                notify_cb.on_pre_sleep(mode);
+            }
+
+            // Configure RTC wakeup if requested
+            if (wakeup_sec > 0u && hal_cb.configure_rtc_wakeup != nullptr) {
+                hal_cb.configure_rtc_wakeup(wakeup_sec);
+            }
+
+            // Apply clock gating for target mode
+            const PowerPreset& preset = k_power_presets[mi];
+            if (hal_cb.set_clock_gates != nullptr) {
+                hal_cb.set_clock_gates(preset.clock_gate_mask);
+            }
+            active_clock_mask = preset.clock_gate_mask;
+
+            // Enter low-power mode
+            // ============================================================
+            //  CRITICAL: Lost Wakeup Prevention (PRIMASK atomic pattern)
+            // ============================================================
+            //  Race condition without PRIMASK:
+            //
+            //    on_pre_sleep()          <-- external modules save state
+            //    configure_rtc_wakeup()  <-- RTC armed
+            //    set_clock_gates()       <-- clocks gated
+            //       *** INTERRUPT FIRES HERE (sensor GPIO, timer, etc.) ***
+            //       *** ISR executes, clears pending flag ***
+            //    enter_sleep_wfi()       <-- WFI executes, but wakeup already consumed!
+            //       *** DEADLOCK: CPU sleeps forever waiting for next IRQ ***
+            //
+            //  Fix: ARM Cortex-M PRIMASK pattern
+            //    1. __disable_irq()       PRIMASK=1: mask all configurable interrupts
+            //    2. Check NVIC pending    If IRQ already fired, skip WFI
+            //    3. __WFI()               Still wakes on pending IRQ (ARM guarantee),
+            //                             but ISR won't execute until PRIMASK cleared
+            //    4. __enable_irq()        PRIMASK=0: pending ISR executes immediately
+            //
+            //  Key ARM guarantee: WFI wakes on ANY pending interrupt regardless
+            //  of PRIMASK state. The interrupt just stays pending until unmasked.
+            // ============================================================
+
+            bool woke_ok = false;
+            switch (mode) {
+            case PowerMode::SLEEP:
+                if (hal_cb.enter_sleep_wfi != nullptr) {
+                    // Atomic sleep entry: disable IRQ -> check pending -> WFI -> enable IRQ
+                    if (hal_cb.disable_irq != nullptr) {
+                        hal_cb.disable_irq();
+                    }
+
+                    // Check if a wakeup interrupt is already pending.
+                    // If so, skip WFI entirely (the event we wanted is already here).
+                    bool skip_wfi = false;
+                    if (hal_cb.is_interrupt_pending != nullptr) {
+                        skip_wfi = hal_cb.is_interrupt_pending();
+                    }
+
+                    if (!skip_wfi) {
+                        hal_cb.enter_sleep_wfi();
+                        // CPU wakes here. IRQ is pending but masked by PRIMASK.
+                    }
+
+                    // Re-enable interrupts. If an IRQ was pending, its ISR
+                    // executes immediately after this instruction.
+                    if (hal_cb.enable_irq != nullptr) {
+                        hal_cb.enable_irq();
+                    }
+
+                    woke_ok = true;
+                }
+                break;
+
+            case PowerMode::STOP:
+                if (hal_cb.enter_stop_mode != nullptr) {
+                    // Same PRIMASK pattern for STOP mode
+                    if (hal_cb.disable_irq != nullptr) {
+                        hal_cb.disable_irq();
+                    }
+
+                    bool skip_stop = false;
+                    if (hal_cb.is_interrupt_pending != nullptr) {
+                        skip_stop = hal_cb.is_interrupt_pending();
+                    }
+
+                    if (!skip_stop) {
+                        hal_cb.enter_stop_mode();
+                        // CPU wakes here after STOP exit
+                    }
+
+                    if (hal_cb.enable_irq != nullptr) {
+                        hal_cb.enable_irq();
+                    }
+
+                    // HSE/PLL lost in STOP -- must reconfigure clocks
+                    // (even if skip_stop=true, clocks may have been
+                    //  partially gated by set_clock_gates above)
+                    if (hal_cb.restore_clocks_from_stop != nullptr) {
+                        hal_cb.restore_clocks_from_stop();
+                    }
+                    woke_ok = true;
+                }
+                break;
+
+            case PowerMode::STANDBY:
+                if (hal_cb.enter_standby_mode != nullptr) {
+                    // STANDBY: no PRIMASK needed (system resets on wakeup,
+                    // no race condition possible -- any pending IRQ prevents
+                    // STANDBY entry per ARM spec)
+                    hal_cb.enter_standby_mode();
+                    // [[noreturn]] -- should never reach here
+                }
+                // Fallthrough: STANDBY entry failed
+                Transition_State(PowerState::ERROR);
+                return false;
+
+            default:
+                Transition_State(PowerState::ERROR);
+                return false;
+            }
+
+            if (!woke_ok) {
+                Transition_State(PowerState::ERROR);
+                return false;
+            }
+
+            // --- Post-wakeup recovery ---
+            // CFI: SLEEPING -> WAKING
+            if (!Transition_State(PowerState::WAKING)) { return false; }
+
+            // Read wakeup source
+            if (hal_cb.get_wake_source != nullptr) {
+                last_wake_source = hal_cb.get_wake_source();
+            }
+
+            // Restore full clock tree for RUN mode
+            if (hal_cb.set_clock_gates != nullptr) {
+                hal_cb.set_clock_gates(ClockGate::ALL);
+            }
+            active_clock_mask = ClockGate::ALL;
+
+            if (hal_cb.set_cpu_clock != nullptr) {
+                hal_cb.set_cpu_clock(168u);
+            }
+            current_mode = PowerMode::RUN;
+
+            // Read battery voltage
+            if (hal_cb.get_battery_mv != nullptr) {
+                last_battery_mv = hal_cb.get_battery_mv();
+            }
+
+            // Post-wake notification (external modules restore state)
+            if (notify_cb.on_post_wake != nullptr) {
+                notify_cb.on_post_wake(mode, last_wake_source);
+            }
+
+            sleep_count++;
+
+            // CFI: WAKING -> ACTIVE
+            Transition_State(PowerState::ACTIVE);
+            return true;
+        }
+
+        // ============================================================
+        //  Clock Mode Switch (RUN <-> LOW_RUN)
+        // ============================================================
+        bool Execute_Clock_Switch(PowerMode mode) noexcept
+        {
+            if (static_cast<uint8_t>(mode) > static_cast<uint8_t>(PowerMode::LOW_RUN)) {
+                return false;  // Only RUN/LOW_RUN allowed here
+            }
+
+            const PowerPreset& preset = k_power_presets[static_cast<uint8_t>(mode)];
+
+            if (hal_cb.set_cpu_clock != nullptr) {
+                hal_cb.set_cpu_clock(preset.cpu_freq_mhz);
+            }
+            if (hal_cb.set_clock_gates != nullptr) {
+                hal_cb.set_clock_gates(preset.clock_gate_mask);
+            }
+            active_clock_mask = preset.clock_gate_mask;
+            current_mode = mode;
+            return true;
+        }
+    };
+
+    // ============================================================
+    //  Public API
+    // ============================================================
+
+    HTS_Power_Manager::HTS_Power_Manager() noexcept
+        : initialized_{ false }
+    {
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
+            "HTS_Power_Manager::Impl exceeds IMPL_BUF_SIZE");
+
+        for (uint32_t i = 0u; i < IMPL_BUF_SIZE; ++i) {
+            impl_buf_[i] = 0u;
+        }
+    }
+
+    HTS_Power_Manager::~HTS_Power_Manager() noexcept
+    {
+        Shutdown();
+    }
+
+    bool HTS_Power_Manager::Initialize() noexcept
+    {
+        bool expected = false;
+        if (!initialized_.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel))
+        {
+            return true;  // Already initialized
+        }
+
+        Impl* impl = new (impl_buf_) Impl{};
+
+        impl->state = PowerState::UNINITIALIZED;
+        impl->cfi_violation_count = 0u;
+        impl->current_mode = PowerMode::RUN;
+        impl->pvd_level = PVD_Level::V_2_5;
+        impl->last_wake_source = 0u;
+        impl->active_clock_mask = ClockGate::ALL;
+        impl->sleep_count = 0u;
+        impl->last_battery_mv = 0u;
+
+        // Zero HAL callbacks
+        impl->hal_cb.set_cpu_clock = nullptr;
+        impl->hal_cb.set_clock_gates = nullptr;
+        impl->hal_cb.enter_sleep_wfi = nullptr;
+        impl->hal_cb.enter_stop_mode = nullptr;
+        impl->hal_cb.enter_standby_mode = nullptr;
+        impl->hal_cb.restore_clocks_from_stop = nullptr;
+        impl->hal_cb.configure_pvd = nullptr;
+        impl->hal_cb.configure_rtc_wakeup = nullptr;
+        impl->hal_cb.get_battery_mv = nullptr;
+        impl->hal_cb.get_wake_source = nullptr;
+        impl->hal_cb.disable_irq = nullptr;
+        impl->hal_cb.enable_irq = nullptr;
+        impl->hal_cb.is_interrupt_pending = nullptr;
+
+        impl->notify_cb.on_pre_sleep = nullptr;
+        impl->notify_cb.on_post_wake = nullptr;
+        impl->notify_cb.on_pvd_warning = nullptr;
+
+        // CFI: UNINITIALIZED -> ACTIVE
+        impl->Transition_State(PowerState::ACTIVE);
+        return true;
+    }
+
+    void HTS_Power_Manager::Shutdown() noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        impl->state = PowerState::UNINITIALIZED;
+        impl->~Impl();
+        initialized_.store(false, std::memory_order_release);
+    }
+
+    void HTS_Power_Manager::Register_HAL_Callbacks(const Power_HAL_Callbacks& cb) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        reinterpret_cast<Impl*>(impl_buf_)->hal_cb = cb;
+    }
+
+    void HTS_Power_Manager::Register_Notify_Callbacks(const Power_Notify_Callbacks& cb) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        reinterpret_cast<Impl*>(impl_buf_)->notify_cb = cb;
+    }
+
+    bool HTS_Power_Manager::Request_Sleep(PowerMode mode, uint32_t wakeup_sec) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return false; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+
+        // Must be ACTIVE to enter sleep
+        if ((static_cast<uint8_t>(impl->state) &
+            static_cast<uint8_t>(PowerState::ACTIVE)) == 0u)
+        {
+            return false;
+        }
+
+        return impl->Execute_Sleep(mode, wakeup_sec);
+    }
+
+    bool HTS_Power_Manager::Set_Clock_Mode(PowerMode mode) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return false; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+
+        // Must be ACTIVE
+        if ((static_cast<uint8_t>(impl->state) &
+            static_cast<uint8_t>(PowerState::ACTIVE)) == 0u)
+        {
+            return false;
+        }
+
+        // Idempotency: already in target mode -> no-op
+        if (static_cast<uint8_t>(impl->current_mode) == static_cast<uint8_t>(mode)) {
+            return true;
+        }
+
+        return impl->Execute_Clock_Switch(mode);
+    }
+
+    void HTS_Power_Manager::Set_PVD_Level(PVD_Level level) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        impl->pvd_level = level;
+        if (impl->hal_cb.configure_pvd != nullptr) {
+            impl->hal_cb.configure_pvd(static_cast<uint8_t>(level));
+        }
+    }
+
+    void HTS_Power_Manager::Handle_PVD_Event() noexcept
+    {
+        // ISR-safe: minimal processing, no CFI transition
+        if (!initialized_.load(std::memory_order_relaxed)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+
+        // Read battery voltage
+        if (impl->hal_cb.get_battery_mv != nullptr) {
+            impl->last_battery_mv = impl->hal_cb.get_battery_mv();
+        }
+
+        // Notify external modules
+        if (impl->notify_cb.on_pvd_warning != nullptr) {
+            impl->notify_cb.on_pvd_warning(impl->last_battery_mv);
+        }
+    }
+
+    void HTS_Power_Manager::Set_Peripheral_Clocks(uint32_t enable_mask) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+
+        // Mask to valid bits only
+        const uint32_t safe_mask = enable_mask & ClockGate::ALL;
+        if (impl->hal_cb.set_clock_gates != nullptr) {
+            impl->hal_cb.set_clock_gates(safe_mask);
+        }
+        impl->active_clock_mask = safe_mask;
+    }
+
+    PowerState HTS_Power_Manager::Get_State() const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return PowerState::UNINITIALIZED; }
+        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+    }
+
+    PowerMode HTS_Power_Manager::Get_Current_Mode() const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return PowerMode::RUN; }
+        return reinterpret_cast<const Impl*>(impl_buf_)->current_mode;
+    }
+
+    uint16_t HTS_Power_Manager::Get_Battery_MV() const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
+        return reinterpret_cast<const Impl*>(impl_buf_)->last_battery_mv;
+    }
+
+    uint16_t HTS_Power_Manager::Get_Last_Wake_Source() const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
+        return reinterpret_cast<const Impl*>(impl_buf_)->last_wake_source;
+    }
+
+    uint32_t HTS_Power_Manager::Get_Sleep_Count() const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
+        return reinterpret_cast<const Impl*>(impl_buf_)->sleep_count;
+    }
+
+} // namespace ProtectedEngine

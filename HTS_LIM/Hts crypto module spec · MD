@@ -1,0 +1,238 @@
+# HTS B-CDMA 암호 모듈 보안 정책
+## FIPS 140-3 / KCMVP 이중 인증용 — ISO 19790 준거
+
+**문서 번호**: HTS-SEC-001  
+**버전**: 1.0  
+**작성일**: 2026-03-29  
+**작성자**: INNOViD  
+
+---
+
+## 1. 암호 모듈 식별
+
+| 항목 | 내용 |
+|------|------|
+| 모듈명 | HTS B-CDMA Security Coprocessor |
+| 하드웨어 | STM32F407VGT6 (Cortex-M4F, 168MHz) |
+| 소프트웨어 | HTS_LIM 펌웨어 v1.0 |
+| 보안 수준 | FIPS 140-3 Level 2 / KCMVP |
+| 동작 환경 | INNOVID CORE-X Pro 통합콘솔 내장 |
+| 물리 형태 | Multi-chip embedded module |
+
+---
+
+## 2. 암호 경계 (Cryptographic Boundary)
+
+### 2.1 물리적 경계
+
+```
+┌─────────────────────────────────────────────┐
+│           INNOVID CORE-X Pro 콘솔            │
+│                                             │
+│  ┌───────────────────────────────────────┐  │
+│  │    STM32F407VGT6 (보안 코프로세서)      │  │
+│  │    ═══════════════════════════════     │  │
+│  │    │  암호 모듈 경계 (FIPS Boundary) │  │  │
+│  │    │                               │  │  │
+│  │    │  Flash (1MB)                  │  │  │
+│  │    │    ├─ 펌웨어 코드              │  │  │
+│  │    │    ├─ S-box / LUT (constexpr)  │  │  │
+│  │    │    └─ KAT 벡터                │  │  │
+│  │    │                               │  │  │
+│  │    │  SRAM (192KB)                 │  │  │
+│  │    │    ├─ 키 소재 (런타임)         │  │  │
+│  │    │    ├─ DRBG 상태               │  │  │
+│  │    │    └─ 임시 연산 버퍼           │  │  │
+│  │    │                               │  │  │
+│  │    │  주변장치                      │  │  │
+│  │    │    ├─ TRNG (0x50060800)       │  │  │
+│  │    │    ├─ SPI (A55 통신)          │  │  │
+│  │    │    └─ UART (콘솔 진단)        │  │  │
+│  │    ═══════════════════════════════     │  │
+│  └───────────────────────────────────────┘  │
+│                                             │
+│  ┌───────────────────────────────────────┐  │
+│  │    Cortex-A55 (메인 CPU, Linux)        │  │
+│  │    (암호 경계 외부)                     │  │
+│  └───────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+```
+
+### 2.2 논리적 경계
+
+| 인터페이스 | 방향 | 프로토콜 | 데이터 |
+|-----------|------|---------|--------|
+| SPI | 양방향 | IPC_Protocol | 암호화된 페이로드 + 명령 |
+| UART | 출력 | Console_Manager | 진단 로그 (평문 제한) |
+| JTAG/SWD | 차단 | Anti_Debug | 운용 모드에서 비활성화 |
+
+### 2.3 포트 정의
+
+| 포트 | 유형 | 설명 |
+|------|------|------|
+| Data Input | 논리 | SPI 수신 페이로드 |
+| Data Output | 논리 | SPI 송신 페이로드 (암호화됨) |
+| Control Input | 논리 | IPC 명령 (KEY_INJECT, CONFIG 등) |
+| Status Output | 논리 | POST 상태, 오류 코드, 감사 로그 |
+| Power | 물리 | 3.3V 전원 (PVD 감시) |
+
+---
+
+## 3. 유한 상태 모델 (FSM)
+
+### 3.1 상태 전이도
+
+```
+                    ┌──────────────────┐
+                    │   POWER OFF      │
+                    └────────┬─────────┘
+                             │ 전원 인가
+                             ▼
+                    ┌──────────────────┐
+                    │   SELF-TEST      │ ◄─── POST 실행 중
+                    │   (POST)         │      (암호 기능 차단)
+                    └────────┬─────────┘
+                             │
+                    ┌────────┴─────────┐
+                    │                  │
+               POST 통과          POST 실패
+                    │                  │
+                    ▼                  ▼
+          ┌─────────────────┐  ┌──────────────┐
+          │   OPERATIONAL   │  │  ERROR STATE  │ ◄── 복구 불가
+          │   (정상 운용)    │  │  (차단)       │     (Self-Healing)
+          └────────┬────────┘  └──────────────┘
+                   │
+          ┌────────┴────────┐
+          │                 │
+     인증 성공          인증 실패
+     (HMAC-SHA256)     (5회 → 잠금)
+          │                 │
+          ▼                 ▼
+   ┌──────────────┐  ┌──────────────┐
+   │ AUTHENTICATED │  │ AUTH_LOCKED  │
+   │ (User/Officer)│  │ (잠금)       │
+   └──────────────┘  └──────────────┘
+          │
+   ┌──────┴──────┐
+   │             │
+  암호 서비스   키 관리
+  (User+)     (Officer만)
+```
+
+### 3.2 상태 설명
+
+| 상태 | 설명 | 허용 서비스 |
+|------|------|-----------|
+| POWER_OFF | 전원 미인가 | 없음 |
+| SELF_TEST | POST/KAT 실행 중 | 없음 (I/O 차단) |
+| ERROR | POST/KAT 실패 | 없음 (Self-Healing) |
+| OPERATIONAL | POST 통과, 미인증 | 상태 조회만 |
+| AUTHENTICATED_USER | User 인증 | 암호화/복호화/해시/HMAC/DRBG |
+| AUTHENTICATED_OFFICER | Officer 인증 | 전체 (키 주입/자가진단/설정) |
+| AUTH_LOCKED | 인증 5회 연속 실패 | 없음 (잠금) |
+
+### 3.3 조건부 자가진단 전이
+
+| 트리거 | 실행 | 성공 | 실패 |
+|--------|------|------|------|
+| 키 주입/교체 | Pairwise Consistency Test | OPERATIONAL 유지 | 키 폐기 + 감사 로그 |
+| DRBG Generate | CRNG 연속 테스트 | 출력 반환 | DRBG 차단 + ERROR |
+| TRNG 출력 | RCT + APT | 출력 반환 | Self-Healing |
+| 부팅 | Flash HMAC 검증 | POST 계속 | ERROR |
+
+---
+
+## 4. 승인된 암호 알고리즘
+
+### 4.1 KCMVP 승인
+
+| 알고리즘 | 규격 | 키 길이 | 모드 | 모듈 |
+|---------|------|--------|------|------|
+| ARIA | KS X 1213-1 | 128/192/256 | ECB, CTR | HTS_ARIA_Bridge |
+| LEA | TTAK.KO-12.0223 | 128/192/256 | CTR | HTS_LEA_Bridge |
+| LSH-256 | KS X 3262 | — | Hash | HTS_LSH256_Bridge |
+| HMAC-SHA256 | KS X ISO/IEC 9797-2 | 256 | MAC | HTS_HMAC_Bridge |
+| ARIA-CTR_DRBG | SP 800-90A | 256 | CTR_DRBG | HTS_CTR_DRBG |
+
+### 4.2 FIPS 승인
+
+| 알고리즘 | 규격 | 키 길이 | 모드 | 모듈 |
+|---------|------|--------|------|------|
+| AES | FIPS 197 | 128/192/256 | ECB, CTR | HTS_AES_Bridge |
+| SHA-256 | FIPS 180-4 | — | Hash | HTS_SHA256_Bridge |
+| HMAC-SHA256 | FIPS 198-1 | 256 | MAC | HTS_HMAC_Bridge |
+| AES-CTR_DRBG | SP 800-90A | 256 | CTR_DRBG | HTS_CTR_DRBG |
+
+### 4.3 비승인 알고리즘 (보안 기능 외 용도)
+
+| 알고리즘 | 용도 | 모듈 |
+|---------|------|------|
+| CRC-32 | 비암호 무결성 (통신 오류 감지) | HTS_Crc32Util |
+| Xorshift32 | ECCM 재밍 대항 스크램블링 | HTS64_Native_ECCM_Core |
+| SplitMix64 | FEC 심볼 셔플링 | HTS_Orbital_Mapper |
+
+---
+
+## 5. 키 관리
+
+### 5.1 키 종류
+
+| 키 | 용도 | 크기 | 저장 | 수명 |
+|----|------|------|------|------|
+| Master Encryption Key | 세션 암호화 | 256-bit | SRAM (런타임) | 세션 |
+| HMAC Authentication Key | Encrypt-then-MAC | 256-bit | SRAM | 세션 |
+| DRBG Key | CTR_DRBG 내부 상태 | 256-bit | SRAM | 리시드까지 |
+| PUF Seed | 디바이스 고유 키 | 256-bit | PUF (물리) | 영구 |
+| Password Hash | 역할 인증 | 256-bit | 보호 Flash | 프로비저닝 |
+
+### 5.2 키 제로화
+
+모든 키 소재는 수명 종료 시 3중 보안 소거:
+
+```cpp
+volatile uint8_t* v = key_buf;
+for (size_t i = 0; i < len; ++i) v[i] = 0;
+__asm__ __volatile__("" : : "r"(v) : "memory");
+std::atomic_thread_fence(std::memory_order_release);
+```
+
+---
+
+## 6. 물리적 보안 (Level 2)
+
+| 메커니즘 | 모듈 | 동작 |
+|---------|------|------|
+| JTAG/SWD 감지 | HTS_Anti_Debug | DEMCR 레지스터 감시 → AIRCR 리셋 |
+| 글리치 방어 | HTS_Anti_Glitch | 전압/클럭 이상 감지 |
+| 전압 감시 | PVD ISR | 저전압 시 키 즉시 소거 + Trap |
+| 탬퍼 감지 | HTS_Hardware_Shield | 물리적 침입 시 키 소거 |
+| Flash 무결성 | Boot Verify | HMAC-SHA256 부팅 검증 |
+
+---
+
+## 7. 자가 진단 요약
+
+| 시점 | 테스트 | 모듈 |
+|------|--------|------|
+| 전원 투입 | ALU, Parity, Gravity, 암호 KAT 7종, DRBG KAT, Flash HMAC | POST_Manager + Crypto_KAT |
+| 키 생성/교체 | 쌍대 일관성 (ARIA/LEA/AES) | Conditional_SelfTest |
+| DRBG 출력 | CRNG 연속 테스트 | HTS_CTR_DRBG |
+| TRNG 출력 | RCT + APT | HTS_Entropy_Monitor |
+| 주기적 | Flash CRC 보고 | Console_Manager |
+
+---
+
+## 8. 감사 로깅
+
+`SecureLogger::logSecurityEvent()` — 모든 보안 이벤트 기록
+
+| 이벤트 | 분류 |
+|--------|------|
+| POST_START / POST_PASS / POST_FAIL | 자가진단 |
+| KAT_PASS / KAT_FAIL | 암호 KAT |
+| AUTH_OK / AUTH_FAIL / AUTH_LOCKED | 인증 |
+| DRBG_INIT / DRBG_RESEED / DRBG_FAIL | 난수 생성 |
+| KEY_INJECT / KEY_ZEROIZE | 키 관리 |
+| TAMPER_DETECT / DEBUG_DETECT | 물리 보안 |
+| CFI_VIOLATION | 제어 흐름 무결성 |

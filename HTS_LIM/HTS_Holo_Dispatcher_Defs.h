@@ -1,0 +1,102 @@
+#pragma once
+/// @file  HTS_Holo_Dispatcher_Defs.h
+/// @brief HTS 4D 홀로그램 디스패처 연동 정의부
+/// @details
+///   기존 V400 Dispatcher(PayloadMode 4종)에 4D 홀로그램 모드를
+///   추가하기 위한 정의. 기존 코드 수정 0줄.
+///
+///   모드 전략:
+///   - VIDEO_1/VIDEO_16: 기존 BB1 유지 (속도 우선)
+///   - VOICE_HOLO:  K=16, N=16, L=1 (12us, 음성 자가치유)
+///   - DATA_HOLO:   K=64, N=64, L=2 (390us, 검침/IoT)
+///   - RESILIENT_HOLO: K=128, N=64, L=4 (1.56ms, 재밍/변전소)
+///
+///   자동 전환:
+///   - SNR >= 10, AJC < 500    -> VOICE_HOLO
+///   - SNR >= 5,  AJC < 2000   -> DATA_HOLO
+///   - SNR < 5  OR AJC >= 2000 -> RESILIENT_HOLO
+///   - VIDEO 모드 진입 시       -> 기존 BB1 (Dispatcher가 처리)
+///
+/// @author 임영준 (Lim Young-jun)
+/// @copyright INNOViD 2026. All rights reserved.
+
+#include "HTS_Holo_Tensor_4D_Defs.h"
+#include <cstdint>
+
+namespace ProtectedEngine {
+
+    // ============================================================
+    //  확장 페이로드 모드
+    // ============================================================
+
+    /// @brief 확장 페이로드 모드 (기존 + 4D 홀로그램)
+    /// @note  기존 PayloadMode(0x00~0x03, 0xFF)와 값 충돌 없음.
+    ///        Dispatcher에서 0x10 이상이면 HoloDispatch로 위임.
+    namespace HoloPayload {
+        // --- 기존 모드 (수정 없음, 참조용) ---
+        static constexpr uint8_t VIDEO_1 = 0x00u;
+        static constexpr uint8_t VIDEO_16 = 0x01u;
+        static constexpr uint8_t VOICE_LEGACY = 0x02u;
+        static constexpr uint8_t DATA_LEGACY = 0x03u;
+
+        // --- 4D 홀로그램 모드 (신규, 0x10~) ---
+        static constexpr uint8_t VOICE_HOLO = 0x10u;  ///< K=16, N=16, L=1
+        static constexpr uint8_t DATA_HOLO = 0x11u;  ///< K=64, N=64, L=2
+        static constexpr uint8_t RESILIENT_HOLO = 0x12u;  ///< K=128, N=64, L=4
+
+        /// @brief 모드가 4D 홀로그램인지 판별
+        inline bool Is_Holo_Mode(uint8_t mode) noexcept
+        {
+            return (mode >= VOICE_HOLO && mode <= RESILIENT_HOLO);
+        }
+    }  // namespace HoloPayload
+
+    // ============================================================
+    //  자동 모드 선택 임계값 (BPS Controller 연동)
+    // ============================================================
+
+    /// @note  기존 HTS_Adaptive_BPS_Controller의 임계값과 동일한 구조.
+    ///        BPS Controller가 BPS를 결정한 후, 이 임계값으로 홀로 모드를 선택.
+    namespace HoloThreshold {
+        /// AJC < 500 AND SNR >= 10 -> VOICE_HOLO (속도 우선)
+        static constexpr uint32_t AJC_QUIET = 500u;
+        static constexpr int32_t  SNR_QUIET = 10;
+
+        /// AJC < 2000 AND SNR >= 5 -> DATA_HOLO (균형)
+        static constexpr uint32_t AJC_MODERATE = 2000u;
+        static constexpr int32_t  SNR_MODERATE = 5;
+
+        /// AJC >= 2000 OR SNR < 5 -> RESILIENT_HOLO (보호 우선)
+        // (위 조건에 해당하지 않으면 자동 RESILIENT)
+    }  // namespace HoloThreshold
+
+    // ============================================================
+    //  홀로그램 모드별 프로파일 매핑
+    // ============================================================
+
+    /// @brief 모드 → 프로파일 변환 (constexpr ROM)
+    inline HoloTensor_Profile Holo_Mode_To_Profile(uint8_t mode) noexcept
+    {
+        switch (mode) {
+        case HoloPayload::VOICE_HOLO:
+            return k_holo_profiles[0];  // K=16, N=16, L=1
+        case HoloPayload::DATA_HOLO:
+            return k_holo_profiles[1];  // K=64, N=64, L=2
+        case HoloPayload::RESILIENT_HOLO:
+            return k_holo_profiles[2];  // K=128, N=64, L=4
+        default:
+            return k_holo_profiles[1];  // fallback DATA
+        }
+    }
+
+    // ============================================================
+    //  헤더 인코딩 (기존 Dispatcher 호환)
+    // ============================================================
+
+    /// @brief 홀로 모드 헤더의 모드 비트 (기존 mb=3(DATA)에 확장 플래그)
+    /// @note  기존 헤더: mb(2비트) | plen(10비트)
+    ///        mb=3 + plen 상위 2비트=11 → 홀로 모드 식별자
+    ///        plen 하위 8비트 → 서브모드(VOICE/DATA/RESILIENT)
+    static constexpr uint16_t HOLO_HEADER_FLAG = 0x0300u;  ///< plen[9:8]=11 = 홀로 플래그
+
+} // namespace ProtectedEngine

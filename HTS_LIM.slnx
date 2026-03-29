@@ -1,0 +1,11 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/tools/">
+    <File Path="tools/trng_analyze.py" />
+  </Folder>
+  <Project Path="HTS_LIM/HTS_LIM.vcxproj" Id="9bd2f8c7-315e-4373-83d5-3357f259718e" />
+  <Project Path="HTS_TEST/HTS_TEST.vcxproj" Id="e5b15e2d-96b8-4858-a427-71b0ebb622b0" />
+</Solution>

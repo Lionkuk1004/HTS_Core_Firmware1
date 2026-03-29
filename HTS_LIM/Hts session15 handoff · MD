@@ -1,0 +1,162 @@
+# HTS B-CDMA 세션 15 이관 프롬프트
+# 작성일: 2026-03-29
+# 이전 세션: 14 (전수 감사 + FIPS 140-3 / KCMVP 이중 인증 모듈 구현)
+
+## 프로젝트 개요
+- **타겟**: STM32F407VGT6 (Cortex-M4F, 168MHz, 1MB Flash, 192KB SRAM)
+- **역할**: INNOVID CORE-X Pro 통합콘솔의 보안 코프로세서
+- **메인 CPU**: Cortex-A55 (Linux), 통신: SPI/UART/공유 메모리
+- **네임스페이스**: `ProtectedEngine`
+- **담당자**: 임영준, INNOViD
+
+---
+
+## 세션 14 완료 사항
+
+### A. ASIC 전수 감사 (66개 ARM .cpp)
+- 6항목(float, try-catch, 64비트 SW div, PC헤더, std::abs, vector) 기계적 전수 탐색
+- CRIT 1건(BUG-10 Sync_Detector int64_t 나눗셈) → CLZ+SDIV 패치 완료
+- **17+4+⑨ = 22개 체크리스트 전수 통과** — CRIT 0건 잔여
+
+### B. 코어 3파일 코드 리딩 (BB1/ECCM/FEC)
+- CRIT 0건, LOW 2건 패치:
+  - BUG-58: BB1 Polymorphic_Shield block_index CTR 추가
+  - BUG-26: ECCM nth_select 가드 카운터 (V400 통일)
+
+### C. PENDING 해결
+- **PENDING-1**: AnchorDecoder `decode_inplace()` API 추가 → TensorCodec 힙 36,864→2 (99.99% 절감)
+- **PENDING-2**: Rx/Tx Bridge `std::vector` → 설계 허용 (nullptr 가드로 미도달)
+
+### D. FIPS 140-3 / KCMVP 이중 인증 모듈 (10개 신규 모듈)
+
+| # | 모듈 | 규격 | 파일 | 테스트 |
+|---|------|------|------|--------|
+| 1 | **HTS_Crypto_KAT** | KCMVP §7.4.1 / FIPS AS09.12 | .h + .cpp | ARIA/LEA/HMAC/LSH + AES/SHA256 |
+| 2 | **HTS_AES_Bridge** | FIPS 197 | .h + .cpp | **3/3 PASS** (256-ECB, 128-ECB, 복호화) |
+| 3 | **HTS_SHA256_Bridge** | FIPS 180-4 | .h + .cpp | **2/2 PASS** ("abc" + 빈 메시지) |
+| 4 | **HTS_CTR_DRBG** | SP 800-90A §10.2.1 | .h + .cpp | **6/6 PASS** (Instantiate/Generate/CRNG/Reseed/Uninstantiate) |
+| 5 | **HTS_Conditional_SelfTest** | KCMVP §7.4.2 / FIPS AS09.13+40 | .h + .cpp | 컴파일 검증 |
+| 6 | **Entropy_Monitor (APT 추가)** | SP 800-90B §4.4.2 | .h + .cpp | **6/6 PASS** (RCT+APT 정상/트리거) |
+| 7 | **POST_Manager (KAT 통합)** | — | .cpp | Crypto_KAT POST 체인 연결 |
+| 8 | **Security_Session (AES_CTR)** | — | .h + .cpp | AES_256_CTR enum + 분기 추가 |
+
+### E. 테스트 결과 (PC 빌드 검증)
+
+| 테스트 스위트 | 결과 |
+|-------------|------|
+| AES-256 FIPS 197 Appendix C.3 | **3/3 PASS** |
+| SHA-256 FIPS 180-4 | **2/2 PASS** |
+| CTR_DRBG (AES-256 기반) | **6/6 PASS** |
+| Entropy Monitor RCT+APT | **6/6 PASS** |
+| **합계** | **17/17 PASS** |
+
+---
+
+## 납품 파일 전체 (26파일)
+
+### 신규 모듈 (12파일)
+```
+HTS_Crypto_KAT.h              — POST 암호 KAT 헤더
+HTS_Crypto_KAT.cpp            — KAT 6종 구현 (ARIA/LEA/HMAC/LSH + AES/SHA256)
+HTS_AES_Bridge.h              — FIPS 197 AES-256 블록 암호
+HTS_AES_Bridge.cpp            — AES-256 자체 구현 (S-box Flash, 힙 0)
+HTS_SHA256_Bridge.h            — FIPS 180-4 SHA-256 해시 래퍼
+HTS_SHA256_Bridge.cpp          — KISA SHA256 래퍼
+HTS_CTR_DRBG.h                — SP 800-90A CTR_DRBG
+HTS_CTR_DRBG.cpp              — ARIA/AES 이중 DRBG + CRNG 연속 테스트
+HTS_Conditional_SelfTest.h     — 키 쌍대 일관성 + Boot Verify
+HTS_Conditional_SelfTest.cpp   — ARIA/LEA/AES 쌍대 + Flash HMAC
+HTS_Entropy_Monitor.h          — RCT + APT 이중 건강 테스트
+HTS_Entropy_Monitor.cpp        — APT 윈도우 W=512, C=41
+```
+
+### 수정 파일 (7파일)
+```
+HTS_POST_Manager.cpp           — BUG-11: Crypto_KAT POST 체인 통합
+HTS_Security_Session.h         — AES_256_CTR enum 추가
+HTS_Security_Session.cpp       — AES 분기 3곳 (Initialize + 전체블록 + 부분블록)
+BB1_Core_Engine.cpp            — BUG-57/58: 초기화 + block_index CTR
+HTS64_Native_ECCM_Core.cpp     — BUG-26: nth_select 가드 카운터
+AnchorDecoder.h                — decode_inplace 선언 + #error 설계 변경
+AnchorDecoder.cpp              — decode_inplace + restoreBlock_inplace 구현
+```
+
+### 기존 패치 (7파일)
+```
+AnchorEncoder.h                — #error 설계 변경
+AnchorEncoder.cpp              — ARM 가드 보강
+TensorCodec.cpp                — decode_inplace 전환 (힙 99.99% 절감)
+HTS_Anchor_Vault.hpp           — ARM 가드 + mutex
+HTS_Anchor_Vault.cpp           — lock_guard 5/5
+HTS_Rx_Sync_Detector.cpp       — BUG-10 int64_t 나눗셈 패치
+```
+
+---
+
+## 빌드 프리셋 구조
+
+```makefile
+# KCMVP 전용 (한국 암호 모듈 검증)
+CFLAGS += -DHTS_CRYPTO_KCMVP
+# → ARIA + LEA + LSH + HMAC KAT, ARIA-CTR_DRBG
+
+# FIPS 전용 (미국 연방 표준)
+CFLAGS += -DHTS_CRYPTO_FIPS
+# → AES + SHA-256 KAT, AES-CTR_DRBG, Boot Verify
+
+# 이중 인증 동시 추진
+CFLAGS += -DHTS_CRYPTO_DUAL
+# → 전부 포함 (KCMVP + FIPS)
+```
+
+---
+
+## POST 부팅 시퀀스 (최종)
+
+```
+전원 투입 → POST_Manager::executePowerOnSelfTest()
+  ├─ ALU Sanity Check
+  ├─ KAT #1: Parity Recovery
+  ├─ KAT #2: Gravity Interpolation
+  ├─ KAT #3: Crypto_KAT::Run_All_Crypto_KAT()
+  │    ├─ ARIA-128 ECB (KCMVP)
+  │    ├─ LEA-128 CTR (KCMVP)
+  │    ├─ HMAC-SHA256 RFC4231 (KCMVP+FIPS)
+  │    ├─ LSH-256 결정론 (KCMVP)
+  │    ├─ AES-256 ECB FIPS 197 (FIPS 조건부)
+  │    └─ SHA-256 FIPS 180-4 (FIPS 조건부)
+  └─ g_isOperational = true
+     실패 → Execute_Self_Healing [[noreturn]]
+```
+
+---
+
+## 세션 15 권장 작업
+
+| 우선순위 | 항목 | 상태 |
+|---------|------|------|
+| 🔴 1 | **LSH-256 KAT 공식 벡터** | seed.kisa.or.kr 대조 후 expected[] 확정 |
+| 🔴 2 | **DRBG KAT** | CTR_DRBG 자체의 KAT (SP 800-90A 테스트 벡터) |
+| 🟠 3 | **역할 기반 접근 제어** | FIPS Level 2+ (Crypto Officer / User) |
+| 🟠 4 | **FSM/암호 경계 문서** | ISO 19790 부속서 A |
+| 🟡 5 | **기존 KAT 4파일 test/ 이동** | 양산 빌드에서 제외 |
+| 🟡 6 | **Adaptive BPS 양산 통합 검증** | V400 Dispatcher Tick_Adaptive_BPS |
+
+---
+
+## HTS 5원칙 (모든 모듈 작업 시 적용)
+1. 세계 최고 수준 코드 아키텍처
+2. 100% 양산 무결성
+3. Pimpl 캡슐화
+4. 외부 업체 Doxygen 헤더 가이드
+5. MISRA/AUTOSAR 준수
+
+## 17+4+⑨ 체크리스트 (22개)
+① memory_order ② fast_abs ③ 힙 금지 ④ float/double ⑤ try-catch
+⑥ 스택 ⑦ 주석-코드 일관 ⑧ SRAM static_assert ⑨ 나눗셈→시프트
+⑩ const& ⑪ 엔디안 ⑫ static_cast ⑬ CFI ⑭ PC 코드 ⑮ HW 폴링
+⑯ PVD/EMI ⑰ ISR WCET (A) sizeof 전파 (B) Wrapper assert
+(C) CAS 멱등 (D) C++20 속성 가드
+
+
+

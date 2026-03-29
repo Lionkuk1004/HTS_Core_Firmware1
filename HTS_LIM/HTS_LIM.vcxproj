@@ -1,0 +1,394 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{9bd2f8c7-315e-4373-83d5-3357f259718e}</ProjectGuid>
+    <RootNamespace>HTSLIM</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetName>HTS_LIM_V3</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);D:\HTS_ARM11_Firmware\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <DisableLanguageExtensions>false</DisableLanguageExtensions>
+      <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);D:\HTS_ARM11_Firmware\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <DisableLanguageExtensions>false</DisableLanguageExtensions>
+      <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324</DisableSpecificWarnings>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="aria050117.c" />
+    <ClCompile Include="hmac.c" />
+    <ClCompile Include="HTS_Tamper_HAL.cpp" />
+    <ClCompile Include="HTS64_Native_ECCM_Core.cpp" />
+    <ClCompile Include="HTS64_Tx_Stealth.cpp" />
+    <ClCompile Include="HTS_3D_Tensor_FEC.cpp" />
+    <ClCompile Include="HTS_Adaptive_BPS_Controller.cpp" />
+    <ClCompile Include="HTS_AES_Bridge.cpp" />
+    <ClCompile Include="HTS_AMI_Protocol.cpp" />
+    <ClCompile Include="HTS_Anchor_Vault.cpp" />
+    <ClCompile Include="HTS_AntiAnalysis_Shield.cpp" />
+    <ClCompile Include="HTS_AntiJam_Engine.cpp" />
+    <ClCompile Include="HTS_Antipodal_Core.cpp" />
+    <ClCompile Include="HTS_API.cpp" />
+    <ClCompile Include="HTS_ARIA_Bridge.cpp" />
+    <ClCompile Include="HTS_Auto_Rollback_Manager.cpp" />
+    <ClCompile Include="HTS_BLE_NFC_Gateway.cpp" />
+    <ClCompile Include="HTS_CCTV_Security.cpp" />
+    <ClCompile Include="HTS_Conditional_SelfTest.cpp" />
+    <ClCompile Include="HTS_Config.cpp" />
+    <ClCompile Include="HTS_Console_Manager.cpp" />
+    <ClCompile Include="HTS_Crypto_KAT.cpp" />
+    <ClCompile Include="HTS_CTR_DRBG.cpp" />
+    <ClCompile Include="HTS_Data_Loader.cpp" />
+    <ClCompile Include="HTS_Device_Profile.cpp" />
+    <ClCompile Include="HTS_Dynamic_Config.cpp" />
+    <ClCompile Include="HTS_Dynamic_Key_Rotator.cpp" />
+    <ClCompile Include="HTS_Entropy_Arrow.cpp" />
+    <ClCompile Include="HTS_Entropy_Monitor.cpp" />
+    <ClCompile Include="HTS_FEC_HARQ.cpp" />
+    <ClCompile Include="HTS_Gyro_Engine.cpp" />
+    <ClCompile Include="HTS_Hardware_Bridge.cpp" />
+    <ClCompile Include="HTS_Hardware_Shield.cpp" />
+    <ClCompile Include="HTS_HMAC_Bridge.cpp" />
+    <ClCompile Include="HTS_Holo_Dispatcher.cpp" />
+    <ClCompile Include="HTS_Holo_Tensor_4D.cpp" />
+    <ClCompile Include="HTS_Holo_Tensor_Engine.cpp" />
+    <ClCompile Include="HTS_IoT_Codec.cpp" />
+    <ClCompile Include="HTS_IPC_Protocol.cpp" />
+    <ClCompile Include="HTS_IPC_Protocol_A55.cpp" />
+    <ClCompile Include="HTS_KT_DSN_Adapter.cpp" />
+    <ClCompile Include="HTS_LEA_Bridge.cpp" />
+    <ClCompile Include="HTS_LSH256_Bridge.cpp" />
+    <ClCompile Include="HTS_Modbus_Gateway.cpp" />
+    <ClCompile Include="HTS_Network_Bridge.cpp" />
+    <ClCompile Include="HTS_Orbital_Mapper.cpp" />
+    <ClCompile Include="HTS_OTA_Manager.cpp" />
+    <ClCompile Include="HTS_Pointer_Auth.cpp" />
+    <ClCompile Include="HTS_Physical_Entropy_Engine.cpp" />
+    <ClCompile Include="HTS_Polymorphic_Shield.cpp" />
+    <ClCompile Include="HTS_Power_Manager.cpp" />
+    <ClCompile Include="HTS_Quantum_Key_Bridge.cpp" />
+    <ClCompile Include="HTS_Remote_Attestation.cpp" />
+    <ClCompile Include="HTS_Role_Auth.cpp" />
+    <ClCompile Include="HTS_Rx_Matched_Filter.cpp" />
+    <ClCompile Include="HTS_Rx_Sync_Detector.cpp" />
+    <ClCompile Include="HTS_Security_Session.cpp" />
+    <ClCompile Include="HTS_Server_Stress_Test.cpp" />
+    <ClCompile Include="HTS_Session_Gateway.cpp" />
+    <ClCompile Include="HTS_SHA256_Bridge.cpp" />
+    <ClCompile Include="HTS_Sparse_Recovery.cpp" />
+    <ClCompile Include="HTS_Storage_Adapter.cpp" />
+    <ClCompile Include="HTS_Storage_Interface.cpp" />
+    <ClCompile Include="HTS_TRNG_Collector.cpp" />
+    <ClCompile Include="HTS_Tx_Scheduler.cpp" />
+    <ClCompile Include="HTS_Universal_API.cpp" />
+    <ClCompile Include="AnchorDecoder.cpp" />
+    <ClCompile Include="AnchorEncoder.cpp" />
+    <ClCompile Include="AnchorManager.cpp" />
+    <ClCompile Include="BB1_Core_Engine.cpp" />
+    <ClCompile Include="HTS_ConstantTimeUtil.cpp" />
+    <ClCompile Include="HTS_Crc32Util.cpp" />
+    <ClCompile Include="HTS_Quantum_Decoy_VDF.cpp" />
+    <ClCompile Include="HTS_Anti_Debug.cpp" />
+    <ClCompile Include="HTS_Anti_Glitch.cpp" />
+    <ClCompile Include="HTS_Creator_Telemetry.cpp" />
+    <ClCompile Include="HTS_Dual_Tensor_16bit.cpp" />
+    <ClCompile Include="HTS_Gaussian_Pulse.cpp" />
+    <ClCompile Include="HTS_Hardware_Auto_Scaler.cpp" />
+    <ClCompile Include="HTS_Hardware_Init.cpp" />
+    <ClCompile Include="HTS_Key_Rotator.cpp" />
+    <ClCompile Include="HTS_POST_Manager.cpp" />
+    <ClCompile Include="HTS_PUF_Adapter.cpp" />
+    <ClCompile Include="HTS_Secure_Logger.cpp" />
+    <ClCompile Include="HTS_Secure_Memory.cpp" />
+    <ClCompile Include="HTS_Security_Pipeline.cpp" />
+    <ClCompile Include="HTS_Unified_Scheduler.cpp" />
+    <ClCompile Include="HTS_Universal_Adapter.cpp" />
+    <ClCompile Include="HTS_V400_Dispatcher.cpp" />
+    <ClCompile Include="HTS_Voice_Codec_Bridge.cpp" />
+    <ClCompile Include="KISA_HMAC.c" />
+    <ClCompile Include="KISA_SHA256.c" />
+    <ClCompile Include="lea_base.c" />
+    <ClCompile Include="lea_core.c" />
+    <ClCompile Include="lea_gcm_generic.c" />
+    <ClCompile Include="lea_online.c" />
+    <ClCompile Include="lea_t_fallback.c" />
+    <ClCompile Include="lea_t_generic.c" />
+    <ClCompile Include="lsh.c" />
+    <ClCompile Include="lsh256.c">
+      <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="lsh512.c" />
+    <ClCompile Include="TensorCodec.cpp" />
+    <ClCompile Include="util.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="HTS_Tamper_HAL.h" />
+    <ClInclude Include="HTS64_Native_ECCM_Core.hpp" />
+    <ClInclude Include="HTS_Adaptive_BPS_Controller.h" />
+    <ClInclude Include="HTS_AES_Bridge.h" />
+    <ClInclude Include="HTS_AMI_Protocol.h" />
+    <ClInclude Include="HTS_AMI_Protocol_Defs.h" />
+    <ClInclude Include="HTS_AntiJam_Engine.h" />
+    <ClInclude Include="HTS_BLE_NFC_Gateway_Defs.h" />
+    <ClInclude Include="HTS_BLE_NFC_Gateway.h" />
+    <ClInclude Include="HTS_CCTV_Security.h" />
+    <ClInclude Include="HTS_CCTV_Security_Defs.h" />
+    <ClInclude Include="HTS_Conditional_SelfTest.h" />
+    <ClInclude Include="HTS_Console_Manager.h" />
+    <ClInclude Include="HTS_Console_Manager_Defs.h" />
+    <ClInclude Include="HTS_Crypto_KAT.h" />
+    <ClInclude Include="HTS_CTR_DRBG.h" />
+    <ClInclude Include="HTS_Device_Profile.h" />
+    <ClInclude Include="HTS_Device_Profile_Defs.h" />
+    <ClInclude Include="HTS_Holo_Dispatcher.h" />
+    <ClInclude Include="HTS_Holo_Dispatcher_Defs.h" />
+    <ClInclude Include="HTS_Holo_Tensor_4D.h" />
+    <ClInclude Include="HTS_Holo_Tensor_4D_Defs.h" />
+    <ClInclude Include="HTS_Holo_Tensor_Engine.h" />
+    <ClInclude Include="HTS_IoT_Codec.h" />
+    <ClInclude Include="HTS_IoT_Codec_Defs.h" />
+    <ClInclude Include="HTS_IPC_Protocol.h" />
+    <ClInclude Include="HTS_IPC_Protocol_A55.h" />
+    <ClInclude Include="HTS_IPC_Protocol_Defs.h" />
+    <ClInclude Include="HTS_KT_DSN_Adapter.h" />
+    <ClInclude Include="HTS_KT_DSN_Adapter_Defs.h" />
+    <ClInclude Include="HTS_Modbus_Gateway.h" />
+    <ClInclude Include="HTS_Modbus_Gateway_Defs.h" />
+    <ClInclude Include="HTS_Network_Bridge.h" />
+    <ClInclude Include="HTS_Network_Bridge_Defs.h" />
+    <ClInclude Include="HTS_OTA_Manager.h" />
+    <ClInclude Include="HTS_OTA_Manager_Defs.h" />
+    <ClInclude Include="HTS_Power_Manager.h" />
+    <ClInclude Include="HTS_Power_Manager_Defs.h" />
+    <ClInclude Include="HTS_RF_Metrics.h" />
+    <ClInclude Include="HTS_Role_Auth.h" />
+    <ClInclude Include="HTS_Secure_Memory.h" />
+    <ClInclude Include="HTS_BitOps.h" />
+    <ClInclude Include="..\..\CORE\HTS_Anchor_Vault.hpp" />
+    <ClInclude Include="..\..\CORE\HTS_AntiAnalysis_Shield.h" />
+    <ClInclude Include="..\..\CORE\HTS_Antipodal_Core.h" />
+    <ClInclude Include="..\..\CORE\HTS_Data_Loader.h" />
+    <ClInclude Include="..\..\CORE\HTS_Dynamic_Config.h" />
+    <ClInclude Include="..\..\CORE\HTS_Entropy_Arrow.hpp" />
+    <ClInclude Include="..\..\CORE\HTS_Gyro_Engine.h" />
+    <ClInclude Include="..\..\CORE\HTS_Hardware_Bridge.hpp" />
+    <ClInclude Include="..\..\CORE\HTS_Hardware_Shield.h" />
+    <ClInclude Include="..\..\CORE\HTS_Orbital_Mapper.hpp" />
+    <ClInclude Include="..\..\CORE\HTS_Physical_Entropy_Engine.h" />
+    <ClInclude Include="..\..\CORE\HTS_Polymorphic_Shield.h" />
+    <ClInclude Include="..\..\CORE\HTS_Quantum_Decoy_VDF.h" />
+    <ClInclude Include="..\..\CORE\HTS_Quantum_Key_Bridge.h" />
+    <ClInclude Include="..\..\CORE\HTS_Server_Stress_Test.h" />
+    <ClInclude Include="..\..\CORE\HTS_Sparse_Recovery.h" />
+    <ClInclude Include="..\..\CORE\HTS_Storage_Adapter.hpp" />
+    <ClInclude Include="..\..\CORE\HTS_Storage_Interface.h" />
+    <ClInclude Include="..\..\CORE\HTS_Universal_API.h" />
+    <ClInclude Include="..\..\CORE\BB1_Core_Engine.hpp" />
+    <ClInclude Include="..\..\CORE\HTS_Creator_Telemetry.h" />
+    <ClInclude Include="..\..\CORE\HTS_Security_Pipeline.h" />
+    <ClInclude Include="..\..\CORE\HTS_Universal_Adapter.h" />
+    <ClInclude Include="common.h" />
+    <ClInclude Include="config.h" />
+    <ClInclude Include="hmac.h" />
+    <ClInclude Include="HTS64_Tx_Stealth.hpp" />
+    <ClInclude Include="HTS_3D_Tensor_FEC.h" />
+    <ClInclude Include="HTS_AEAD_Integrity.hpp" />
+    <ClInclude Include="HTS_API.h" />
+    <ClInclude Include="HTS_ARIA_Bridge.h" />
+    <ClInclude Include="HTS_Auto_Rollback_Manager.hpp" />
+    <ClInclude Include="HTS_Config.h" />
+    <ClInclude Include="HTS_Dynamic_Key_Rotator.hpp" />
+    <ClInclude Include="HTS_FEC_HARQ.hpp" />
+    <ClInclude Include="HTS_HMAC_Bridge.h" />
+    <ClInclude Include="HTS_LEA_Bridge.h" />
+    <ClInclude Include="HTS_LSH256_Bridge.h" />
+    <ClInclude Include="HTS_MAC_RateController.h" />
+    <ClInclude Include="HTS_PHY_Config.h" />
+    <ClInclude Include="HTS_Pointer_Auth.hpp" />
+    <ClInclude Include="HTS_Remote_Attestation.hpp" />
+    <ClInclude Include="HTS_Rx_Matched_Filter.h" />
+    <ClInclude Include="HTS_Rx_Sync_Detector.h" />
+    <ClInclude Include="HTS_Secure_Memory_Manager.hpp" />
+    <ClInclude Include="AnchorDecoder.h" />
+    <ClInclude Include="AnchorEncoder.h" />
+    <ClInclude Include="AnchorManager.h" />
+    <ClInclude Include="HTS_Crc32Util.h" />
+    <ClInclude Include="HTS_Anti_Debug.h" />
+    <ClInclude Include="HTS_Anti_Glitch.h" />
+    <ClInclude Include="HTS_ConstantTimeUtil.h" />
+    <ClInclude Include="HTS_Dual_Tensor_16bit.h" />
+    <ClInclude Include="HTS_Entropy_Monitor.h" />
+    <ClInclude Include="HTS_Gaussian_Pulse.h" />
+    <ClInclude Include="HTS_Hardware_Auto_Scaler.h" />
+    <ClInclude Include="HTS_Hardware_Init.h" />
+    <ClInclude Include="HTS_Key_Rotator.h" />
+    <ClInclude Include="HTS_POST_Manager.h" />
+    <ClInclude Include="HTS_PUF_Adapter.h" />
+    <ClInclude Include="HTS_Secure_Logger.h" />
+    <ClInclude Include="HTS_Security_Session.h" />
+    <ClInclude Include="HTS_Session_Gateway.hpp" />
+    <ClInclude Include="HTS_SHA256_Bridge.h" />
+    <ClInclude Include="HTS_TRNG_Collector.h" />
+    <ClInclude Include="HTS_Tx_Scheduler.h" />
+    <ClInclude Include="HTS_Types.h" />
+    <ClInclude Include="HTS_Unified_Scheduler.h" />
+    <ClInclude Include="HTS_V400_Dispatcher.hpp" />
+    <ClInclude Include="HTS_Voice_Codec_Bridge.h" />
+    <ClInclude Include="HTS_Voice_Codec_Bridge_Defs.h" />
+    <ClInclude Include="KISA_HMAC.h" />
+    <ClInclude Include="KISA_SHA256.h" />
+    <ClInclude Include="lea.h" />
+    <ClInclude Include="lea_cbc.h" />
+    <ClInclude Include="lea_ccm.h" />
+    <ClInclude Include="lea_cfb.h" />
+    <ClInclude Include="lea_cmac.h" />
+    <ClInclude Include="lea_ctr.h" />
+    <ClInclude Include="lea_ecb.h" />
+    <ClInclude Include="lea_gcm.h" />
+    <ClInclude Include="lea_key.h" />
+    <ClInclude Include="lea_locl.h" />
+    <ClInclude Include="lea_ofb.h" />
+    <ClInclude Include="lsh.h" />
+    <ClInclude Include="lsh256.h" />
+    <ClInclude Include="lsh512.h" />
+    <ClInclude Include="lsh_def.h" />
+    <ClInclude Include="lsh_local.h" />
+    <ClInclude Include="TensorCodec.hpp" />
+    <ClInclude Include="util.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="Hts crypto module spec · MD" />
+    <Text Include="Hts session15 handoff · MD" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

@@ -1,0 +1,93 @@
+// =========================================================================
+// HTS_Key_Rotator.h
+// Forward Secrecy 기반 동적 시드 로테이터 — 공개 인터페이스
+// Target: STM32F407 (Cortex-M4, 168MHz)
+//
+// ─────────────────────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────────────────────
+//
+//  [목적]
+//  블록 인덱스(카운터) 기반 단방향 시드 파생.
+//  파생 시드에서 이전 시드로의 역산이 수학적으로 불가 (Forward Secrecy).
+//
+//  [사용법]
+//   1. 생성: DynamicKeyRotator(masterSeed)
+//      → 마스터 시드 복사 + 보안 저장 (소멸 시 자동 소거)
+//      → 초기화 실패(OOM) 시 impl_valid_=false → deriveNextSeed가 빈 벡터 반환
+//
+//   2. deriveNextSeed(blockIndex): 블록별 파생 시드 생성
+//      → 내부 상태를 Murmur3 기반으로 비가역적 변이 (Forward Secrecy)
+//
+//  [메모리 요구량]
+//   sizeof(DynamicKeyRotator) ≈ IMPL_BUF_SIZE(256B) + impl_valid_(1B) + padding
+//   Impl(SRAM In-Place): currentSeed vector 객체(24B) + 마스터시드 힙
+//
+//  [보안 설계]
+//   마스터 시드: Impl 소멸자에서 volatile 보안 소거 + fence
+//   impl_buf_: 소멸자에서 SecWipe — Impl 전체 이중 소거
+//   파생 중간값(running_hash, Murmur3 로컬): 함수 반환 전 보안 소거
+//   복사/이동: = delete (키 소재 복제 경로 원천 차단)
+//
+//  [양산 수정 이력]
+//   BUG-01~14 (Forward Secrecy 위반→Murmur3, CRC→전체 혼합, namespace,
+//              소멸자 소거, 복사 문서화, noexcept, Pimpl, RotL32 MISRA,
+//              RotL32 UB가드, fallthrough, Self-Contained,
+//              running_hash 소거, num_passes 올림, Murmur3 로컬 소거)
+//   BUG-15 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
+//          · impl_buf_[256] alignas(8) — vector 정렬 수용
+//          · Impl 셸은 vector 객체(24B)만 — 시드 데이터는 힙에 유지
+//          · 소멸자 = default → 명시적 p->~Impl() + SecWipe_KR
+//
+// ─────────────────────────────────────────────────────────────────────────
+#pragma once
+
+#include <cstdint>
+#include <cstddef>
+#include <vector>
+
+namespace ProtectedEngine {
+
+    class DynamicKeyRotator {
+    public:
+        /// @brief Forward Secrecy 시드 로테이터 생성
+        /// @param masterSeed  초기 마스터 시드 (빈 벡터 시 내부 32바이트 기본값)
+        /// @note  초기화 실패(OOM) 시 impl_valid_=false → deriveNextSeed 빈 벡터
+        /// @note  소멸 시 마스터 시드 보안 소거 보장 (volatile + fence)
+        explicit DynamicKeyRotator(
+            const std::vector<uint8_t>& masterSeed) noexcept;
+
+        /// @brief 소멸자 — Impl 소멸자 호출 후 impl_buf_ SecWipe
+        ~DynamicKeyRotator() noexcept;
+
+        /// 키 소재 복사 경로 원천 차단
+        DynamicKeyRotator(const DynamicKeyRotator&) = delete;
+        DynamicKeyRotator& operator=(const DynamicKeyRotator&) = delete;
+        DynamicKeyRotator(DynamicKeyRotator&&) = delete;
+        DynamicKeyRotator& operator=(DynamicKeyRotator&&) = delete;
+
+        /// @brief 블록 인덱스 기반 단방향 시드 파생 (Forward Secrecy)
+        /// @param blockIndex  블록 카운터 (0, 1, 2, ...)
+        /// @return 파생된 시드 (명시적 복사본 — 내부 상태와 독립)
+        /// @note  impl_valid_=false 시 빈 벡터 반환
+        /// @post  내부 시드가 비가역적으로 변이됨
+        /// @post  파생 중간값은 반환 전 보안 소거
+        std::vector<uint8_t> deriveNextSeed(uint32_t blockIndex) noexcept;
+
+    private:
+        // ── [BUG-15] Pimpl In-Place Storage (zero-heap) ──────────────
+        // Impl = std::vector<uint8_t> currentSeed (객체 24B)
+        // 시드 데이터 자체는 vector 내부 힙에 유지 (크기 가변)
+        static constexpr size_t IMPL_BUF_SIZE = 256u;
+        static constexpr size_t IMPL_BUF_ALIGN = 8u;
+
+        struct Impl;  ///< 키 소재 완전 은닉 (ABI 안정성 보장)
+
+        alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
+        bool impl_valid_ = false;  ///< placement new 성공 여부
+
+        Impl* get_impl() noexcept;
+        const Impl* get_impl() const noexcept;
+    };
+
+} // namespace ProtectedEngine

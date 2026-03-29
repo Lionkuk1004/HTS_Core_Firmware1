@@ -1,0 +1,652 @@
+/// @file  HTS_Console_Manager.cpp
+/// @brief HTS Console Manager -- STM32 Implementation
+/// @note  ARM only. Pure ASCII. No PC/server code.
+/// @author Lim Young-jun
+/// @copyright INNOViD 2026. All rights reserved.
+
+#include "HTS_Console_Manager.h"
+#include "HTS_IPC_Protocol.h"
+#include <new>        // placement new
+#include <atomic>
+
+namespace ProtectedEngine {
+
+    // ============================================================
+    //  Default Channel Config (constexpr ROM -- ASIC synthesizable)
+    // ============================================================
+
+    static constexpr ChannelConfig k_default_channel_config = {
+        BpsLevel::AUTO,             // bps_mode
+        DeviceMode::SENSOR_GATEWAY, // device_mode
+        64u,                        // spread_chips (64-chip default)
+        1u,                         // fec_mode (HARQ)
+        1u,                         // ajc_enable
+        0u,                         // crypto_algo (ARIA)
+        0u,                         // bridge_enable
+        0u,                         // reserved
+        400000u,                    // rf_frequency_khz (400 MHz)
+        static_cast<uint16_t>(20u << 8u),  // rf_tx_power_q8 (20.0 dBm in Q8)
+        2000u,                      // ajc_threshold
+        3600u,                      // key_rotation_sec (1 hour)
+        300u                        // session_timeout_sec (5 min)
+    };
+
+    // ============================================================
+    //  Firmware Version (constexpr)
+    // ============================================================
+
+    static constexpr uint32_t FIRMWARE_VERSION =
+        (1u << 16u) | (0u << 8u) | 0u;  // v1.0.0
+
+    // ============================================================
+    //  Impl Structure
+    // ============================================================
+
+    struct HTS_Console_Manager::Impl {
+        // --- Dependencies ---
+        HTS_IPC_Protocol* ipc;
+
+        // --- State ---
+        ConsoleState state;
+        uint32_t     init_tick;
+        uint32_t     last_tick;
+
+        // --- Channel Configuration ---
+        ChannelConfig channel_config;
+
+        // --- Diag Callbacks ---
+        DiagCallbacks diag_cb;
+
+        // --- Device Identity ---
+        uint32_t device_id;
+
+        // --- Response Buffer (static, avoids stack pressure) ---
+        uint8_t rsp_buf[IPC_MAX_PAYLOAD];
+
+        // ============================================================
+        //  Command Dispatch
+        // ============================================================
+        void Process_IPC_Commands() noexcept
+        {
+            if (ipc == nullptr) { return; }
+
+            IPC_Command cmd = IPC_Command::PING;
+            uint8_t     payload[IPC_MAX_PAYLOAD];
+            uint16_t    payload_len = 0u;
+
+            // Drain RX ring (bounded: max IPC_RING_DEPTH per tick)
+            for (uint32_t drain = 0u; drain < IPC_RING_DEPTH; ++drain) {
+                const IPC_Error err = ipc->Receive_Frame(
+                    cmd, payload, IPC_MAX_PAYLOAD, payload_len);
+                if (err != IPC_Error::OK) { break; }
+
+                switch (cmd) {
+                case IPC_Command::CONFIG_SET:
+                    Handle_Config_Set(payload, payload_len);
+                    break;
+                case IPC_Command::CONFIG_GET:
+                    Handle_Config_Get(payload, payload_len);
+                    break;
+                case IPC_Command::STATUS_REQ:
+                    Handle_Status_Req();
+                    break;
+                case IPC_Command::DIAG_REQ:
+                    Handle_Diag_Req();
+                    break;
+                case IPC_Command::RESET_CMD:
+                    Handle_Reset_Cmd();
+                    break;
+                default:
+                    // Unknown command -- ignore (ACK already sent by IPC layer)
+                    break;
+                }
+            }
+        }
+
+        // ============================================================
+        //  CONFIG_SET Handler
+        // ============================================================
+        void Handle_Config_Set(const uint8_t* payload, uint16_t len) noexcept
+        {
+            if (payload == nullptr || len == 0u) { return; }
+
+            uint32_t offset = 0u;
+            while (offset < static_cast<uint32_t>(len)) {
+                ParamId  pid = ParamId::BPS_MODE;
+                uint8_t  val_buf[TLV_MAX_VALUE] = { 0u, 0u, 0u, 0u };
+                uint8_t  val_len = 0u;
+
+                const uint32_t consumed = TLV_Parse(
+                    &payload[offset], static_cast<uint32_t>(len) - offset,
+                    pid, val_buf, val_len);
+                if (consumed == 0u) { break; }
+                offset += consumed;
+
+                Apply_Param(pid, val_buf, val_len);
+            }
+
+            // Send CONFIG_RSP with current config snapshot
+            Send_Config_Response();
+        }
+
+        // ============================================================
+        //  CONFIG_GET Handler
+        // ============================================================
+        void Handle_Config_Get(const uint8_t* payload, uint16_t len) noexcept
+        {
+            if (payload == nullptr || len == 0u) {
+                // No specific param requested -- send full config
+                Send_Config_Response();
+                return;
+            }
+
+            // Build response with requested params
+            uint32_t rsp_len = 0u;
+            uint32_t offset = 0u;
+
+            while (offset < static_cast<uint32_t>(len)) {
+                ParamId  pid = ParamId::BPS_MODE;
+                uint8_t  dummy_val[TLV_MAX_VALUE] = { 0u, 0u, 0u, 0u };
+                uint8_t  dummy_len = 0u;
+
+                const uint32_t consumed = TLV_Parse(
+                    &payload[offset], static_cast<uint32_t>(len) - offset,
+                    pid, dummy_val, dummy_len);
+                if (consumed == 0u) { break; }
+                offset += consumed;
+
+                // Read current value for requested param
+                rsp_len += Serialize_Param(pid, &rsp_buf[rsp_len],
+                    IPC_MAX_PAYLOAD - rsp_len);
+            }
+
+            if ((rsp_len > 0u) && (ipc != nullptr)) {
+                ipc->Send_Frame(IPC_Command::CONFIG_RSP,
+                    rsp_buf, static_cast<uint16_t>(rsp_len));
+            }
+        }
+
+        // ============================================================
+        //  STATUS_REQ Handler
+        // ============================================================
+        void Handle_Status_Req() noexcept
+        {
+            if (ipc == nullptr) { return; }
+
+            DiagReport report;
+            Build_Report(report);
+
+            // Serialize DiagReport to wire (endian-independent)
+            uint32_t pos = 0u;
+            Serialize_U32(&rsp_buf[pos], report.uptime_sec);          pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.firmware_version);    pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.device_id);           pos += 4u;
+            Serialize_U16(&rsp_buf[pos], report.current_bps);         pos += 2u;
+            Serialize_U16(&rsp_buf[pos], report.snr_proxy_q8);        pos += 2u;
+            Serialize_U16(&rsp_buf[pos], report.jamming_level);       pos += 2u;
+            Serialize_U16(&rsp_buf[pos], report.temperature_q8);      pos += 2u;
+            Serialize_U32(&rsp_buf[pos], report.crc_error_count);     pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.harq_retx_count);     pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.sram_usage_bytes);    pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.flash_crc);           pos += 4u;
+            rsp_buf[pos] = report.link_state;       pos += 1u;
+            rsp_buf[pos] = report.device_mode;      pos += 1u;
+            rsp_buf[pos] = report.bps_mode;         pos += 1u;
+            rsp_buf[pos] = report.secure_boot_state; pos += 1u;
+
+            ipc->Send_Frame(IPC_Command::STATUS_RSP,
+                rsp_buf, static_cast<uint16_t>(pos));
+        }
+
+        // ============================================================
+        //  DIAG_REQ Handler (same as STATUS but uses DIAG_RSP command)
+        // ============================================================
+        void Handle_Diag_Req() noexcept
+        {
+            if (ipc == nullptr) { return; }
+
+            DiagReport report;
+            Build_Report(report);
+
+            // Same serialization as status
+            uint32_t pos = 0u;
+            Serialize_U32(&rsp_buf[pos], report.uptime_sec);          pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.firmware_version);    pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.device_id);           pos += 4u;
+            Serialize_U16(&rsp_buf[pos], report.current_bps);         pos += 2u;
+            Serialize_U16(&rsp_buf[pos], report.snr_proxy_q8);        pos += 2u;
+            Serialize_U16(&rsp_buf[pos], report.jamming_level);       pos += 2u;
+            Serialize_U16(&rsp_buf[pos], report.temperature_q8);      pos += 2u;
+            Serialize_U32(&rsp_buf[pos], report.crc_error_count);     pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.harq_retx_count);     pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.sram_usage_bytes);    pos += 4u;
+            Serialize_U32(&rsp_buf[pos], report.flash_crc);           pos += 4u;
+            rsp_buf[pos] = report.link_state;       pos += 1u;
+            rsp_buf[pos] = report.device_mode;      pos += 1u;
+            rsp_buf[pos] = report.bps_mode;         pos += 1u;
+            rsp_buf[pos] = report.secure_boot_state; pos += 1u;
+
+            ipc->Send_Frame(IPC_Command::DIAG_RSP,
+                rsp_buf, static_cast<uint16_t>(pos));
+        }
+
+        // ============================================================
+        //  RESET_CMD Handler
+        // ============================================================
+        void Handle_Reset_Cmd() noexcept
+        {
+            // Restore default config
+            channel_config = k_default_channel_config;
+            state = ConsoleState::ONLINE;
+        }
+
+        // ============================================================
+        //  Apply Single Parameter
+        // ============================================================
+        void Apply_Param(ParamId pid, const uint8_t* val, uint8_t len) noexcept
+        {
+            switch (pid) {
+            case ParamId::BPS_MODE:
+                if (len >= 1u && val[0] < static_cast<uint8_t>(BpsLevel::LEVEL_COUNT)) {
+                    channel_config.bps_mode = static_cast<BpsLevel>(val[0]);
+                }
+                break;
+            case ParamId::DEVICE_MODE:
+                if (len >= 1u && val[0] < static_cast<uint8_t>(DeviceMode::MODE_COUNT)) {
+                    channel_config.device_mode = static_cast<DeviceMode>(val[0]);
+                }
+                break;
+            case ParamId::SPREAD_CHIPS:
+                if (len >= 1u) {
+                    // Validate: 1, 16, or 64 only
+                    const uint8_t c = val[0];
+                    if (c == 1u || c == 16u || c == 64u) {
+                        channel_config.spread_chips = c;
+                    }
+                }
+                break;
+            case ParamId::FEC_MODE:
+                if (len >= 1u && val[0] <= 2u) {
+                    channel_config.fec_mode = val[0];
+                }
+                break;
+            case ParamId::AJC_ENABLE:
+                if (len >= 1u) {
+                    channel_config.ajc_enable = (val[0] != 0u) ? 1u : 0u;
+                }
+                break;
+            case ParamId::CRYPTO_ALGO:
+                if (len >= 1u && val[0] <= 1u) {
+                    channel_config.crypto_algo = val[0];
+                }
+                break;
+            case ParamId::RF_FREQUENCY:
+                if (len >= 4u) {
+                    channel_config.rf_frequency_khz = Deserialize_U32(val);
+                }
+                break;
+            case ParamId::RF_TX_POWER:
+                if (len >= 2u) {
+                    channel_config.rf_tx_power_q8 = Deserialize_U16(val);
+                }
+                break;
+            case ParamId::AJC_THRESHOLD:
+                if (len >= 2u) {
+                    channel_config.ajc_threshold = Deserialize_U16(val);
+                }
+                break;
+            case ParamId::KEY_ROTATION_SEC:
+                if (len >= 4u) {
+                    channel_config.key_rotation_sec = Deserialize_U32(val);
+                }
+                break;
+            case ParamId::SESSION_TIMEOUT_SEC:
+                if (len >= 4u) {
+                    channel_config.session_timeout_sec = Deserialize_U32(val);
+                }
+                break;
+            case ParamId::BRIDGE_ENABLE:
+                if (len >= 1u) {
+                    channel_config.bridge_enable = (val[0] != 0u) ? 1u : 0u;
+                }
+                break;
+            default:
+                // Read-only or unknown param -- silently ignore
+                break;
+            }
+        }
+
+        // ============================================================
+        //  Serialize Single Parameter for Response
+        // ============================================================
+        uint32_t Serialize_Param(ParamId pid, uint8_t* buf, uint32_t remain) noexcept
+        {
+            if (buf == nullptr || remain < TLV_MAX_SIZE) { return 0u; }
+
+            uint8_t val[TLV_MAX_VALUE] = { 0u, 0u, 0u, 0u };
+            uint8_t val_len = 0u;
+
+            switch (pid) {
+            case ParamId::BPS_MODE:
+                val[0] = static_cast<uint8_t>(channel_config.bps_mode);
+                val_len = 1u;
+                break;
+            case ParamId::BPS_CURRENT:
+                if (diag_cb.get_current_bps != nullptr) {
+                    Serialize_U16_Arr(val, diag_cb.get_current_bps());
+                }
+                val_len = 2u;
+                break;
+            case ParamId::DEVICE_MODE:
+                val[0] = static_cast<uint8_t>(channel_config.device_mode);
+                val_len = 1u;
+                break;
+            case ParamId::SPREAD_CHIPS:
+                val[0] = channel_config.spread_chips;
+                val_len = 1u;
+                break;
+            case ParamId::FEC_MODE:
+                val[0] = channel_config.fec_mode;
+                val_len = 1u;
+                break;
+            case ParamId::AJC_ENABLE:
+                val[0] = channel_config.ajc_enable;
+                val_len = 1u;
+                break;
+            case ParamId::CRYPTO_ALGO:
+                val[0] = channel_config.crypto_algo;
+                val_len = 1u;
+                break;
+            case ParamId::RF_FREQUENCY:
+                Serialize_U32_Arr(val, channel_config.rf_frequency_khz);
+                val_len = 4u;
+                break;
+            case ParamId::RF_TX_POWER:
+                Serialize_U16_Arr(val, channel_config.rf_tx_power_q8);
+                val_len = 2u;
+                break;
+            case ParamId::BRIDGE_ENABLE:
+                val[0] = channel_config.bridge_enable;
+                val_len = 1u;
+                break;
+            default:
+                return 0u;  // Unknown or diagnostic param
+            }
+
+            return TLV_Serialize(buf, pid, val, val_len);
+        }
+
+        // ============================================================
+        //  Send Full Config Response
+        // ============================================================
+        void Send_Config_Response() noexcept
+        {
+            if (ipc == nullptr) { return; }
+
+            uint32_t pos = 0u;
+            // Serialize key config params as TLV chain
+            static constexpr ParamId k_config_params[] = {
+                ParamId::BPS_MODE,
+                ParamId::DEVICE_MODE,
+                ParamId::SPREAD_CHIPS,
+                ParamId::FEC_MODE,
+                ParamId::AJC_ENABLE,
+                ParamId::CRYPTO_ALGO,
+                ParamId::RF_FREQUENCY,
+                ParamId::RF_TX_POWER,
+                ParamId::BRIDGE_ENABLE
+            };
+            static constexpr uint32_t k_param_count =
+                sizeof(k_config_params) / sizeof(k_config_params[0]);
+
+            for (uint32_t i = 0u; i < k_param_count; ++i) {
+                const uint32_t written = Serialize_Param(
+                    k_config_params[i], &rsp_buf[pos], IPC_MAX_PAYLOAD - pos);
+                pos += written;
+                if (pos >= IPC_MAX_PAYLOAD - TLV_MAX_SIZE) { break; }
+            }
+
+            if (pos > 0u) {
+                ipc->Send_Frame(IPC_Command::CONFIG_RSP,
+                    rsp_buf, static_cast<uint16_t>(pos));
+            }
+        }
+
+        // ============================================================
+        //  Build Diagnostic Report
+        // ============================================================
+        void Build_Report(DiagReport& r) const noexcept
+        {
+            const uint32_t elapsed = last_tick - init_tick;
+            // ms -> sec: use Q16 reciprocal multiply instead of division
+            // 1/1000 ~ 1049/2^20 = 1049 * elapsed >> 20
+            // Accuracy: 0.02% error for values up to 4,294,967 sec (~49.7 days)
+            static constexpr uint32_t RECIP_1000_Q20 = 1049u;
+            r.uptime_sec = static_cast<uint32_t>(
+                (static_cast<uint64_t>(elapsed) * RECIP_1000_Q20) >> 20u);
+
+            r.firmware_version = FIRMWARE_VERSION;
+            r.device_id = device_id;
+
+            r.current_bps = (diag_cb.get_current_bps != nullptr)
+                ? diag_cb.get_current_bps() : 0u;
+            r.snr_proxy_q8 = (diag_cb.get_snr_proxy_q8 != nullptr)
+                ? diag_cb.get_snr_proxy_q8() : 0u;
+            r.jamming_level = (diag_cb.get_jamming_level != nullptr)
+                ? diag_cb.get_jamming_level() : 0u;
+            r.temperature_q8 = (diag_cb.get_temperature_q8 != nullptr)
+                ? diag_cb.get_temperature_q8() : 0u;
+            r.crc_error_count = (diag_cb.get_crc_error_count != nullptr)
+                ? diag_cb.get_crc_error_count() : 0u;
+            r.harq_retx_count = (diag_cb.get_harq_retx_count != nullptr)
+                ? diag_cb.get_harq_retx_count() : 0u;
+            r.sram_usage_bytes = (diag_cb.get_sram_usage != nullptr)
+                ? diag_cb.get_sram_usage() : 0u;
+            r.flash_crc = (diag_cb.get_flash_crc != nullptr)
+                ? diag_cb.get_flash_crc() : 0u;
+
+            r.link_state = (ipc != nullptr && ipc->Is_Link_Alive()) ? 1u : 0u;
+            r.device_mode = static_cast<uint8_t>(channel_config.device_mode);
+            r.bps_mode = static_cast<uint8_t>(channel_config.bps_mode);
+            r.secure_boot_state = 1u;  // TODO: read from POST_Manager
+        }
+
+        // ============================================================
+        //  Endian Helpers (local, avoids Defs.h dependency chain)
+        // ============================================================
+        static void Serialize_U16(uint8_t* b, uint16_t v) noexcept
+        {
+            b[0] = static_cast<uint8_t>(v >> 8u);
+            b[1] = static_cast<uint8_t>(v & 0xFFu);
+        }
+        static void Serialize_U32(uint8_t* b, uint32_t v) noexcept
+        {
+            b[0] = static_cast<uint8_t>(v >> 24u);
+            b[1] = static_cast<uint8_t>((v >> 16u) & 0xFFu);
+            b[2] = static_cast<uint8_t>((v >> 8u) & 0xFFu);
+            b[3] = static_cast<uint8_t>(v & 0xFFu);
+        }
+        static uint16_t Deserialize_U16(const uint8_t* b) noexcept
+        {
+            return static_cast<uint16_t>(
+                (static_cast<uint16_t>(b[0]) << 8u) | static_cast<uint16_t>(b[1]));
+        }
+        static uint32_t Deserialize_U32(const uint8_t* b) noexcept
+        {
+            return (static_cast<uint32_t>(b[0]) << 24u) |
+                (static_cast<uint32_t>(b[1]) << 16u) |
+                (static_cast<uint32_t>(b[2]) << 8u) |
+                static_cast<uint32_t>(b[3]);
+        }
+        // Array variants (for TLV value serialization)
+        static void Serialize_U16_Arr(uint8_t* b, uint16_t v) noexcept { Serialize_U16(b, v); }
+        static void Serialize_U32_Arr(uint8_t* b, uint32_t v) noexcept { Serialize_U32(b, v); }
+    };
+
+    // Build-time size verification
+    // sizeof(Impl) checked inside constructor (member access context)
+
+    // ============================================================
+    //  Public API
+    // ============================================================
+
+    HTS_Console_Manager::HTS_Console_Manager() noexcept
+        : initialized_{ false }
+    {
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
+            "HTS_Console_Manager::Impl exceeds IMPL_BUF_SIZE");
+
+        for (uint32_t i = 0u; i < IMPL_BUF_SIZE; ++i) {
+            impl_buf_[i] = 0u;
+        }
+    }
+
+    HTS_Console_Manager::~HTS_Console_Manager() noexcept
+    {
+        Shutdown();
+    }
+
+    IPC_Error HTS_Console_Manager::Initialize(HTS_IPC_Protocol* ipc) noexcept
+    {
+        bool expected = false;
+        if (!initialized_.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel))
+        {
+            return IPC_Error::OK;
+        }
+
+        if (ipc == nullptr) {
+            initialized_.store(false, std::memory_order_release);
+            return IPC_Error::NOT_INITIALIZED;
+        }
+
+        Impl* impl = new (impl_buf_) Impl{};
+
+        impl->ipc = ipc;
+        impl->state = ConsoleState::OFFLINE;
+        impl->init_tick = 0u;
+        impl->last_tick = 0u;
+        impl->channel_config = k_default_channel_config;
+        impl->device_id = 0x48545300u;  // "HTS\0" as uint32_t
+
+        // Zero callbacks
+        impl->diag_cb.get_current_bps = nullptr;
+        impl->diag_cb.get_snr_proxy_q8 = nullptr;
+        impl->diag_cb.get_jamming_level = nullptr;
+        impl->diag_cb.get_temperature_q8 = nullptr;
+        impl->diag_cb.get_crc_error_count = nullptr;
+        impl->diag_cb.get_harq_retx_count = nullptr;
+        impl->diag_cb.get_sram_usage = nullptr;
+        impl->diag_cb.get_flash_crc = nullptr;
+
+        impl->state = ConsoleState::ONLINE;
+
+        return IPC_Error::OK;
+    }
+
+    void HTS_Console_Manager::Shutdown() noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        impl->ipc = nullptr;
+        impl->state = ConsoleState::OFFLINE;
+
+        IPC_Secure_Wipe(impl->rsp_buf, IPC_MAX_PAYLOAD);
+        std::atomic_thread_fence(std::memory_order_release);
+
+        impl->~Impl();
+        initialized_.store(false, std::memory_order_release);
+    }
+
+    void HTS_Console_Manager::Register_Callbacks(const DiagCallbacks& cb) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        impl->diag_cb = cb;
+    }
+
+    void HTS_Console_Manager::Tick(uint32_t systick_ms) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        if (impl->init_tick == 0u) { impl->init_tick = systick_ms; }
+        impl->last_tick = systick_ms;
+
+        impl->Process_IPC_Commands();
+    }
+
+    void HTS_Console_Manager::Get_Channel_Config(ChannelConfig& out_config) const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) {
+            out_config = k_default_channel_config;
+            return;
+        }
+        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        out_config = impl->channel_config;
+    }
+
+    IPC_Error HTS_Console_Manager::Set_Channel_Config(const ChannelConfig& config) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) {
+            return IPC_Error::NOT_INITIALIZED;
+        }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+
+        // Validate critical fields
+        if (static_cast<uint8_t>(config.bps_mode) >=
+            static_cast<uint8_t>(BpsLevel::LEVEL_COUNT)) {
+            return IPC_Error::INVALID_CMD;
+        }
+        if (static_cast<uint8_t>(config.device_mode) >=
+            static_cast<uint8_t>(DeviceMode::MODE_COUNT)) {
+            return IPC_Error::INVALID_CMD;
+        }
+
+        impl->channel_config = config;
+        return IPC_Error::OK;
+    }
+
+    ConsoleState HTS_Console_Manager::Get_State() const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) {
+            return ConsoleState::OFFLINE;
+        }
+        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        return impl->state;
+    }
+
+    void HTS_Console_Manager::Build_Diag_Report(DiagReport& out_report) const noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) {
+            out_report = DiagReport{};
+            return;
+        }
+        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        impl->Build_Report(out_report);
+    }
+
+    void HTS_Console_Manager::Notify_BPS_Change(uint16_t new_bps) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        if (impl->ipc == nullptr) { return; }
+
+        uint8_t payload[2];
+        Impl::Serialize_U16(payload, new_bps);
+        impl->ipc->Send_Frame(IPC_Command::BPS_NOTIFY, payload, 2u);
+    }
+
+    void HTS_Console_Manager::Alert_Jamming(uint16_t level) noexcept
+    {
+        if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        if (impl->ipc == nullptr) { return; }
+
+        uint8_t payload[2];
+        Impl::Serialize_U16(payload, level);
+        impl->ipc->Send_Frame(IPC_Command::JAMMING_ALERT, payload, 2u);
+    }
+
+} // namespace ProtectedEngine
