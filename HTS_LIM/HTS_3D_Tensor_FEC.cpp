@@ -878,4 +878,4 @@ namespace ProtectedEngine {
         return static_cast<int16_t>(decoded_data);
     }
 
-} // namespace ProtectedEngine
+} // namespace ProtectedEngine 

@@ -22,7 +22,7 @@
 //   — ARM 빌드에서는 이 네임스페이스를 사용하지 마십시오
 //   — #if !defined(HTS_3D_ARM_EXCLUDE) 가드로 ARM 노출 차단
 //
-//  [사용법 — HTS16_DIOC_Core]
+//  [사용법 — HTS16_DIOC_Core]       
 //   1. 생성: HTS16_DIOC_Core(seed) — seed=0 시 0xDEADBEEF 대체
 //   2. 송신: Transmit_4Bit(data_4bit) → SparseChip[16] I/Q 독립 극성
 //   3. 수신: Decode_4Bit(rx_I, rx_Q) → 복호된 4비트 (실패 시 -1)
@@ -31,7 +31,7 @@
 //  [메모리 요구량]
 //   sizeof(HTS16_DIOC_Core) ≈ 264B (impl_buf_[256] + impl_valid_ + padding)
 //   Impl(SRAM In-Place): arx_state[4] = 16B — placement new, 힙 할당 0회
-//
+//       
 //  [보안 설계]
 //   arx_state: Impl 소멸자에서 보안 소거 (128비트 PRNG 키 잔존 방지)
 //   impl_buf_: 소멸자에서 SecWipe — Impl 전체 이중 소거
