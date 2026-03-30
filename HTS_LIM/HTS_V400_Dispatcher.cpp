@@ -724,8 +724,7 @@ namespace ProtectedEngine {
         }
         else if (cur_mode_ == PayloadMode::VIDEO_16 ||
             cur_mode_ == PayloadMode::VOICE) {
-            if (!harq_inited_) { FEC_HARQ::Init16(rx_.m16); harq_inited_ = true; }
-            // [BUG-51] Feed16 삭제 — on_sym_()에서 Feed16_1sym으로 이미 누적
+            // [FIX-HARQ] Init16 제거 — READ_PAYLOAD 진입 시 완료
             FEC_HARQ::Advance_Round_16(rx_.m16);
             harq_round_++;
             pkt.success = FEC_HARQ::Decode16(rx_.m16, pkt.data,
@@ -740,14 +739,7 @@ namespace ProtectedEngine {
             else { pay_recv_ = 0; sym_idx_ = 0; set_phase_(RxPhase::WAIT_SYNC); }
         }
         else if (cur_mode_ == PayloadMode::DATA) {
-            if (!harq_inited_) {
-                // [BUG-54] I/Q 분리 초기화
-                std::memset(rx_.m64_I.aI, 0, sizeof(rx_.m64_I.aI));
-                rx_.m64_I.k = 0;
-                rx_.m64_I.ok = false;
-                std::memset(harq_Q_, 0, sizeof(g_harq_Q_ccm));
-                harq_inited_ = true;
-            }
+            // [FIX-HARQ] Init64 제거 — READ_PAYLOAD 진입 시 완료
             // [BUG-51] Feed64_A 삭제 — on_sym_()에서 인라인으로 이미 누적
             // [BUG-54] HARQ 라운드 증가
             if (!rx_.m64_I.ok) rx_.m64_I.k++;
@@ -1023,6 +1015,26 @@ namespace ProtectedEngine {
                             (mode == PayloadMode::VOICE) ? FEC_HARQ::VOICE_K
                             : FEC_HARQ::DATA_K;
                         set_phase_(RxPhase::READ_PAYLOAD); buf_idx_ = 0;
+
+                        // [FIX-HARQ] HARQ 누적기 초기화 — Feed_1sym 호출 전 필수
+                        //  기존: try_decode_ 내부에서 Init → Feed 이후라 데이터 파괴
+                        //  수정: READ_PAYLOAD 진입 시 첫 라운드만 Init
+                        if (!harq_inited_) {
+                            if (mode == PayloadMode::VIDEO_16 ||
+                                mode == PayloadMode::VOICE) {
+                                FEC_HARQ::Init16(rx_.m16);
+                            }
+                            else if (mode == PayloadMode::DATA) {
+                                std::memset(rx_.m64_I.aI, 0,
+                                    sizeof(rx_.m64_I.aI));
+                                rx_.m64_I.k = 0;
+                                rx_.m64_I.ok = false;
+                                std::memset(harq_Q_, 0,
+                                    sizeof(g_harq_Q_ccm));
+                            }
+                            harq_inited_ = true;
+                        }
+
                         if (pay_cps_ != ajc_last_nc_) {
                             ajc_.Reset(pay_cps_);
                             ajc_last_nc_ = pay_cps_;

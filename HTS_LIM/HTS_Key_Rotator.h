@@ -25,7 +25,7 @@
 //
 //  [보안 설계]
 //   마스터 시드: Impl 소멸자에서 volatile 보안 소거 + fence
-//   impl_buf_: 소멸자에서 SecWipe — Impl 전체 이중 소거
+//   impl_buf_: 소멸자에서 Key_Rotator_Secure_Wipe — 3중 방어 소거
 //   파생 중간값(running_hash, Murmur3 로컬): 함수 반환 전 보안 소거
 //   복사/이동: = delete (키 소재 복제 경로 원천 차단)
 //
@@ -37,7 +37,7 @@
 //   BUG-15 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
 //          · impl_buf_[256] alignas(8) — vector 정렬 수용
 //          · Impl 셸은 vector 객체(24B)만 — 시드 데이터는 힙에 유지
-//          · 소멸자 = default → 명시적 p->~Impl() + SecWipe_KR
+//          · 소멸자 = default → 명시적 p->~Impl() + Key_Rotator_Secure_Wipe
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -57,7 +57,7 @@ namespace ProtectedEngine {
         explicit DynamicKeyRotator(
             const std::vector<uint8_t>& masterSeed) noexcept;
 
-        /// @brief 소멸자 — Impl 소멸자 호출 후 impl_buf_ SecWipe
+        /// @brief 소멸자 — p->~Impl() + Key_Rotator_Secure_Wipe(impl_buf_) 3중 방어
         ~DynamicKeyRotator() noexcept;
 
         /// 키 소재 복사 경로 원천 차단
@@ -66,12 +66,17 @@ namespace ProtectedEngine {
         DynamicKeyRotator(DynamicKeyRotator&&) = delete;
         DynamicKeyRotator& operator=(DynamicKeyRotator&&) = delete;
 
-        /// @brief 블록 인덱스 기반 단방향 시드 파생 (Forward Secrecy)
+        /// @brief [Raw API] 블록 인덱스 기반 단방향 시드 파생 (Zero-Heap)
         /// @param blockIndex  블록 카운터 (0, 1, 2, ...)
-        /// @return 파생된 시드 (명시적 복사본 — 내부 상태와 독립)
-        /// @note  impl_valid_=false 시 빈 벡터 반환
-        /// @post  내부 시드가 비가역적으로 변이됨
-        /// @post  파생 중간값은 반환 전 보안 소거
+        /// @param out_buf     출력 버퍼 (호출자 소유)
+        /// @param out_len     출력 버퍼 크기
+        /// @return 성공 시 true, 실패(nullptr/미초기화) 시 false
+        /// @post  내부 시드가 비가역적으로 변이됨 (Forward Secrecy)
+        bool deriveNextSeed(uint32_t blockIndex,
+            uint8_t* out_buf, size_t out_len) noexcept;
+
+        /// @brief [호환] 기존 vector API — Raw API 래퍼 (마이그레이션 후 삭제)
+        /// @deprecated Raw API 사용 권장
         std::vector<uint8_t> deriveNextSeed(uint32_t blockIndex) noexcept;
 
     private:

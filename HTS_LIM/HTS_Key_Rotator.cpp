@@ -24,21 +24,18 @@
 #include <new>
 
 namespace ProtectedEngine {
-
-    // =====================================================================
-    //  보안 소거 (volatile + asm clobber + seq_cst 3중 보호)
-    //  [BUG-15 통일] pragma O0 없음 — 프로젝트 표준 SecWipe 패턴 적용
-    // =====================================================================
-    static void Secure_Zero_KR(void* ptr, size_t size) noexcept {
-        if (ptr == nullptr || size == 0u) { return; }
-        volatile uint8_t* p = static_cast<volatile uint8_t*>(ptr);
-        for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
+    // [FIX-WIPE] 3중 방어 보안 소거 — impl_buf_ 전체 파쇄
+    static void Key_Rotator_Secure_Wipe(void* p, size_t n) noexcept {
+        if (p == nullptr || n == 0u) { return; }
+        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
+        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(ptr) : "memory");
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
-        // [BUG-16] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
+
+
 
     // =====================================================================
     //  Murmur3-32 해시 (시드 파생 전용)
@@ -132,6 +129,11 @@ namespace ProtectedEngine {
         uint8_t currentSeed[SEED_LEN] = {};
         size_t  seed_len = 0u;
 
+        // [FIX-RACE] Spinlock — 단일 진입 강제 (Writer 상호 배제)
+        //  std::atomic_flag: LDREX/STREX 기반 → ISR 안전
+        //  SeqLock 삭제: Writer-Writer 경합에 무효
+        std::atomic_flag spin_lock = ATOMIC_FLAG_INIT;
+
         explicit Impl(const uint8_t* master, size_t master_len) noexcept {
             // [BUG-17] memcpy 직접 복사 (힙 0회, OOM 불가)
             seed_len = (master_len < SEED_LEN) ? master_len : SEED_LEN;
@@ -143,7 +145,7 @@ namespace ProtectedEngine {
         }
 
         ~Impl() noexcept {
-            Secure_Zero_KR(currentSeed, sizeof(currentSeed));
+            Key_Rotator_Secure_Wipe(currentSeed, sizeof(currentSeed));
         }
     };
 
@@ -176,7 +178,7 @@ namespace ProtectedEngine {
         const std::vector<uint8_t>& masterSeed) noexcept
         : impl_valid_(false)
     {
-        Secure_Zero_KR(impl_buf_, sizeof(impl_buf_));
+        Key_Rotator_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
         // [BUG-17] vector → raw 포인터 + 길이 전달
         ::new (static_cast<void*>(impl_buf_)) Impl(
             masterSeed.data(), masterSeed.size());
@@ -190,7 +192,8 @@ namespace ProtectedEngine {
     DynamicKeyRotator::~DynamicKeyRotator() noexcept {
         Impl* p = get_impl();
         if (p != nullptr) { p->~Impl(); }
-        Secure_Zero_KR(impl_buf_, sizeof(impl_buf_));
+        // [FIX-WIPE] impl_buf_ 전체 3중 방어 소거 (p==nullptr에도 무조건 실행)
+        Key_Rotator_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
         impl_valid_ = false;
     }
 
@@ -201,12 +204,24 @@ namespace ProtectedEngine {
     //  반환: 호출자 버퍼에 복사 (Raw API)
     //  기존 vector 반환 API는 헤더에서 유지 (호출자 마이그레이션 후 제거)
     // =====================================================================
-    std::vector<uint8_t> DynamicKeyRotator::deriveNextSeed(
-        uint32_t blockIndex) noexcept {
+    // =====================================================================
+    //  [FIX-HEAP] Raw API — 힙 할당 0회, noexcept 보장
+    //  [FIX-RACE] Spinlock 보호 — Writer 상호 배제 (ISR 안전)
+    // =====================================================================
+    bool DynamicKeyRotator::deriveNextSeed(
+        uint32_t blockIndex,
+        uint8_t* out_buf, size_t out_len) noexcept {
 
         Impl* p = get_impl();
-        if (p == nullptr || p->seed_len == 0u) {
-            return std::vector<uint8_t>();
+        if (p == nullptr || p->seed_len == 0u ||
+            out_buf == nullptr || out_len == 0u) {
+            return false;
+        }
+
+        // [FIX-RACE] Spinlock 획득 — 단일 Writer 진입 강제
+        //  LDREX/STREX: ISR 선점 시 STREX 실패 → 재시도 (데드락 불가)
+        while (p->spin_lock.test_and_set(std::memory_order_acquire)) {
+            // Cortex-M4: 단일코어, ISR 선점만 가능 → 짧은 스핀
         }
 
         uint8_t* seed = p->currentSeed;
@@ -220,8 +235,6 @@ namespace ProtectedEngine {
 
         // 2단계: Murmur3 기반 전체 시드 비가역 혼합
         uint32_t running_hash = blockIndex ^ 0x5BD1E995u;
-
-        // [BUG-13] 올림 나눗셈 — 자투리 바이트 변이 누락 방지
         size_t num_passes = (seed_len + 3u) / 4u;
         if (num_passes == 0u) { num_passes = 1u; }
 
@@ -237,19 +250,33 @@ namespace ProtectedEngine {
             }
         }
 
-        // [BUG-12] 키 파생 중간값 보안 소거
+        // 키 파생 중간값 보안 소거
         {
             volatile uint32_t* v_rh =
                 reinterpret_cast<volatile uint32_t*>(&running_hash);
             *v_rh = 0u;
-            // [BUG-16] seq_cst → release
             std::atomic_thread_fence(std::memory_order_release);
         }
 
-        // 3단계: 반환 (명시적 복사)
-        // [BUG-16] try-catch 삭제 — vector 생성자가 noexcept 아닌 부분은
-        // -fno-exceptions에서 abort로 처리됨 (32B 할당 실패 = 시스템 치명 오류)
-        return std::vector<uint8_t>(seed, seed + seed_len);
+        // 3단계: 출력 — 임계 구역 내부에서 복사 완료 후 해제
+        //  [FIX-RACE] memcpy가 lock 내부 → Tearing Read 불가
+        const size_t copy_len = (out_len < seed_len) ? out_len : seed_len;
+        std::memcpy(out_buf, seed, copy_len);
+
+        // [FIX-RACE] Spinlock 해제 — memcpy 완료 후
+        p->spin_lock.clear(std::memory_order_release);
+
+        return true;
+    }
+
+    // [호환] 기존 vector API — Raw API 래퍼 (마이그레이션 후 삭제)
+    std::vector<uint8_t> DynamicKeyRotator::deriveNextSeed(
+        uint32_t blockIndex) noexcept {
+        uint8_t buf[Impl::SEED_LEN];
+        if (!deriveNextSeed(blockIndex, buf, sizeof(buf))) {
+            return std::vector<uint8_t>();
+        }
+        return std::vector<uint8_t>(buf, buf + Impl::SEED_LEN);
     }
 
 } // namespace ProtectedEngine

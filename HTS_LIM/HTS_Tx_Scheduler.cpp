@@ -28,6 +28,17 @@
 #include <new>
 
 namespace ProtectedEngine {
+    // [FIX-WIPE] 3중 방어 보안 소거 — impl_buf_ 전체 파쇄
+    static void Tx_Scheduler_Secure_Wipe(void* p, size_t n) noexcept {
+        if (p == nullptr || n == 0u) { return; }
+        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
+        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" : : "r"(p) : "memory");
+#endif
+        std::atomic_thread_fence(std::memory_order_release);
+    }
+
 
     // ── 보안 소거 (asm clobber + seq_cst — 임베디드 호환 2중 보호) ──
     // Strict Aliasing 규칙 준수 및 DSE 완벽 차단
@@ -182,7 +193,11 @@ namespace ProtectedEngine {
     // =====================================================================
     HTS_Tx_Scheduler::~HTS_Tx_Scheduler() noexcept {
         Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
+        if (p != nullptr) {
+            p->~Impl();
+            // [FIX-WIPE] impl_buf_ 전체 3중 방어 소거
+            Tx_Scheduler_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
         SecWipe(impl_buf_, sizeof(impl_buf_));
         impl_valid_ = false;
     }

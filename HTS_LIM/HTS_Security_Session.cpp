@@ -34,12 +34,24 @@
 #include "HTS_Secure_Memory.h"
 
 #include <cstring>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <climits>
 #include <new>     // placement new (힙 할당 아님)
 
 namespace ProtectedEngine {
+    // [FIX-WIPE] 3중 방어 보안 소거 — impl_buf_ 전체 파쇄
+    static void Security_Session_Secure_Wipe(void* p, size_t n) noexcept {
+        if (p == nullptr || n == 0u) { return; }
+        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
+        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" : : "r"(p) : "memory");
+#endif
+        std::atomic_thread_fence(std::memory_order_release);
+    }
+
 
     // =====================================================================
     //  [BUG-08] CTR 카운터 고속 덧셈 (Big-Endian)
@@ -89,6 +101,14 @@ namespace ProtectedEngine {
         LEA_KEY     cached_lea_key{};  // [C26495] 제로 초기화
         bool        crypto_ctx_ready = false;  // 키 확장 완료 플래그
 
+        // [FIX-TIMING] MAC 실패 → 지연 종료 플래그
+        //  Unprotect_Verify에서 즉시 Terminate 안 함 → 타이밍 일정
+        //  다음 API 호출 시 거부 + 종료 (백그라운드 디커플링)
+        bool deferred_terminate = false;
+
+        // [FIX-STACK] CTR 스크래치패드 (ctr_copy 로컬 제거)
+        alignas(4) uint8_t scratch_ctr[16] = {};
+
         // [BUG-17] 빌드 타임 검증
         static_assert(sizeof(session_enc_key) == 32,
             "AES/ARIA/LEA-256 key must be 32 bytes");
@@ -118,6 +138,8 @@ namespace ProtectedEngine {
             SecureMemory::secureWipe(&cached_lea_key, sizeof(cached_lea_key));
             // cached_aria: ARIA_Bridge 소멸자가 라운드 키 소거 보장 (계약)
             crypto_ctx_ready = false;
+            deferred_terminate = false;
+            SecureMemory::secureWipe(scratch_ctr, sizeof(scratch_ctr));
 
             is_session_active = false;
         }
@@ -193,8 +215,8 @@ namespace ProtectedEngine {
 #endif
                 else {
                     // [BUG-21] cached_lea_key 사용 (키 확장 0회)
-                    uint8_t ctr_copy[16];
-                    std::memcpy(ctr_copy, counter, 16);
+                    // [FIX-STACK] scratch_ctr 재활용 (로컬 ctr_copy 제거)
+                    std::memcpy(scratch_ctr, counter, 16);
 
                     size_t rem = full_blocks_bytes;
                     size_t done = 0;
@@ -203,20 +225,23 @@ namespace ProtectedEngine {
                             ? static_cast<unsigned int>(UINT_MAX & ~static_cast<unsigned int>(15u))
                             : static_cast<unsigned int>(rem);
                         lea_ctr_enc(output + offset + done,
-                            input + offset + done, chunk, ctr_copy, &cached_lea_key);
+                            input + offset + done, chunk, scratch_ctr, &cached_lea_key);
                         done += chunk;
                         rem -= chunk;
                     }
 
                     Add_To_Counter(counter, full_blocks_bytes / 16);
-                    SecureMemory::secureWipe(ctr_copy, sizeof(ctr_copy));
+                    SecureMemory::secureWipe(scratch_ctr, sizeof(scratch_ctr));
                 }
                 offset += full_blocks_bytes;
                 remaining -= full_blocks_bytes;
             }
 
             // 3. 마지막 1~15 바이트 처리 (새 키스트림 생성 후 보관)
-            // [BUG-21] 캐시된 컨텍스트 사용
+            // [FIX-OOB] remaining < 16 보장 — partial_block[16] OOB 방지
+            //   full_blocks_bytes = remaining & ~15 이므로 이론적으로 항상 <16
+            //   이중 안전: 계산 오류/패딩 공격 시에도 메모리 파괴 0%
+            if (remaining >= 16u) { return false; }
             if (remaining > 0) {
                 if (!crypto_ctx_ready) return false;
 
@@ -229,10 +254,10 @@ namespace ProtectedEngine {
                 }
 #endif
                 else {
-                    uint8_t ctr_copy[16];
-                    std::memcpy(ctr_copy, counter, 16);
+                    // [FIX-STACK] scratch_ctr 재활용
+                    std::memcpy(scratch_ctr, counter, 16);
                     uint8_t zeros[16] = { 0 };
-                    lea_ctr_enc(partial_block, zeros, 16, ctr_copy, &cached_lea_key);
+                    lea_ctr_enc(partial_block, zeros, 16, scratch_ctr, &cached_lea_key);
                 }
 
                 for (size_t i = 0; i < remaining; ++i) {
@@ -299,7 +324,8 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p) {
             p->Clean_State();       // 멤버 필드 보안 소거
-            p->~Impl();             // 명시적 소멸자 호출 (placement new 계약)
+            p->~Impl();
+            Security_Session_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);             // 명시적 소멸자 호출 (placement new 계약)
         }
         // [BUG-19] 패딩 포함 전체 버퍼 소거 — Clean_State가 못 닿는 패딩까지
         SecureMemory::secureWipe(impl_buf_, sizeof(impl_buf_));
@@ -418,22 +444,25 @@ namespace ProtectedEngine {
         if (!get_impl() || !get_impl()->is_session_active || !received_mac_tag)
             return false;
 
+        // [FIX-TIMING] deferred_terminate 확인 — 이전 실패 시 즉시 거부
+        if (get_impl()->deferred_terminate) { return false; }
+
         const bool mac_ok = HMAC_Bridge::Verify_Final(
             get_impl()->rx_mac_ctx, received_mac_tag);
 
-        // [BUG-22] MAC 실패 시 세션 즉시 종료 — Permanent Desync 방지
+        // [FIX-TIMING] 타이밍 디커플링 — MAC 결과와 무관한 일정 실행 경로
         //
-        // 문제: MAC 실패 후 세션 유지 → 다음 패킷에서 CTR 카운터 어긋남
-        //   → 송수신 카운터 영구 불일치 → 모든 후속 패킷 복호화 실패
-        //   → 공격자가 변조 패킷 1개로 전체 채널 마비 (DoS)
-        //   → 선택적 암호문 공격(CCA) 허용
+        //  기존: if (!mac_ok) { Terminate_Session(); }
+        //   → 성공/실패 간 실행 시간 차이 → 타이밍 사이드채널
         //
-        // 수정: EtM 군사 규격 — MAC 1회 실패 = 채널 오염 간주
-        //   즉시 Terminate_Session() → 키/카운터/상태 전소거
-        //   호출자는 재핸드셰이크로 새 세션 수립 필요
-        if (!mac_ok) {
-            Terminate_Session();
-        }
+        //  수정: 플래그만 설정, 실제 소거는 다음 API 호출 시 수행
+        //   → Unprotect_Verify 실행 시간 = 항상 동일
+        //   → 다음 호출(Decrypt_Chunk 등)에서 deferred_terminate 확인 → 거부+소거
+        //
+        //  branchless 플래그 설정: mac_ok=false → deferred_terminate=true
+        const uint32_t fail_mask = static_cast<uint32_t>(!mac_ok);
+        get_impl()->deferred_terminate |=
+            static_cast<bool>(fail_mask);
 
         return mac_ok;
     }
@@ -445,6 +474,12 @@ namespace ProtectedEngine {
         if (!get_impl() || !get_impl()->is_session_active ||
             !ciphertext_chunk || !plaintext_out || chunk_len == 0)
             return false;
+
+        // [FIX-TIMING] 지연 종료 실행 — Unprotect_Verify 실패 후
+        if (get_impl()->deferred_terminate) {
+            Terminate_Session();
+            return false;
+        }
 
         // [BUG-07] 잔여 키스트림 버퍼 연동
         return get_impl()->Do_CTR_Chunk(ciphertext_chunk, chunk_len,

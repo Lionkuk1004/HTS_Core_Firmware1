@@ -39,6 +39,17 @@ static_assert(sizeof(size_t) >= 2,
     "[HTS_Sync] size_t too narrow for expected buffer sizes");
 
 namespace ProtectedEngine {
+    // [FIX-WIPE] 3중 방어 보안 소거 — impl_buf_ 전체 파쇄
+    static void Rx_Sync_Detector_Secure_Wipe(void* p, size_t n) noexcept {
+        if (p == nullptr || n == 0u) { return; }
+        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
+        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" : : "r"(p) : "memory");
+#endif
+        std::atomic_thread_fence(std::memory_order_release);
+    }
+
 
     // =====================================================================
     //  보안 소거 (volatile + asm clobber + seq_cst)
@@ -115,7 +126,10 @@ namespace ProtectedEngine {
     // =====================================================================
     HTS_Rx_Sync_Detector::~HTS_Rx_Sync_Detector() noexcept {
         Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
+        if (p != nullptr) { p->~Impl();
+        // [FIX-WIPE] impl_buf_ 전체 3중 방어 소거
+        Rx_Sync_Detector_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+    }
         SecWipe_Sync(impl_buf_, sizeof(impl_buf_));
         impl_valid_ = false;
     }

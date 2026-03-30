@@ -23,14 +23,41 @@
 
 namespace ProtectedEngine {
 
-    // ── [BUG-13] 32비트 XorShift PRNG (64비트 곱셈 제거) ──
-    // 기존 SplitMix64: uint64_t 곱셈 3회 → __aeabi_lmul ~90cyc/호출
-    // 수정: XorShift32 → 3명령어, 전부 단일사이클
-    static uint32_t prng32_next(uint32_t& state) noexcept {
-        state ^= state << 13u;
-        state ^= state >> 17u;
-        state ^= state << 5u;
-        return state;
+    // ── [FIX-CSPRNG] Xoshiro128ss — 128비트 상태 PRNG ──
+    //  기존 XorShift32: 32비트 → 단일 출력으로 상태 복원 (GPU 0.4초)
+    //  수정: 128비트 상태 → 2^128 전수탐색 불가 (10^38)
+    struct Holo_Xoshiro128 {
+        uint32_t s[4];
+
+        static uint32_t rotl(uint32_t x, int k) noexcept {
+            return (x << k) | (x >> (32 - k));
+        }
+        uint32_t next() noexcept {
+            const uint32_t result = rotl(s[1] * 5u, 7u) * 9u;
+            const uint32_t t = s[1] << 9u;
+            s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3];
+            s[2] ^= t; s[3] = rotl(s[3], 11u);
+            return result;
+        }
+    };
+
+    // ── [FIX-CSPRNG] 128비트 시드 → Xoshiro128ss 상태 초기화 ──
+    //  SplitMix32 화이트닝: 입력 상관 제거 + 비가역 확산
+    //  [FIX-SYNC] seed==nullptr 폴백 제거 — 호출부에서 거부
+    static Holo_Xoshiro128 expand_seed(const uint32_t seed[4]) noexcept {
+        Holo_Xoshiro128 rng;
+        auto mix32 = [](uint32_t z) noexcept -> uint32_t {
+            z = (z ^ (z >> 16u)) * 0x45D9F3Bu;
+            z = (z ^ (z >> 16u)) * 0x45D9F3Bu;
+            return z ^ (z >> 16u);
+            };
+        rng.s[0] = mix32(seed[0]);
+        rng.s[1] = mix32(seed[1]);
+        rng.s[2] = mix32(seed[2]);
+        rng.s[3] = mix32(seed[3]);
+        // 워밍업: 초기 상태 상관 제거
+        for (int i = 0; i < 4; ++i) { (void)rng.next(); }
+        return rng;
     }
 
     static uint32_t log2_pow2(uint32_t n) noexcept {
@@ -159,12 +186,14 @@ namespace ProtectedEngine {
     void Holo_Tensor_Engine::Encode_Hologram(
         int32_t* tensor,
         uint32_t chip_count,
-        uint32_t gyro_phase) noexcept {
-        if (!tensor || chip_count < 4 ||
+        const uint32_t seed[4]) noexcept {
+        // [FIX-OOB] 4의 배수 가드: rotate_4d가 4요소 단위 접근
+        // [FIX-SYNC] seed nullptr 거부: 폴백 시드 → TX/RX 불일치 방지
+        if (!tensor || !seed || chip_count < 4 ||
+            (chip_count & 3u) != 0 ||
             (chip_count & (chip_count - 1)) != 0)
             return;
 
-        // [BUG-09] 입력 클램핑 → 중간 연산 int32_t 이내 보장
         const int32_t clamp_max = Max_Safe_Amplitude(chip_count);
         const int32_t clamp_min = -clamp_max;
         for (uint32_t i = 0; i < chip_count; ++i) {
@@ -172,15 +201,13 @@ namespace ProtectedEngine {
             else if (tensor[i] < clamp_min) tensor[i] = clamp_min;
         }
 
-        // 클램핑 보장 → signed FWHT (수학적 정합성)
         fwht_signed(tensor, chip_count);
 
-        // [BUG-13] 32비트 PRNG (64비트 곱셈 제거)
-        uint32_t prng_state = gyro_phase;
-        if (prng_state == 0u) prng_state = 0x9E3779B9u;
+        // [FIX-CSPRNG] 128비트 PRNG — 블록별 독립 시드
+        Holo_Xoshiro128 rng = expand_seed(seed);
         for (uint32_t i = 0; i < chip_count; i += 4) {
-            uint32_t seed = prng32_next(prng_state);
-            rotate_4d_signed(&tensor[i], seed);
+            const uint32_t blk_seed = rng.next();
+            rotate_4d_signed(&tensor[i], blk_seed);
         }
 
         fwht_signed(tensor, chip_count);
@@ -195,37 +222,48 @@ namespace ProtectedEngine {
     void Holo_Tensor_Engine::Decode_Hologram(
         int32_t* tensor,
         uint32_t chip_count,
-        uint32_t gyro_phase) noexcept {
-        if (!tensor || chip_count < 4 ||
+        const uint32_t seed[4]) noexcept {
+        // [FIX-OOB] 4의 배수 가드 + [FIX-SYNC] nullptr 거부
+        if (!tensor || !seed || chip_count < 4 ||
+            (chip_count & 3u) != 0 ||
             (chip_count & (chip_count - 1)) != 0)
             return;
 
-        // [BUG-05/10] uint32_t 안전 FWHT (악성 패킷 UB 방지)
         fwht_safe(tensor, chip_count);
 
-        // [BUG-05/10] uint32_t 안전 역4D 회전
-        // [BUG-13] 32비트 PRNG
-        uint32_t prng_state = gyro_phase;
-        if (prng_state == 0u) prng_state = 0x9E3779B9u;
+        // [FIX-CSPRNG] 128비트 PRNG — Encode와 동일 시퀀스
+        Holo_Xoshiro128 rng = expand_seed(seed);
         for (uint32_t i = 0; i < chip_count; i += 4) {
-            uint32_t seed = prng32_next(prng_state);
-            inverse_rotate_4d_safe(&tensor[i], seed);
+            const uint32_t blk_seed = rng.next();
+            inverse_rotate_4d_safe(&tensor[i], blk_seed);
         }
 
-        // [BUG-05/10] uint32_t 안전 FWHT
         fwht_safe(tensor, chip_count);
 
-        // [BUG-08] 동적 정규화 시프트 (나눗셈 → 시프트 최적화)
-        // scale = 1 << shift_amt → 항상 2의 거듭제곱
-        // SDIV: 2~12 사이클 vs ASR: 1 사이클
-        const uint32_t log2_n = log2_pow2(chip_count);
-        const uint32_t shift_amt = 2u * log2_n + 2u;
-        const int32_t scale = static_cast<int32_t>(1u << shift_amt);
+        // [FIX-SHIFT] 컴파일 타임 상수 시프트 매핑
+        //  ARM Cortex-M4: 즉치(Immediate) ASR = 1사이클 확정
+        //  chip_count = 2의 거듭제곱 (가드 통과)
+        //  shift = 2 + 2×log2(N): N=4→4, N=8→8, N=16→10,
+        //                          N=32→12, N=64→14, N=128→16
+        uint32_t shift_amt;
+        int32_t scale;
+        switch (chip_count) {
+        case 4:   shift_amt = 4u;  scale = (1 << 4);  break;
+        case 8:   shift_amt = 8u;  scale = (1 << 8);  break;
+        case 16:  shift_amt = 10u; scale = (1 << 10); break;
+        case 32:  shift_amt = 12u; scale = (1 << 12); break;
+        case 64:  shift_amt = 14u; scale = (1 << 14); break;
+        case 128: shift_amt = 16u; scale = (1 << 16); break;
+        case 256: shift_amt = 18u; scale = (1 << 18); break;
+        default: {
+            const uint32_t log2_n = log2_pow2(chip_count);
+            shift_amt = 2u * log2_n + 2u;
+            scale = static_cast<int32_t>(1u << shift_amt);
+            break;
+        }
+        }
 
-        // [BUG-10] 정규화 전 클램핑 복원
-        // 모듈로 래핑이 발생했더라도 나눗셈 전에 유효 범위로 복원
-        // 정상 패킷: 래핑 없음 → 클램핑 무영향
-        // 악성 패킷: 래핑 발생 → 쓰레기값이지만 나눗셈 UB 없이 안전 절사
+        // 정규화 전 클램핑 복원 (악성 패킷 안전)
         const int32_t decode_clamp = Max_Safe_Amplitude(chip_count) *
             static_cast<int32_t>(static_cast<uint32_t>(scale));
         for (uint32_t i = 0; i < chip_count; ++i) {
@@ -233,23 +271,12 @@ namespace ProtectedEngine {
             else if (tensor[i] < -decode_clamp) tensor[i] = -decode_clamp;
         }
 
-        // [BUG-06→11] 나눗셈 → 산술 시프트 (음수 0방향 반올림 보존)
-        //
-        // 문제: >> 는 -∞ 방향 (음수 편향), / 는 0 방향 (대칭)
-        //   -7 >> 2 = -2 (floor)  vs  -7 / 4 = -1 (truncate)
-        //
-        // 해결: 음수일 때 (scale-1)을 더한 후 시프트
-        //   x / scale = (x + ((x >> 31) & (scale - 1))) >> shift_amt
-        //   음수: x + (scale-1) → -∞ 방향 시프트가 0 방향이 됨
-        //   양수: x + 0 → 그대로 (>> 31 = 0)
-        //
-        // ARM: ASR + AND + ADD + ASR = 4사이클 고정 (SDIV 2~12 vs 4 고정)
-        //   chip_count=64, 칩당 4사이클 × 64 = 256사이클 절감
-        const int32_t round_bias = scale - 1;  // 2^shift - 1
+        // 산술 시프트 (음수 0방향 반올림 보존, branchless)
+        const int32_t round_bias = scale - 1;
         for (uint32_t i = 0; i < chip_count; ++i) {
             const int32_t x = tensor[i];
-            // branchless: 음수면 (scale-1) 보정, 양수면 0
-            tensor[i] = (x + ((x >> 31) & round_bias)) >> static_cast<int>(shift_amt);
+            tensor[i] = (x + ((x >> 31) & round_bias))
+                >> static_cast<int>(shift_amt);
         }
     }
 

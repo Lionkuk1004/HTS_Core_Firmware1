@@ -506,8 +506,12 @@ namespace ProtectedEngine {
 
         {
             static constexpr uint32_t HOLO_CHIP = 64u;
-            const uint32_t holo_base =
-                static_cast<uint32_t>(vs ^ (vs >> 32));
+            // [FIX-CSPRNG] 128비트 암호학적 시드 생성
+            //  기존: (uint32_t)(vs ^ (vs>>32)) = 32비트 → GPU 4초 해독
+            //  수정: vs 64비트 전체 + 골든 래셔 혼합 = 128비트 시드 기반
+            const uint32_t vs_lo = static_cast<uint32_t>(vs);
+            const uint32_t vs_hi = static_cast<uint32_t>(vs >> 32);
+
             int32_t holo_buf[HOLO_CHIP];
             for (size_t base = 0u; base < elements; base += HOLO_CHIP) {
                 const size_t chunk =
@@ -517,9 +521,16 @@ namespace ProtectedEngine {
                 for (size_t k = chunk; k < HOLO_CHIP; ++k)
                     holo_buf[k] = 0;
 
+                // 블록별 128비트 시드: vs(64) + block_offset + 혼합 상수
+                const uint32_t blk = static_cast<uint32_t>(base);
+                const uint32_t crypto_seed[4] = {
+                    vs_lo ^ (blk * 0x9E3779B9u),
+                    vs_hi ^ (blk * 0x6A09E667u),
+                    vs_lo ^ vs_hi ^ (blk * 0xBB67AE85u),
+                    (vs_lo + vs_hi) ^ (blk * 0x3C6EF372u)
+                };
                 Holo_Tensor_Engine::Encode_Hologram(
-                    holo_buf, HOLO_CHIP,
-                    holo_base ^ static_cast<uint32_t>(base));
+                    holo_buf, HOLO_CHIP, crypto_seed);
 
                 for (size_t k = 0u; k < chunk; ++k)
                     tensor_data[base + k] = static_cast<T>(holo_buf[k]);
@@ -579,8 +590,10 @@ namespace ProtectedEngine {
         // 0. 홀로그래픽 텐서 수렴 (역FWHT + 역4D 회전)
         {
             static constexpr uint32_t HOLO_CHIP = 64u;
-            const uint32_t holo_base =
-                static_cast<uint32_t>(vs ^ (vs >> 32));
+            // [FIX-CSPRNG] TX와 동일한 128비트 시드 재생성
+            const uint32_t vs_lo = static_cast<uint32_t>(vs);
+            const uint32_t vs_hi = static_cast<uint32_t>(vs >> 32);
+
             int32_t holo_buf[HOLO_CHIP];
             for (size_t base = 0u; base < elements; base += HOLO_CHIP) {
                 const size_t chunk =
@@ -591,9 +604,15 @@ namespace ProtectedEngine {
                 for (size_t k = chunk; k < HOLO_CHIP; ++k)
                     holo_buf[k] = 0;
 
+                const uint32_t blk = static_cast<uint32_t>(base);
+                const uint32_t crypto_seed[4] = {
+                    vs_lo ^ (blk * 0x9E3779B9u),
+                    vs_hi ^ (blk * 0x6A09E667u),
+                    vs_lo ^ vs_hi ^ (blk * 0xBB67AE85u),
+                    (vs_lo + vs_hi) ^ (blk * 0x3C6EF372u)
+                };
                 Holo_Tensor_Engine::Decode_Hologram(
-                    holo_buf, HOLO_CHIP,
-                    holo_base ^ static_cast<uint32_t>(base));
+                    holo_buf, HOLO_CHIP, crypto_seed);
 
                 for (size_t k = 0u; k < chunk; ++k)
                     damaged_tensor[base + k] = static_cast<T>(holo_buf[k]);

@@ -34,6 +34,17 @@ static_assert(sizeof(int16_t) == 2u, "int16_t must be 2 bytes");
 static_assert(sizeof(int32_t) == 4u, "int32_t must be 4 bytes");
 
 namespace ProtectedEngine {
+    // [FIX-WIPE] 3중 방어 보안 소거 — impl_buf_ 전체 파쇄
+    static void Native_ECCM_Core_Secure_Wipe(void* p, size_t n) noexcept {
+        if (p == nullptr || n == 0u) { return; }
+        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
+        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" : : "r"(p) : "memory");
+#endif
+        std::atomic_thread_fence(std::memory_order_release);
+    }
+
 
     // =============================================================================
     //  모듈 상수
@@ -365,7 +376,11 @@ namespace ProtectedEngine {
 
     HTS64_Native_ECCM_Core::~HTS64_Native_ECCM_Core() noexcept {
         Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
+        if (p != nullptr) {
+            p->~Impl();
+            // [FIX-WIPE] impl_buf_ 전체 3중 방어 소거
+            Native_ECCM_Core_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
         SecWipe(impl_buf_, sizeof(impl_buf_));
         impl_valid_ = false;
     }

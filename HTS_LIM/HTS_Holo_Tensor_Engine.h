@@ -32,16 +32,17 @@ namespace ProtectedEngine {
         static int32_t Max_Safe_Amplitude(uint32_t chip_count) noexcept;
 
         /// @brief 송신부: 클램핑 → FWHT → 4D회전 → FWHT
+        /// @param seed 128비트 시드 (4 × uint32_t, 블록별 독립)
         static void Encode_Hologram(
             int32_t* tensor,
             uint32_t chip_count,
-            uint32_t gyro_phase) noexcept;
+            const uint32_t seed[4]) noexcept;
 
         /// @brief 수신부: 역FWHT → 역4D회전 → 역FWHT → 정규화
         static void Decode_Hologram(
             int32_t* tensor,
             uint32_t chip_count,
-            uint32_t gyro_phase) noexcept;
+            const uint32_t seed[4]) noexcept;
 
         // 정적 전용 — 인스턴스화 차단 (6종)
         Holo_Tensor_Engine() = delete;
