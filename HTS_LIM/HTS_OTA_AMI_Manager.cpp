@@ -207,8 +207,10 @@ namespace ProtectedEngine {
         }
 
         // [보안 2] 논스 재전송 차단
+        //  session_nonce = 직전 OTA에서 사용한 논스
+        //  동일 논스 재사용 → 재전송 공격 거부
         if (p->nonce_set) {
-            if (ct_compare(nonce, p->prev_nonce, OTA_NONCE_SIZE) == 0u) {
+            if (ct_compare(nonce, p->session_nonce, OTA_NONCE_SIZE) == 0u) {
                 p->reject = AMI_OtaReject::NONCE_REPLAY;
                 return false;
             }
