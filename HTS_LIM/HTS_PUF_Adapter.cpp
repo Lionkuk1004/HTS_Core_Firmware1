@@ -141,12 +141,16 @@ namespace ProtectedEngine {
 
 #if defined(HTS_PLATFORM_ARM)
         // ARM 양산: PUF 하드웨어 레지스터 직접 읽기
+        // [J-3 FIX] 매직넘버 → constexpr (STM32F407 RNG 레지스터)
+        static constexpr uintptr_t ADDR_PUF_CTRL = 0x50060800u;  ///< RNG_CR
+        static constexpr uintptr_t ADDR_PUF_DATA = 0x50060804u;  ///< RNG_SR
+        static constexpr uintptr_t ADDR_PUF_STATUS = 0x50060808u;  ///< RNG_DR
         volatile uint32_t* PUF_CTRL =
-            reinterpret_cast<volatile uint32_t*>(0x50060800u);
+            reinterpret_cast<volatile uint32_t*>(ADDR_PUF_CTRL);
         volatile uint32_t* PUF_DATA =
-            reinterpret_cast<volatile uint32_t*>(0x50060804u);
+            reinterpret_cast<volatile uint32_t*>(ADDR_PUF_DATA);
         volatile uint32_t* PUF_STATUS =
-            reinterpret_cast<volatile uint32_t*>(0x50060808u);
+            reinterpret_cast<volatile uint32_t*>(ADDR_PUF_STATUS);
 
         if (challenge != nullptr && challenge_len >= 4u) {
             *PUF_CTRL = (static_cast<uint32_t>(challenge[0]) << 24u)

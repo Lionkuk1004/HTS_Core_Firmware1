@@ -316,16 +316,28 @@ namespace ProtectedEngine {
         }
         int nc_shift = 0;
         { int tmp = nc; while (tmp > 1) { nc_shift++; tmp >>= 1; } }
-        int32_t amp = static_cast<int32_t>(
-            (fast_abs_(corr_I) + fast_abs_(corr_Q)) >> (nc_shift + 1));
 
+        // [BUG-FIX FATAL] I/Q 위상 독립 진폭 복원
+        //  기존: amp = (|corr_I|+|corr_Q|)/2/N → I/Q 위상 뭉개기
+        //   → 위상≠45° 시 my_sig에 인공 오차 주입 → Phantom Jamming
+        //  수정: corr_I/N, corr_Q/N → I축/Q축 독립 부호 보존 진폭
+        //   → walsh(sym,i) 곱셈으로 각 칩 원본 신호 정확 복원
+        const int32_t amp_I = corr_I >> nc_shift;  // I축 진폭 (부호 보존)
+        const int32_t amp_Q = corr_Q >> nc_shift;  // Q축 진폭 (부호 보존)
+
+        // [BUG-FIX FATAL] mismatch: I+Q 양축 합산 (기존 I만 → Q 누락)
         uint32_t mismatch_sum = 0u;
         for (int i = 0; i < nc; ++i) {
-            uint32_t p = popc32_(sym_u & static_cast<uint32_t>(i)) & 1u;
-            int32_t my_sig = p ? -amp : amp;
-            int32_t pure_J_I = static_cast<int32_t>(orig_I[i]) - my_sig;
-            int32_t pred_J_I = jprof_I_[i] >> EMA_SHIFT;
-            mismatch_sum += fast_abs_(pure_J_I - pred_J_I);
+            int32_t w = (popc32_(sym_u & static_cast<uint32_t>(i)) & 1u)
+                ? -1 : 1;
+            const int32_t my_sig_I = amp_I * w;
+            const int32_t my_sig_Q = amp_Q * w;
+            const int32_t pure_J_I = static_cast<int32_t>(orig_I[i]) - my_sig_I;
+            const int32_t pure_J_Q = static_cast<int32_t>(orig_Q[i]) - my_sig_Q;
+            const int32_t pred_J_I = jprof_I_[i] >> EMA_SHIFT;
+            const int32_t pred_J_Q = jprof_Q_[i] >> EMA_SHIFT;
+            mismatch_sum += fast_abs_(pure_J_I - pred_J_I)
+                + fast_abs_(pure_J_Q - pred_J_Q);
         }
         uint32_t mismatch = mismatch_sum >> nc_shift;
 
@@ -344,10 +356,13 @@ namespace ProtectedEngine {
         }
 
         for (int i = 0; i < nc; ++i) {
-            uint32_t p = popc32_(sym_u & static_cast<uint32_t>(i)) & 1u;
-            int32_t my_sig = p ? -amp : amp;
-            int32_t pure_J_I = static_cast<int32_t>(orig_I[i]) - my_sig;
-            int32_t pure_J_Q = static_cast<int32_t>(orig_Q[i]) - my_sig;
+            int32_t w = (popc32_(sym_u & static_cast<uint32_t>(i)) & 1u)
+                ? -1 : 1;
+            // [BUG-FIX FATAL] I/Q 독립 복원 (위상 독립성 보존)
+            const int32_t my_sig_I = amp_I * w;
+            const int32_t my_sig_Q = amp_Q * w;
+            const int32_t pure_J_I = static_cast<int32_t>(orig_I[i]) - my_sig_I;
+            const int32_t pure_J_Q = static_cast<int32_t>(orig_Q[i]) - my_sig_Q;
 
             if (is_preamble) {
                 jprof_I_[i] = pure_J_I << EMA_SHIFT;

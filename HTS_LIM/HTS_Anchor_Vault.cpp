@@ -46,7 +46,8 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(ptr) : "memory");
+        // [BUG-FIX LOW] "memory" 클로버 → 경량 "r" 이스케이프 (Spill 방지)
+        __asm__ __volatile__("" : : "r"(ptr));
 #endif
         // [BUG-05] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
@@ -70,15 +71,25 @@ namespace ProtectedEngine {
         // [BUG-04] 범위 클램핑 (최대 100%)
         if (ratio_percent > 100u) ratio_percent = 100u;
 
-        size_t anchor_step = static_cast<size_t>(100u / ratio_percent);
-        if (anchor_step == 0) anchor_step = 1;
+        // [BUG-FIX CRIT] Bresenham 오차 누적기 — 정수 나눗셈 왜곡 제거
+        //  기존: anchor_step = 100/ratio → 80% 요청 시 step=1 → 100% 추출(20% 낭비)
+        //  수정: 오차 누적(Bresenham): 임의 퍼센티지에서 소수점 오차 0으로 균등 추출
+        //  원리: total개 중 target = total*ratio/100 개를 균등 선택
+        //        err += target; if (err >= total) { 선택, err -= total; }
+        const size_t total = tensor.size();
+        const size_t target = (total * static_cast<size_t>(ratio_percent)) / 100u;
+        if (target == 0u) return;
 
-        // [BUG-05] try-catch 삭제 (-fno-exceptions)
         std::vector<uint8_t> anchors;
-        anchors.reserve((tensor.size() / anchor_step) + 1u);
+        anchors.reserve(target + 1u);
 
-        for (size_t i = 0; i < tensor.size(); i += anchor_step) {
-            anchors.push_back(tensor[i]);
+        size_t err = 0u;
+        for (size_t i = 0u; i < total; ++i) {
+            err += target;
+            if (err >= total) {
+                err -= total;
+                anchors.push_back(tensor[i]);
+            }
         }
 
         // [BUG-06] 기존 앵커 보안 소거 후 덮어쓰기
@@ -109,13 +120,20 @@ namespace ProtectedEngine {
         if (it == secret_enclave.end()) return;
         const auto& anchors = it->second;
 
-        size_t anchor_step = static_cast<size_t>(100u / ratio_percent);
-        if (anchor_step == 0) anchor_step = 1;
+        // [BUG-FIX CRIT] Bresenham 복원 (Sequestrate와 동일 알고리즘)
+        //  동일 ratio_percent + 동일 tensor.size() → 동일 인덱스 선택 보장
+        const size_t total = damaged_tensor.size();
+        const size_t target = (total * static_cast<size_t>(ratio_percent)) / 100u;
+        if (target == 0u) return;
 
-        for (size_t i = 0, anchor_idx = 0;
-            i < damaged_tensor.size() && anchor_idx < anchors.size();
-            i += anchor_step) {
-            damaged_tensor[i] = anchors[anchor_idx++];
+        size_t err = 0u;
+        size_t anchor_idx = 0u;
+        for (size_t i = 0u; i < total && anchor_idx < anchors.size(); ++i) {
+            err += target;
+            if (err >= total) {
+                err -= total;
+                damaged_tensor[i] = anchors[anchor_idx++];
+            }
         }
     }
 
@@ -151,7 +169,30 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [5] 금고 전체 보안 소거 후 해제
+    //  [6] 처리 완료 앵커 보안 소거 + 맵 삭제 (OOM 방지)
+    //
+    //  [BUG-FIX FATAL] secret_enclave 무한 증식 방지
+    //   기존: Sequestrate + Import만 존재, 개별 삭제 로직 없음
+    //   → 패킷 처리 후 앵커가 영구 잔존 → RAM 무한 증식 → OOM Killer
+    //   수정: ACK 수신 후 해당 block_id 앵커를 보안 소거 + erase
+    //   호출 시점: V400_Dispatcher에서 블록 전송 완료(ACK) 후 즉시
+    // =====================================================================
+    void Anchor_Vault::Discard_Anchor(uint64_t block_id) noexcept {
+        std::lock_guard<std::mutex> lock(mtx_);
+        auto it = secret_enclave.find(block_id);
+        if (it == secret_enclave.end()) return;
+
+        // 보안 소거: 힙 반환 전 앵커 데이터 volatile 덮어쓰기
+        if (!it->second.empty()) {
+            Vault_Secure_Wipe(it->second.data(),
+                it->second.size() * sizeof(uint8_t));
+        }
+        // 맵에서 제거: Red-Black Tree 노드 해제
+        secret_enclave.erase(it);
+    }
+
+    // =====================================================================
+    //  [7] 금고 전체 보안 소거 후 해제
     //
     //  [양산 수정] 보안 소거 추가
     //  기존: secret_enclave.clear()

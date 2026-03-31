@@ -230,20 +230,27 @@ namespace ProtectedEngine {
         for (uint16_t blk = 0u; blk < num_blocks; ++blk) {
             const int chip_offset = static_cast<int>(blk) * static_cast<int>(N);
 
-            // Combine I/Q and scale to Q8 range (-128..+127)
-            // Engine accumulator is int32_t; raw ADC (Q16, up to 32767) would cause
-            // N*L*chip*chip overflow (~64*4*32767^2 >> INT32_MAX).
-            // Scale: (I+Q)/2 >> 8  =>  Q16 -> Q8
+            // [BUG-FIX FATAL] Q16 → Q8 다운스케일 제거 (약전계 신호 증발 해소)
+            //
+            //  기존 착각: N*L*chip² 오버플로 우려 → >>8 강제
+            //  실제: 홀로그래픽 역투영은 1차 선형 상관(Σ rx×walsh(±1))
+            //        최대 누적: N × max_rx = 64 × 32767 = 2,097,088
+            //        L=4 레이어: 4 × 2,097,088 = 8,388,352
+            //        INT32_MAX = 2,147,483,647 → 사용률 0.39% (오버플로 불가)
+            //
+            //  >>8 피해: 수신 진폭 ≤±255인 약전계 신호 전부 0 절사
+            //           → Soft-decision 정보 파괴 → 복조 100% 실패
+            //
+            //  수정: (I+Q)/2만 수행, >>8 제거 → Q16 전정밀도 유지
+            //        combined 범위: -32767..+32767 → int16_t 완벽 적합
             int16_t rx_soft[HOLO_CHIP_COUNT];
             for (uint16_t i = 0u; i < N; ++i) {
                 const int32_t combined = (static_cast<int32_t>(rx_I[chip_offset + i]) +
                     static_cast<int32_t>(rx_Q[chip_offset + i])) >> 1;
-                // Q16 -> Q8: >>8 (barrel shifter, 1 cycle on ARM)
-                const int32_t q8 = combined >> 8;
-                // Clamp to Q8 range (defensive)
-                if (q8 > 127) { rx_soft[i] = 127; }
-                else if (q8 < -128) { rx_soft[i] = -128; }
-                else { rx_soft[i] = static_cast<int16_t>(q8); }
+                // int16_t 범위 클램핑 (방어적)
+                if (combined > 32767) { rx_soft[i] = 32767; }
+                else if (combined < -32767) { rx_soft[i] = -32767; }
+                else { rx_soft[i] = static_cast<int16_t>(combined); }
             }
 
             // Decode

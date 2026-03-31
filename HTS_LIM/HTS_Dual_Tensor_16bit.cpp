@@ -189,11 +189,14 @@ namespace ProtectedEngine {
         // Ping-pong A: raw_bits → interleaved_bits (재사용)
         int8_t work_A[MAX_WORK_BITS] = {};
 
-        // Ping-pong B: fec_bits ↔ tx_signal (수명 비중첩 union)
-        union {
-            int8_t  fec_bits[MAX_WORK_BITS];
-            int32_t tx_signal[MAX_TX_SAMPS];
-        } work_B = {};
+        // [BUG-FIX FATAL] union 해제 → 독립 배열 (수명 겹침 데이터 오염 방지)
+        //  기존: union { fec_bits; tx_signal; } work_B
+        //   → Stage④ fec_bits 참조 중 Stage⑤ tx_signal 쓰기 → 데이터 오염
+        //   → union 크기 불일치(17576 vs 16384) → 패딩 소거 모호
+        //  수정: 독립 배열 → 파이프라인 단계 간 완벽 격리
+        //  추가 SRAM: ~16KB (192KB 중 충분한 여유)
+        int8_t  fec_bits[MAX_WORK_BITS] = {};
+        int32_t tx_signal[MAX_TX_SAMPS] = {};
 
         // Security/패킹 버퍼
         uint32_t temp_sec[MAX_SEC_WORDS] = {};
@@ -310,7 +313,8 @@ namespace ProtectedEngine {
         RAII_Secure_Wiper wipe_cache(&crypto_stream_cache, sizeof(crypto_stream_cache));
         RAII_Secure_Wiper wipe_fseed(&fec_seed, sizeof(fec_seed));
         RAII_Secure_Wiper wipe_workA(impl.work_A, sizeof(impl.work_A));
-        RAII_Secure_Wiper wipe_workB(&impl.work_B, sizeof(impl.work_B));
+        RAII_Secure_Wiper wipe_fec(impl.fec_bits, sizeof(impl.fec_bits));
+        RAII_Secure_Wiper wipe_txsig(impl.tx_signal, sizeof(impl.tx_signal));
         RAII_Secure_Wiper wipe_tsec(impl.temp_sec, sizeof(impl.temp_sec));
 
         // ── ② 16비트 → 32비트 패킹 (정적 temp_sec) ──
@@ -362,13 +366,13 @@ namespace ProtectedEngine {
             (n_raw_bits < Impl::MAX_WORK_BITS) ? n_raw_bits : Impl::MAX_WORK_BITS;
         const size_t fec_len = impl.tensor_fec_engine.Encode_Raw(
             impl.work_A, n_raw_bits,
-            impl.work_B.fec_bits, fec_out_max,
+            impl.fec_bits, fec_out_max,
             fec_seed);
         if (fec_len == 0u) { return false; }
 
         // [BUG-20] Interleave: work_B.fec → work_A(재사용, ping-pong)
         const size_t intlv_len = impl.tensor_interleaver.Interleave_Raw(
-            impl.work_B.fec_bits, fec_len,
+            impl.fec_bits, fec_len,
             impl.work_A, Impl::MAX_WORK_BITS);
 
         // intlv(int8_t) → uint32 패킹 (temp_sec 재사용)
@@ -395,10 +399,10 @@ namespace ProtectedEngine {
         const size_t ps_out_len = packed_len * 8u + impl.pulse_shaper.Get_Num_Taps() - 1;
         const size_t ps_max =
             (ps_out_len < Impl::MAX_TX_SAMPS) ? ps_out_len : Impl::MAX_TX_SAMPS;
-        std::memset(impl.work_B.tx_signal, 0, ps_max * sizeof(int32_t));
+        std::memset(impl.tx_signal, 0, ps_max * sizeof(int32_t));
         const size_t actual_ps = impl.pulse_shaper.Apply_Pulse_Shaping_Tensor_Raw(
             impl.temp_sec, packed_len,
-            impl.work_B.tx_signal, ps_max);
+            impl.tx_signal, ps_max);
 
         const size_t tx_len = actual_ps;
         if (tx_len == 0u) { return false; }
@@ -473,7 +477,7 @@ namespace ProtectedEngine {
                 break;
             }
 
-            int32_t normalized_tx = impl.work_B.tx_signal[i] >> 4;
+            int32_t normalized_tx = impl.tx_signal[i] >> 4;
             normalized_tx = Safe_Clamp(normalized_tx, -32768, 32767);
             const uint16_t tx_16bit =
                 static_cast<uint16_t>(normalized_tx & 0xFFFF);

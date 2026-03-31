@@ -27,11 +27,10 @@
 ///     · SET_RESPONSE: Data-Access-Error(3=ReadWriteDenied)
 ///     · ACTION_RESPONSE: Action-Result(3=OtherReason)
 ///     · IEC 62056-53 §7.4.2.3/7.4.2.6 준거
-///  BUG-FIX-A1 [FATAL] Process_Request Transition_State 실패 시 로직 탈출 오류
-///     · 기존: Transition_State(PROCESSING) 실패 → state=ERROR/OFFLINE 고착
-///             decrypt_buf 소거 후 return (IDLE 복귀 없음)
-///             → 이후 모든 Process_Request 재실패 → 프로토콜 데드락
-///     · 수정: Transition_State 실패 시 impl->state = IDLE 강제 복귀 추가
+///  BUG-FIX-A1 [FATAL] Process_Request CFI 위반 시 보안 잠금 유지
+///     · 1차: Transition_State 실패 → IDLE 강제복귀 (데드락 해소)
+///       → 보안 무장해제: 해커가 반복 공격으로 CFI 우회 가능
+///     · 최종: ERROR/OFFLINE 유지 (의도된 보안 잠금) + 상위 루프 Initialize() 위임
 ///  BUG-FIX-A2 [CRIT] SET/ACTION 응답 스택 변수(rsp[4]) Dangling 위험
 ///     · 기존: uint8_t rsp[4] 스택 변수 → Send_Frame에 포인터 전달
 ///             Send_Frame 구현 변경(DMA 비동기화) 시 Dangling 포인터 → 메모리 파괴
@@ -57,7 +56,8 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(ptr) : "memory");
+        // [BUG-FIX] "memory" → 경량 "r" 이스케이프 (프로젝트 표준 통일)
+        __asm__ __volatile__("" : : "r"(ptr));
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -584,21 +584,25 @@ namespace ProtectedEngine {
             effective_len = plain_len;
         }
 
-        // [BUG-FIX FATAL] Transition_State 실패 시 IDLE 복귀 + decrypt_buf 소거
+        // [BUG-FIX FATAL] CFI 위반 시 ERROR 잠금 (보안 무장해제 방지)
         //
-        //  기존 문제:
-        //    Transition_State(PROCESSING) 실패 → 내부에서 state = ERROR/OFFLINE
-        //    decrypt_buf 소거 후 return → Transition_State(IDLE) 호출 없음
-        //    → 상태 머신이 ERROR/OFFLINE에 고착, IDLE 복귀 불가
-        //    → 이후 Process_Request 모든 호출이 Transition_State 재실패
+        //  기존 문제 (1차):
+        //    Transition_State(PROCESSING) 실패 → state=ERROR/OFFLINE 고착
         //    → 프로토콜 데드락 (DLMS 마스터 통신 완전 중단)
         //
-        //  수정:
-        //    Transition_State 실패 시 decrypt_buf 소거 + IDLE 강제 복귀
-        //    (CFI 위반이 발생했으므로 안전한 IDLE 상태로 명시 복귀)
+        //  기존 수정 (잘못된):
+        //    CFI 위반 후 state = IDLE 강제 복귀
+        //    → 해커가 반복적으로 상태를 흔들며 공격 가능 (보안 무장해제)
+        //
+        //  최종 수정:
+        //    CFI 위반 → state는 Transition_State 내부에서 ERROR/OFFLINE 전이 완료
+        //    → 여기서 IDLE 강제 복귀하지 않음 (ERROR 고착 = 의도된 보안 방어)
+        //    → 상위 메인 루프가 ERROR 감지 → Initialize() 재호출로 안전 리셋
+        //    → 데드락 해소 책임은 상위 루프에 위임 (CFI 무결성 보존)
         if (!impl->Transition_State(AMI_State::PROCESSING)) {
             AMI_Secure_Wipe(impl->decrypt_buf, AMI_MAX_APDU_SIZE);
-            impl->state = AMI_State::IDLE;  // CFI 위반 후 IDLE 강제 복귀
+            // state는 이미 Transition_State 내부에서 ERROR/OFFLINE 전이됨
+            // IDLE 복귀 금지: CFI 위반 상태에서 정상 통신 재개 = 보안 허점
             return;
         }
 

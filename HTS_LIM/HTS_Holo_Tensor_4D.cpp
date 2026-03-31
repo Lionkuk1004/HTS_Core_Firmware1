@@ -47,8 +47,22 @@ namespace ProtectedEngine {
         uint32_t encode_count;
         uint32_t decode_count;
 
-        // --- Accumulator Buffer (encode: per-chip, decode: per-bit) ---
-        int32_t accum[HOLO_MAX_BLOCK_BITS];
+        // --- Accumulator Buffer (encode: per-chip N, decode: per-bit K) ---
+        // [BUG-FIX FATAL] 크기 기준: max(HOLO_MAX_BLOCK_BITS, HOLO_CHIP_COUNT)
+        //  기존: accum[HOLO_MAX_BLOCK_BITS(128)] — 비트(K) 기준만 고려
+        //  위험: Encode에서 accum[0..N-1] (N=칩수) 인덱싱 → N > 128 시 OOB
+        //  현재: MAX_BLOCK(128) > CHIP_COUNT(64) → 우연히 안전
+        //  수정: 양쪽 최대값 보증 + static_assert로 빌드타임 검증
+        static constexpr uint16_t ACCUM_SIZE =
+            (HOLO_MAX_BLOCK_BITS >= HOLO_CHIP_COUNT)
+            ? HOLO_MAX_BLOCK_BITS : HOLO_CHIP_COUNT;
+        int32_t accum[ACCUM_SIZE];
+
+        // 빌드타임 보증: accum이 Encode(N칩) + Decode(K비트) 양쪽 커버
+        static_assert(ACCUM_SIZE >= HOLO_CHIP_COUNT,
+            "accum must cover max chip count (Encode)");
+        static_assert(ACCUM_SIZE >= HOLO_MAX_BLOCK_BITS,
+            "accum must cover max block bits (Decode)");
 
         // [FIX-STACK] 스크래치패드 — 로컬 배열 전면 제거
         //  Encode/Decode 공유 (시간적 분리: 동시 호출 불가)
@@ -191,6 +205,10 @@ namespace ProtectedEngine {
             if (K > HOLO_MAX_BLOCK_BITS) { return false; }
             if (K > N) { return false; }
             if (N == 0u) { return false; }
+            // [BUG-FIX CRIT] Walsh-Hadamard 직교성 보증: N = 2^m 필수
+            //  비2의거듭제곱 N(예: 48) → 계층 간 직교성 붕괴 → 복구 불가
+            //  검사: (N & (N-1)) == 0 ↔ N이 정확히 2의거듭제곱
+            if ((N & static_cast<uint16_t>(N - 1u)) != 0u) { return false; }
 
             const uint8_t L = profile.num_layers;
             if (static_cast<uint16_t>(L) * K > N) { return false; }
@@ -266,6 +284,8 @@ namespace ProtectedEngine {
             if (K > HOLO_MAX_BLOCK_BITS) { return false; }
             if (K > N) { return false; }
             if (N == 0u) { return false; }
+            // [BUG-FIX CRIT] Walsh 직교성: N = 2^m 필수 (Encode와 동일)
+            if ((N & static_cast<uint16_t>(N - 1u)) != 0u) { return false; }
 
             const uint8_t L = profile.num_layers;
             if (static_cast<uint16_t>(L) * K > N) { return false; }

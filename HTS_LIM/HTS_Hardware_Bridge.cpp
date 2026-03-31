@@ -44,10 +44,14 @@
     // ARM Cortex-M4: DWT CYCCNT
 #define HTS_TICK_ARM_DWT
 #elif defined(__aarch64__)
-    // ARM Cortex-A55 (통합콘솔 INNOVID CORE-X Pro): CNTVCT_EL0
-    // Generic Timer — 64비트, EL0 접근 가능 (Linux 유저스페이스)
-    // 주파수: CNTFRQ_EL0 (일반적 24MHz~1GHz, SoC 의존)
-#define HTS_TICK_AARCH64_CNTVCT
+    // ARM Cortex-A55 (통합콘솔 INNOVID CORE-X Pro): POSIX vDSO 타이머
+    // [BUG-FIX FATAL] cntvct_el0 직접 접근 제거 (SIGILL 위험)
+    //  Linux 4.12+ 보안 커널: CNTKCTL_EL1.EL0VCTEN=0 → EL0에서
+    //  mrs cntvct_el0 트랩 → SIGILL(Illegal Instruction) 프로세스 즉사
+    //  수정: clock_gettime(CLOCK_MONOTONIC) — vDSO 경유 커널 안전 읽기
+    //  성능: vDSO는 syscall 아님 → 컨텍스트 스위칭 0, ~20ns (cntvct 대비 +5ns)
+#define HTS_TICK_AARCH64_VDSO
+#include <time.h>
 #else
     // 미지원 플랫폼 — 컴파일 차단
     // 타이밍 방어가 0 반환으로 무력화되는 것을 방지
@@ -82,19 +86,22 @@ namespace ProtectedEngine {
 
 #elif defined(HTS_TICK_ARM_DWT)
         // STM32F407 DWT CYCCNT (CMSIS 비의존 직접 접근)
-        // 주소: 0xE0001004 (Cortex-M3/M4/M7 공통)
+        // [J-3 FIX] 매직넘버 → constexpr (ARM CoreSight 표준)
+        static constexpr uintptr_t ADDR_DWT_CYCCNT = 0xE0001004u;
         volatile uint32_t* DWT_CYCCNT =
-            reinterpret_cast<volatile uint32_t*>(0xE0001004u);
+            reinterpret_cast<volatile uint32_t*>(ADDR_DWT_CYCCNT);
         return static_cast<uint64_t>(*DWT_CYCCNT);
 
-#elif defined(HTS_TICK_AARCH64_CNTVCT)
-        // 통합콘솔 (Cortex-A55 Linux): Generic Timer CNTVCT_EL0
-        // 64비트 물리 카운터 — EL0(유저스페이스)에서 직접 접근
-        // DWT CYCCNT(32비트, 25초 래핑)와 달리 64비트 → 실질 무한
-        // Linux 커널이 CNTKCTL_EL1.EL0VCTEN=1 설정 필수 (기본 활성)
-        uint64_t cntvct;
-        __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(cntvct));
-        return cntvct;
+#elif defined(HTS_TICK_AARCH64_VDSO)
+        // 통합콘솔 (Cortex-A55 Linux): POSIX clock_gettime vDSO
+        // [BUG-FIX FATAL] cntvct_el0 직접 접근 → SIGILL 위험 제거
+        //  clock_gettime(CLOCK_MONOTONIC)은 Linux vDSO를 통해 커널 타이머를
+        //  유저스페이스에서 안전하게 읽음 (syscall 오버헤드 0, ~20ns)
+        //  나노초 해상도: 엔트로피 수집/타이밍 방어에 충분
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
+            + static_cast<uint64_t>(ts.tv_nsec);
 #endif
         // #else는 위에서 #error로 차단됨 → 이 지점에 도달 불가
     }

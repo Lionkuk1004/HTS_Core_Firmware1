@@ -107,13 +107,13 @@ namespace ProtectedEngine {
         //   ARM: work_A(17.2KB) + work_B(17.2KB) + temp_sec(6KB)
         //        + dual_lane(16KB) + sub-modules(~3KB) ≈ 60KB
         //        INTLV_DIM=26 → dim³=17,576 ≥ MAX_RAW_BITS(16,384)
-        //   PC:  work_A(256KB) + work_B(256KB) + temp_sec(12KB)
-        //        + dual_lane(16KB) + sub-modules(~3KB) ≈ 543KB
-        //   기존 런타임 힙: 4.2MB(vector<double>) → 0B (정적)
+        //   PC:  work_A(256KB) + fec_bits(256KB) + tx_signal(16KB) + temp_sec(12KB)
+        //        + dual_lane(16KB) + sub-modules(~3KB) ≈ 559KB
+        //   [BUG-FIX] union→독립배열 분리로 +16KB 증가 (fec_bits/tx_signal 수명 격리)
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
         static constexpr size_t IMPL_BUF_SIZE = 65536u;   // 64KB
 #else
-        static constexpr size_t IMPL_BUF_SIZE = 557056u;  // 544KB
+        static constexpr size_t IMPL_BUF_SIZE = 589824u;  // 576KB (+16KB: union→독립배열)
 #endif
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
 

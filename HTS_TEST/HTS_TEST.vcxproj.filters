@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="재밍 종합 테스트.cpp">
+    <ClCompile Include="홀로그램 4D 4096 TEST.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>

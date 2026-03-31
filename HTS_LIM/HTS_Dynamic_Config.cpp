@@ -28,10 +28,15 @@ namespace ProtectedEngine {
         constexpr uint64_t  k_ARM_SRAM = 128ULL << 10u;    // 128 KB
         constexpr uint8_t   k_RATIO_MAX_PCT = 100u;
 
-        // ── [BUG-22] Q16 역수: 1/100 × 65536 ≈ 655 ─────────────
-        //  오차: 655/65536 = 0.009994… vs 1/100 = 0.01 → -0.06%
-        //  Floor_Power_Of_Two가 2^N 정렬하므로 0.06% 오차는 결과에 무영향
-        constexpr uint64_t  k_RECIP_100_Q16 = 655ULL;
+        // ── [BUG-22] Q16 역수: 1/100 × 65536 ≈ 656 (Ceiling) ────
+        //  [BUG-FIX FATAL] Floor(655) → Ceil(656) 전환
+        //   기존: 655/65536 = 0.009994… (−0.06% 절사 오차)
+        //    → 131072×25×655>>16<<3 = 262,000 → Floor_Pow2 = 131,072 (−50%!)
+        //   수정: 656/65536 = 0.010009… (+0.09% 양의 오차)
+        //    → 131072×25×656>>16<<3 = 262,400 → Floor_Pow2 = 262,144 (0%!)
+        //   원리: Floor_Pow2 앞에서는 반드시 양의 오차(ceil)를 써야
+        //         2^N 경계를 살짝 넘겨 절반 손실을 방지
+        constexpr uint64_t  k_RECIP_100_Q16 = 656ULL;
 
         constexpr uint32_t k_NF_INIT_Q16 = 100u << 16u;
         constexpr uint32_t k_CALIB_FRAMES = 72u;
@@ -71,24 +76,26 @@ namespace ProtectedEngine {
 #define HTS_DYNCFG_LIKELY
 #endif
 
-        // ── System_Panic: ARM AIRCR 즉시 리셋 ──────────────────
+        // ── System_Panic: ARM AIRCR 즉시 리셋 / PC abort 폴백 ──
+        //  [BUG-FIX CRIT] __GNUC__ → ARM 전용 가드
+        //   기존: __GNUC__로 가드 → x86 GCC에서 cpsid/dsb/wfi 컴파일 에러
+        //   수정: __arm__ 가드로 ARM asm 격리 + PC는 무한루프 폴백
         [[noreturn]] inline void System_Panic() noexcept {
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+            // ARM Cortex-M: 인터럽트 차단 + AIRCR 즉시 리셋
             __asm__ __volatile__("cpsid i" ::: "memory");
             __asm__ __volatile__("dsb" ::: "memory");
-#endif
-            * reinterpret_cast<volatile uint32_t*>(
+            *reinterpret_cast<volatile uint32_t*>(
                 static_cast<uintptr_t>(k_AIRCR_ADDR)) =
                 (k_AIRCR_VECTKEY | k_AIRCR_SYSRST);
-#if defined(__GNUC__) || defined(__clang__)
             __asm__ __volatile__("dsb" ::: "memory");
             __asm__ __volatile__("isb");
+            while (true) { __asm__ __volatile__("wfi"); }
+#else
+            // PC/A55: 무한루프 (디버거 브레이크 포인트 대기)
+            while (true) {}
 #endif
-            while (true) {
-#if defined(__GNUC__) || defined(__clang__)
-                __asm__ __volatile__("wfi");
-#endif
-            }
         }
     }
 

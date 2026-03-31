@@ -14,6 +14,8 @@
 // =========================================================================
 #include "HTS_Gyro_Engine.h"
 #include <atomic>
+#include <cstddef>      // size_t [BUG-FIX LOW Self-Contained]
+#include <cstdint>      // uint32_t [BUG-FIX LOW Self-Contained]
 #include <cstring>
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
@@ -67,10 +69,15 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Safe_Buffer_Flush — 안티포렌식 메모리 파쇄기
     //
-    //  [BUG-14] 크로스 플랫폼 DCE 방지
-    //  GCC/Clang: memset + asm clobber (최적 — 컴파일러에 메모리 변경 통보)
-    //  MSVC:      volatile 포인터 쓰기 (ISO C++ 보장 — volatile 부작용 삭제 불가)
-    //  공통:      atomic_thread_fence(seq_cst) → 캐시 플러시 보장
+    //  [BUG-FIX CRIT] 글로벌 "memory" 클로버 제거 (Register Spill Storm 방지)
+    //   기존: memset + asm("memory") → 레지스터 전량 Spill/Reload
+    //   수정: volatile uint32_t 워드 소거 + 경량 이스케이프("r")
+    //   정책: HTS_Universal_API.cpp 확립 표준과 통일
+    //
+    //  [플랫폼 분기]
+    //   GCC/Clang: volatile uint32_t 워드 소거 + asm("r") 경량 이스케이프
+    //   MSVC:      volatile unsigned char 바이트 소거 (DCE 차단 보장)
+    //   공통:      atomic_thread_fence(release) → 캐시 플러시 보장
     // =====================================================================
     template <typename T>
     void Gyro_Engine::Safe_Buffer_Flush(T* buffer, size_t elements) noexcept {
@@ -79,9 +86,22 @@ namespace ProtectedEngine {
         const size_t total_bytes = elements * sizeof(T);
 
 #if defined(__GNUC__) || defined(__clang__)
-        // GCC/Clang: memset + asm clobber (Strict Aliasing 안전)
-        std::memset(buffer, 0, total_bytes);
-        __asm__ __volatile__("" : : "r"(buffer) : "memory");
+        // [BUG-FIX FATAL] volatile uint32_t 워드 소거 → uint8_t 바이트 소거
+        //
+        //  기존 위험: T=uint8_t 시 buffer가 비정렬(0x20000001 등)일 수 있음
+        //   → reinterpret_cast<volatile uint32_t*> = C++ UB (정렬 위반)
+        //   → UNALIGN_TRP=1 설정 시 UsageFault/HardFault 즉사
+        //
+        //  수정: volatile uint8_t 바이트 단위 소거
+        //   · unsigned char*는 C++ 표준 모든 타입 앨리어싱 허용 (UB 0건)
+        //   · 정렬 요구사항 없음 (1바이트 = 자연정렬)
+        //   · DSE 차단: volatile 쓰기 최적화 불가
+        //   · 성능: 256B 버퍼 기준 +192cyc (~1.1µs@168MHz, 소거 함수 허용)
+        volatile uint8_t* bp =
+            reinterpret_cast<volatile uint8_t*>(buffer);
+        for (size_t i = 0u; i < total_bytes; ++i) { bp[i] = 0u; }
+        // 경량 이스케이프: 포인터만 클로버 (글로벌 "memory" 배제)
+        __asm__ __volatile__("" : : "r"(buffer));
 #else
         // MSVC: volatile 포인터 바이트 쓰기 (DCE 차단 보장)
         volatile unsigned char* vp =
@@ -89,7 +109,6 @@ namespace ProtectedEngine {
         for (size_t i = 0; i < total_bytes; ++i) vp[i] = 0u;
 #endif
 
-        // [BUG-01] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
 

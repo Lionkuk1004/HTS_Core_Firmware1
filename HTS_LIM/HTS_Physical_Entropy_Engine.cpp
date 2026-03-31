@@ -27,6 +27,7 @@
 #elif defined(__aarch64__)
 #define HTS_PLATFORM_AARCH64
 #include <chrono>
+#include <time.h>      // clock_gettime — vDSO 안전 타이머
 #else
 #define HTS_PLATFORM_PC
 #include <chrono>
@@ -51,21 +52,17 @@ namespace ProtectedEngine {
     //  DWT LAR 레지스터는 M4에 물리적 미존재 (M7/M33 전용)
     // =====================================================================
     static uint32_t Read_DWT_CYCCNT() noexcept {
-        volatile uint32_t* const DEMCR =
-            reinterpret_cast<volatile uint32_t*>(0xE000EDFCu);
-        volatile uint32_t* const DWT_CTRL =
-            reinterpret_cast<volatile uint32_t*>(0xE0001000u);
+        // [J-3 FIX] 매직넘버 → constexpr (ARM CoreSight 표준)
+        static constexpr uintptr_t ADDR_DWT_CYCCNT = 0xE0001004u;  ///< DWT Cycle Count Register
+
+        // [BUG-FIX CRIT] TOCTOU 레이스 컨디션 해소
+        //  기존: if(미활성) → RMW(DEMCR|=TRCENA, DWT_CTRL|=ENA)
+        //  위험: ISR+스레드 동시 진입 시 RMW 충돌 → 레지스터 값 붕괴
+        //  수정: Hardware_Init::Initialize_System()에서 부팅 시 1회 활성화 완료
+        //        → 여기서는 단순 읽기만 수행 (RMW 0회, 레이스 원천 차단)
+        //  전제: DWT는 Hardware_Init에서 이미 활성화됨 (DEMCR.TRCENA=1, CYCCNTENA=1)
         volatile uint32_t* const DWT_CYCCNT =
-            reinterpret_cast<volatile uint32_t*>(0xE0001004u);
-
-        if ((*DWT_CTRL & 1u) != 0) return *DWT_CYCCNT;
-
-        *DEMCR |= (1u << 24);
-        *DWT_CTRL |= (1u << 0);
-        // [BUG-15] 파이프라인 동기화 배리어
-        __asm__ __volatile__("dsb" ::: "memory");
-        __asm__ __volatile__("isb" ::: "memory");
-
+            reinterpret_cast<volatile uint32_t*>(ADDR_DWT_CYCCNT);
         return *DWT_CYCCNT;
     }
 
@@ -74,17 +71,25 @@ namespace ProtectedEngine {
     //  타임아웃/에러 시 DWT 폴백 (TRNG 고장 대비)
     // =====================================================================
     static uint32_t Read_STM32_RNG() noexcept {
-        volatile uint32_t* const RNG_CR =
-            reinterpret_cast<volatile uint32_t*>(0x50060800u);
-        volatile uint32_t* const RNG_SR =
-            reinterpret_cast<volatile uint32_t*>(0x50060804u);
-        volatile uint32_t* const RNG_DR =
-            reinterpret_cast<volatile uint32_t*>(0x50060808u);
-        volatile uint32_t* const RCC_AHB2ENR =
-            reinterpret_cast<volatile uint32_t*>(0x40023834u);
+        // [J-3 FIX] 매직넘버 → constexpr (STM32F407 RNG + RCC)
+        static constexpr uintptr_t ADDR_RNG_CR = 0x50060800u;  ///< RNG Control
+        static constexpr uintptr_t ADDR_RNG_SR = 0x50060804u;  ///< RNG Status
+        static constexpr uintptr_t ADDR_RNG_DR = 0x50060808u;  ///< RNG Data
+        static constexpr uintptr_t ADDR_RCC_AHB2ENR = 0x40023834u;  ///< RCC AHB2 Enable
+        static constexpr uint32_t  RNG_CR_RNGEN = (1u << 2);    ///< RNG Enable
+        static constexpr uint32_t  RCC_RNG_EN = (1u << 6);    ///< RNG Clock Enable
 
-        *RCC_AHB2ENR |= (1u << 6);
-        *RNG_CR |= (1u << 2);
+        volatile uint32_t* const RNG_CR =
+            reinterpret_cast<volatile uint32_t*>(ADDR_RNG_CR);
+        volatile uint32_t* const RNG_SR =
+            reinterpret_cast<volatile uint32_t*>(ADDR_RNG_SR);
+        volatile uint32_t* const RNG_DR =
+            reinterpret_cast<volatile uint32_t*>(ADDR_RNG_DR);
+        volatile uint32_t* const RCC_AHB2ENR =
+            reinterpret_cast<volatile uint32_t*>(ADDR_RCC_AHB2ENR);
+
+        *RCC_AHB2ENR |= RCC_RNG_EN;
+        *RNG_CR |= RNG_CR_RNGEN;
 
         // [BUG-12] 타임아웃 폴링 (Spin-Wait 데드락 방지)
         uint32_t timeout = 1000;
@@ -100,12 +105,15 @@ namespace ProtectedEngine {
 #elif defined(HTS_PLATFORM_AARCH64)
     static std::atomic<bool> a55_seeded{ false };
 
-    // 통합콘솔 (A55 Linux): CNTVCT_EL0 동적 엔트로피
-    static uint32_t Read_CNTVCT_Entropy() noexcept {
-        uint64_t cntvct;
-        __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(cntvct));
-        // 하위 32비트: 타이밍 지터 포함 (호출 시점마다 상이)
-        return static_cast<uint32_t>(cntvct);
+    // [BUG-FIX FATAL] cntvct_el0 → clock_gettime vDSO 안전 엔트로피
+    //  기존: mrs cntvct_el0 → Linux 보안 커널 SIGILL 즉사
+    //  수정: clock_gettime(CLOCK_MONOTONIC) → vDSO 경유 안전 읽기
+    //  나노초 하위 32비트: 호출 시점 타이밍 지터 포함 (엔트로피 충분)
+    static uint32_t Read_VDSO_Entropy() noexcept {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        // 나노초 하위 32비트: 타이밍 지터 엔트로피원
+        return static_cast<uint32_t>(ts.tv_nsec);
     }
 #else
     static std::atomic<bool> pc_seeded{ false };
@@ -166,7 +174,7 @@ namespace ProtectedEngine {
             ctr_nonce_state.fetch_xor(time_seed,
                 std::memory_order_release);
         }
-        uint32_t dynamic_entropy = Read_CNTVCT_Entropy();
+        uint32_t dynamic_entropy = Read_VDSO_Entropy();
 
 #else
         // PC 개발빌드: 시간 기반 초기 시드 (매 실행 고유)
