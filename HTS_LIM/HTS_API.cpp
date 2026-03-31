@@ -38,11 +38,17 @@
 namespace HTS_API {
 
     namespace {
-        // [BUG-23] g_init_lock 삭제 → g_is_initialized 단일 CAS로 통합
-        //  기존: g_init_lock(CAS) + g_is_initialized(load/store) = 이중 atomic DCLP
-        //  수정: g_is_initialized CAS(false→true, acq_rel) 단일 원자 전환
-        //        BUG-34(HTS_Universal_Adapter) U-C 패턴과 통일
-        std::atomic<bool>     g_is_initialized{ false };
+        // [BUG-FIX FATAL] 초기화 플래그: bool → 3상 상태머신
+        //  기존: CAS(false→true) 즉시 → 포인터 미할당 상태에서 true 노출
+        //        → 외부 스레드가 nullptr 참조 → HardFault
+        //  수정: NONE(0) → BUSY(1) → READY(2)
+        //        BUSY 상태에서 외부 스레드는 ERR_NOT_INITIALIZED 반환
+        //        READY는 모든 포인터 할당 + release 배리어 후에만 설정
+        static constexpr uint32_t INIT_NONE = 0u;  ///< 미초기화
+        static constexpr uint32_t INIT_BUSY = 1u;  ///< 초기화 진행 중 (포인터 미완성)
+        static constexpr uint32_t INIT_READY = 2u;  ///< 초기화 완료 (포인터 유효)
+
+        std::atomic<uint32_t>     g_init_state{ INIT_NONE };
         std::atomic<uint32_t> g_active_medium{
             static_cast<uint32_t>(HTS_CommMedium::B_CDMA_RAW_RF) };
 
@@ -70,29 +76,27 @@ namespace HTS_API {
         volatile int16_t* hw_rx_fifo_addr,
         HTS_CommMedium     target_medium) noexcept {
 
-        // [BUG-23] 단일 CAS: 정확히 1컨텍스트만 초기화 실행
-        //  기존: DCLP(g_init_lock CAS + g_is_initialized load/store)
-        //  수정: g_is_initialized CAS(false→true, acq_rel) 단일 전환
-        //  성공 = 초기화 진입 허가, 실패 = 이미 초기화 완료
-        bool expected = false;
-        if (!g_is_initialized.compare_exchange_strong(
-            expected, true, std::memory_order_acq_rel)) {
+        // [BUG-FIX FATAL] 3상 초기화: NONE→BUSY→READY
+        //  CAS(NONE→BUSY): 단일 컨텍스트만 초기화 진입
+        //  BUSY 상태: 외부 스레드가 포인터 접근 불가 (READY가 아니므로)
+        //  READY 설정: 모든 포인터 할당 + release 배리어 후에만
+        uint32_t expected = INIT_NONE;
+        if (!g_init_state.compare_exchange_strong(
+            expected, INIT_BUSY, std::memory_order_acq_rel)) {
             return HTS_Status::ERR_ALREADY_INITIALIZED;
         }
 
         if (!hw_irq_status_reg || !hw_irq_clear_reg || !hw_rx_fifo_addr) {
-            // 실패: 초기화 플래그 원복
-            g_is_initialized.store(false, std::memory_order_release);
+            g_init_state.store(INIT_NONE, std::memory_order_release);
             return HTS_Status::ERR_NULL_POINTER;
         }
 
         if (!Is_Valid_Medium(target_medium)) HTS_API_UNLIKELY{
-            g_is_initialized.store(false, std::memory_order_release);
+            g_init_state.store(INIT_NONE, std::memory_order_release);
             return HTS_Status::ERR_UNSUPPORTED_MEDIUM;
         }
 
-            // [BUG-20] POST는 void 반환 — 내부에서 실패 시 자체 처리
-            // void 호출 후 성공 가정 (POST 실패 시 내부 HardFault/리셋)
+            // [BUG-20] POST는 void 반환
         ProtectedEngine::POST_Manager::executePowerOnSelfTest();
 
         g_hw_irq_status = hw_irq_status_reg;
@@ -103,15 +107,17 @@ namespace HTS_API {
             static_cast<uint32_t>(target_medium),
             std::memory_order_relaxed);
 
-        // CAS에서 이미 true 설정 완료 — 추가 store 불필요
-        // acq_rel이 모든 쓰기의 가시성 보장
+        // [BUG-FIX FATAL] READY 설정: 모든 포인터 할당 완료 후
+        //  release 배리어 → 다른 스레드에서 READY를 보면 포인터도 반드시 가시
+        g_init_state.store(INIT_READY, std::memory_order_release);
         return HTS_Status::OK;
     }
 
     HTS_Status Fetch_And_Heal_Rx_Payload(
         uint32_t* out_buffer, size_t required_size) noexcept {
 
-        if (!g_is_initialized.load(std::memory_order_acquire)) {
+        // [BUG-FIX FATAL] READY 상태만 허용 (BUSY 상태 포인터 접근 차단)
+        if (g_init_state.load(std::memory_order_acquire) != INIT_READY) {
             return HTS_Status::ERR_NOT_INITIALIZED;
         }
         if (!out_buffer || required_size == 0u) {
@@ -122,7 +128,7 @@ namespace HTS_API {
     }
 
     HTS_Status Is_System_Operational() noexcept {
-        if (!g_is_initialized.load(std::memory_order_acquire)) {
+        if (g_init_state.load(std::memory_order_acquire) != INIT_READY) {
             return HTS_Status::ERR_NOT_INITIALIZED;
         }
         return HTS_Status::OK;
