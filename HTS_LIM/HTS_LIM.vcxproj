@@ -145,9 +145,22 @@
   <ItemGroup>
     <ClCompile Include="aria050117.c" />
     <ClCompile Include="hmac.c" />
+    <ClCompile Include="HTS_CoAP_Engine.cpp" />
+    <ClCompile Include="HTS_Device_Status_Reporter.cpp" />
+    <ClCompile Include="HTS_Emergency_Beacon.cpp" />
+    <ClCompile Include="HTS_Key_Provisioning.cpp" />
+    <ClCompile Include="HTS_Location_Engine.cpp" />
+    <ClCompile Include="HTS_Mesh_Router.cpp" />
+    <ClCompile Include="HTS_Mesh_Sync.cpp" />
+    <ClCompile Include="HTS_Meter_Data_Manager.cpp" />
+    <ClCompile Include="HTS_Neighbor_Discovery.cpp" />
+    <ClCompile Include="HTS_OTA_AMI_Manager.cpp" />
+    <ClCompile Include="HTS_Priority_Scheduler.cpp" />
+    <ClCompile Include="HTS_Secure_Boot_Verify.cpp" />
+    <ClCompile Include="HTS_Sensor_Aggregator.cpp" />
+    <ClCompile Include="HTS_Sensor_Fusion.cpp" />
     <ClCompile Include="HTS_Tamper_HAL.cpp" />
     <ClCompile Include="HTS64_Native_ECCM_Core.cpp" />
-    <ClCompile Include="HTS64_Tx_Stealth.cpp" />
     <ClCompile Include="HTS_3D_Tensor_FEC.cpp" />
     <ClCompile Include="HTS_Adaptive_BPS_Controller.cpp" />
     <ClCompile Include="HTS_AES_Bridge.cpp" />
@@ -193,7 +206,6 @@
     <ClCompile Include="HTS_Physical_Entropy_Engine.cpp" />
     <ClCompile Include="HTS_Polymorphic_Shield.cpp" />
     <ClCompile Include="HTS_Power_Manager.cpp" />
-    <ClCompile Include="HTS_Quantum_Key_Bridge.cpp" />
     <ClCompile Include="HTS_Remote_Attestation.cpp" />
     <ClCompile Include="HTS_Role_Auth.cpp" />
     <ClCompile Include="HTS_Rx_Matched_Filter.cpp" />
@@ -246,6 +258,20 @@
     <ClCompile Include="util.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="HTS_CoAP_Engine.h" />
+    <ClInclude Include="HTS_Device_Status_Reporter.h" />
+    <ClInclude Include="HTS_Emergency_Beacon.h" />
+    <ClInclude Include="HTS_Key_Provisioning.h" />
+    <ClInclude Include="HTS_Location_Engine.h" />
+    <ClInclude Include="HTS_Mesh_Router.h" />
+    <ClInclude Include="HTS_Mesh_Sync.h" />
+    <ClInclude Include="HTS_Meter_Data_Manager.h" />
+    <ClInclude Include="HTS_Neighbor_Discovery.h" />
+    <ClInclude Include="HTS_OTA_AMI_Manager.h" />
+    <ClInclude Include="HTS_Priority_Scheduler.h" />
+    <ClInclude Include="HTS_Secure_Boot_Verify.h" />
+    <ClInclude Include="HTS_Sensor_Aggregator.h" />
+    <ClInclude Include="HTS_Sensor_Fusion.h" />
     <ClInclude Include="HTS_Tamper_HAL.h" />
     <ClInclude Include="HTS64_Native_ECCM_Core.hpp" />
     <ClInclude Include="HTS_Adaptive_BPS_Controller.h" />
@@ -299,7 +325,6 @@
     <ClInclude Include="..\..\CORE\HTS_Orbital_Mapper.hpp" />
     <ClInclude Include="..\..\CORE\HTS_Physical_Entropy_Engine.h" />
     <ClInclude Include="..\..\CORE\HTS_Polymorphic_Shield.h" />
-    <ClInclude Include="..\..\CORE\HTS_Quantum_Key_Bridge.h" />
     <ClInclude Include="..\..\CORE\HTS_Sparse_Recovery.h" />
     <ClInclude Include="..\..\CORE\HTS_Storage_Interface.h" />
     <ClInclude Include="..\..\CORE\HTS_Universal_API.h" />
@@ -310,7 +335,6 @@
     <ClInclude Include="common.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="hmac.h" />
-    <ClInclude Include="HTS64_Tx_Stealth.hpp" />
     <ClInclude Include="HTS_3D_Tensor_FEC.h" />
     <ClInclude Include="HTS_AEAD_Integrity.hpp" />
     <ClInclude Include="HTS_API.h" />
@@ -377,6 +401,7 @@
     <ClInclude Include="util.h" />
   </ItemGroup>
   <ItemGroup>
+    <Text Include="Hts additional modules design,MD" />
     <Text Include="Hts crypto module spec · MD" />
     <Text Include="Hts session15 handoff · MD" />
   </ItemGroup>

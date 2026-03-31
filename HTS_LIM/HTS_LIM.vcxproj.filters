@@ -84,9 +84,6 @@
     <ClCompile Include="HTS_Polymorphic_Shield.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="HTS_Quantum_Key_Bridge.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="HTS_Remote_Attestation.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -151,9 +148,6 @@
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_Antipodal_Core.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="HTS64_Tx_Stealth.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_Rx_Sync_Detector.cpp">
@@ -312,6 +306,48 @@
     <ClCompile Include="HTS_Tamper_HAL.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="HTS_Key_Provisioning.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Secure_Boot_Verify.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Priority_Scheduler.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Emergency_Beacon.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Neighbor_Discovery.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Mesh_Sync.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Location_Engine.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Device_Status_Reporter.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Mesh_Router.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Sensor_Fusion.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Sensor_Aggregator.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_CoAP_Engine.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Meter_Data_Manager.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_OTA_AMI_Manager.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\CORE\HTS_Anchor_Vault.hpp">
@@ -345,9 +381,6 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="..\..\CORE\HTS_Polymorphic_Shield.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\CORE\HTS_Quantum_Key_Bridge.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="..\..\CORE\HTS_Sparse_Recovery.h">
@@ -468,9 +501,6 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_BitOps.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="HTS64_Tx_Stealth.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_PHY_Config.h">
@@ -701,9 +731,52 @@
     <ClInclude Include="HTS_Tamper_HAL.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="HTS_Key_Provisioning.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Secure_Boot_Verify.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Priority_Scheduler.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Emergency_Beacon.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Neighbor_Discovery.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Mesh_Sync.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Location_Engine.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Device_Status_Reporter.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Mesh_Router.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Sensor_Fusion.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Sensor_Aggregator.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_CoAP_Engine.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_Meter_Data_Manager.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_OTA_AMI_Manager.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Text Include="Hts session15 handoff · MD" />
     <Text Include="Hts crypto module spec · MD" />
+    <Text Include="Hts additional modules design,MD" />
   </ItemGroup>
 </Project>
