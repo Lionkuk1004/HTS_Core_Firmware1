@@ -17,11 +17,10 @@
 //    수정: 한국어 통일 (기존과 동일 — 유지)
 //
 //  BUG-04 [LOW] catch(...) 무조건 무시
-//    수정: 디버그 모드이므로 현행 유지 (I/O 실패 시 침묵이 올바른 동작)
+//    수정: try/catch 제거. 스트림 상태 검사 기반 무예외 경로로 정리
 //
-//  BUG-05 [HIGH] 예외 발생 시 포맷 복원 우회 (상태 오염 부활)
-//    수정: IosFormatGuard 로컬 구조체를 도입하여 스택 언와인딩 시에도 
-//          소멸자가 무조건 포맷을 복원하도록 예외 안전성 확보
+//  BUG-05 [HIGH] 예외 기반 롤백 로직 제거
+//    수정: RAII 포맷 가드 + 무예외 스트림 상태 점검으로 상태 오염 차단
 //
 // [릴리즈 빌드 Zero-Cost 검증]
 //  _HTS_CREATOR_MODE 미정의 시:
@@ -60,43 +59,39 @@ namespace ProtectedEngine {
         (void)value;
 
 #ifdef _HTS_CREATOR_MODE
-        try {
-            // [BUG-01 수정] nullptr 방어
-            const char* safe_module = module_name ? module_name : "(null)";
-            const char* safe_action = action ? action : "(null)";
+        if (!std::cout.good()) {
+            return;
+        }
 
-            // [BUG-02/05 수정] RAII 패턴 기반 iostream 포맷 상태 보존
-            // I/O 작업 중 예외가 발생해 catch 블록으로 점프하더라도
-            // format_guard 객체의 소멸자가 호출되며 원래 포맷으로 확실히 롤백됨
-            struct IosFormatGuard {
-                std::ios_base::fmtflags flags;
-                char fill;
-                IosFormatGuard() : flags(std::cout.flags()), fill(std::cout.fill()) {}
-                ~IosFormatGuard() {
-                    std::cout.flags(flags);
-                    std::cout.fill(fill);
-                }
-            } format_guard;
+        // [BUG-01 수정] nullptr 방어
+        const char* safe_module = module_name ? module_name : "(null)";
+        const char* safe_action = action ? action : "(null)";
 
-            // 모듈명 고정폭 15자 좌측 정렬
-            std::cout << "[HTS-32] ["
-                << std::setw(15) << std::left << safe_module
-                << "] " << safe_action;
-
-            // 0이 아닌 값만 hex 출력 (0은 "값 없음" 의미)
-            if (value != 0) {
-                std::cout << " -> 0x"
-                    << std::hex << std::uppercase
-                    << std::setfill('0') << std::setw(8)
-                    << value;
+        // [BUG-02/05 수정] RAII 패턴 기반 iostream 포맷 상태 보존
+        struct IosFormatGuard {
+            std::ios_base::fmtflags flags;
+            char fill;
+            IosFormatGuard() : flags(std::cout.flags()), fill(std::cout.fill()) {}
+            ~IosFormatGuard() {
+                std::cout.flags(flags);
+                std::cout.fill(fill);
             }
+        } format_guard;
 
-            std::cout << "\n";
+        // 모듈명 고정폭 15자 좌측 정렬
+        std::cout << "[HTS-32] ["
+            << std::setw(15) << std::left << safe_module
+            << "] " << safe_action;
+
+        // 0이 아닌 값만 hex 출력 (0은 "값 없음" 의미)
+        if (value != 0) {
+            std::cout << " -> 0x"
+                << std::hex << std::uppercase
+                << std::setfill('0') << std::setw(8)
+                << value;
         }
-        catch (...) {
-            // I/O 예외가 펌웨어 콜스택을 붕괴시키는 것을 방어
-            // 텔레메트리 실패는 시스템 동작에 영향 없음 (개발 도구 전용)
-        }
+
+        std::cout << "\n";
 #endif
     }
 
