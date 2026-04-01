@@ -1,0 +1,34 @@
+# HTS Bare-Metal C++ Security & Optimization Master Guidelines
+Target: STM32 (ARM Cortex-M4/M7), 무중단 재난/항재밍 통신 시스템
+Rule Priority: 절대적 (이 규칙에 위배되는 코드는 제안하지 말 것)
+
+## 1. 메모리 무결성 및 할당 (Memory Integrity)
+* **런타임 동적 할당 절대 금지:** `new`, `malloc`, `std::vector`, `std::string`, `std::unique_ptr` 등 힙(Heap) 메모리를 사용하는 모든 표준 라이브러리 사용을 엄격히 금지한다.
+* **대안:** 정적 배열(`std::array`, `T buf[N]`), 전역/BSS/CCM 메모리, 버퍼 재사용(`_To` API 패턴), 객체 초기화 시 `placement new`만을 허용한다.
+* **Zero-copy 원칙:** 데이터를 복사하지 마라. 큰 구조체나 배열은 반드시 `const T&` (상수 참조) 또는 포인터로 전달하라.
+* **댕글링 포인터/OOB 원천 차단:** 배열 인덱스 접근 시 나눗셈/모듈로 연산 대신 비트마스크(`& (N-1)`)를 사용하고, 인덱스 범위를 반드시 상수로 검증하라.
+
+## 2. 제어 흐름 및 예외 처리 (Control Flow & Exceptions)
+* **예외 처리 배제 (-fno-exceptions):** `try`, `catch`, `throw` 키워드를 절대 사용하지 마라. 메모리 할당 실패나 런타임 오류는 상태 코드(Return code)나 래퍼 구조체(Result struct)로 반환하라.
+* **모든 함수에 noexcept 강제:** 예외를 던지지 않는 모든 함수 선언부와 구현부에 `noexcept`를 명시하여 컴파일러 최적화를 유도하라.
+* **RTTI 배제 (-fno-rtti):** `dynamic_cast`나 `typeid`를 사용하지 마라.
+* **CFI (Control Flow Integrity) 전이 검증:** 상태 머신(State Machine) 구현 시, 합법적인 상태 전이만 허용하는 비트마스크 검증(Constant-time) 로직을 포함하여 ROP/JOP 글리치 공격을 차단하라.
+
+## 3. 동시성 및 인터럽트 안전성 (Concurrency & ISR Safety)
+* **ISR 내 무거운 OS Mutex 금지:** 인터럽트 서비스 루틴(ISR) 내부에서는 블로킹(Blocking) 함수나 Mutex를 쓰지 마라.
+* **Lock-free 및 원자성:** ISR과 메인 루프 간 데이터 교환은 Lock-free 링 버퍼나 `std::atomic`을 사용하라.
+* **크리티컬 섹션 강제:** 공유 자원 조작 시 반드시 ARM `PRIMASK` 레지스터 제어(`CPSID I` / `CPSIE I`)를 통한 크리티컬 섹션으로 묶어 데드락(Deadlock)과 데이터 레이스를 방지하라.
+
+## 4. 논리적 모순 및 취약점 방지 (Logical Contradiction Prevention)
+* **TOCTOU (Time-of-Check to Time-of-Use) 방지:** 상태를 검사(Check)한 후 사용(Use)하기 전까지의 찰나에 인터럽트가 개입하여 값이 바뀌는 모순을 막아라. 검사와 사용은 반드시 동일한 원자적 블록 내에서 수행하라.
+* **초기화 순서 모순 방지:** 클래스 멤버 변수는 선언부에 명시적 기본 초기화(`= 0`, `= {}`)를 강제하여, 어떤 생성자 경로를 타더라도 쓰레기값(Garbage Value)이 남지 않도록 하라.
+* **암묵적 형변환 금지:** 데이터 손실을 유발하는 타입 캐스팅은 버그의 온상이다. 반드시 `static_cast`를 명시하고 컴파일러 경고(`-Wconversion`)가 없도록 하라.
+
+## 5. 보안 및 방어 로직 (Security & Defense)
+* **즉각 보안 소거 (Secure Wipe):** 암호화 키나 중요 패킷(DIOC 등)을 다룬 버퍼는 수명이 끝나는 즉시 메모리에서 완벽히 소거하라.
+* **DSE (Dead Store Elimination) 무력화:** 컴파일러가 `memset`을 무시하지 못하도록, 소거 함수 내부에 `__asm__ __volatile__("" : : "r"(ptr) : "memory");`와 `std::atomic_thread_fence(std::memory_order_release);`를 결합하여 강제 소거하라.
+* **Constant-time 연산 (타이밍 공격 방어):** 조건분기(`if/else`)로 인한 파이프라인 스톨 및 실행 시간 차이를 이용한 부채널 공격을 막아라. 절대값을 구하거나 플래그를 세팅할 때 조건문 대신 비트 연산(Branchless Bit-twiddling)을 사용하라.
+
+## 6. 연산 및 컴파일러 최적화 (Math & Optimization)
+* **나눗셈/모듈로(%, /) 연산 억제:** ARM 코어에서 수백 사이클을 낭비하는 64비트 나눗셈을 금지한다. $2^n$ 단위의 나눗셈은 우측 시프트(`>>`), 모듈로는 비트 AND(`&`)로 대체하라.
+* **하드웨어 Intrinsics 활용:** 비트 카운팅 연산 시 루프를 돌지 말고 컴파일러 내장 함수(`__builtin_popcount`, MSVC `__popcnt`)나 병렬 비트 연산(`popc32`)을 활용하라.
