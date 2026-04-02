@@ -25,7 +25,7 @@
 //        -o HMAC_KAT
 // =========================================================================
 
-#include "HTS_HMAC_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
 #include "HTS_Secure_Memory.h"
 #include <iostream>
 #include <iomanip>

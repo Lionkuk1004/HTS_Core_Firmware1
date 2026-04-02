@@ -10,7 +10,7 @@
 //  ❌ 기타 main 포함 파일 모두 제외
 // =========================================================================
 
-#include "HTS_HMAC_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
 #include "HTS_Secure_Memory.h"
 #include <iostream>
 #include <iomanip>

@@ -1,9 +1,0 @@
-; =========================================================================
-; HTS_ARIA_Bridge.def
-; Windows 호스트 DLL/테스트 선택 — Cortex-M 정적 링크 시 미사용
-; EXPORTS 절 없음: HTS_LIM 정적 라이브(.lib) 빌드에서 TU 내부 연결
-; =========================================================================
-
-LIBRARY HTS_ARIA_Bridge
-
-DESCRIPTION "HTS B-CDMA KCMVP ARIA bridge (KS X 1213-1, D-2 BUG-43 SecureMemory)"

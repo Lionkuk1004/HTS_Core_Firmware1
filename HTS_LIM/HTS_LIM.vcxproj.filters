@@ -237,9 +237,6 @@
     <ClCompile Include="HTS_IPC_Protocol_A55.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="HTS_IPC_Protocol.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="HTS_Console_Manager.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -264,16 +261,7 @@
     <ClCompile Include="HTS_CCTV_Security.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="HTS_OTA_Manager.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="HTS_Power_Manager.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="HTS_KT_DSN_Adapter.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="HTS_Modbus_Gateway.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_Holo_Tensor_4D.cpp">
@@ -304,9 +292,6 @@
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_Tamper_HAL.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="HTS_Key_Provisioning.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_Secure_Boot_Verify.cpp">
@@ -346,6 +331,21 @@
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_OTA_AMI_Manager.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_OTA_Manager.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Modbus_Gateway.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_KT_DSN_Adapter.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_Key_Provisioning.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="HTS_IPC_Protocol.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
@@ -473,9 +473,6 @@
     <ClInclude Include="HTS_Dual_Tensor_16bit.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="HTS_Unified_Scheduler.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="HTS_Unified_Scheduler.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -488,9 +485,6 @@
     <ClInclude Include="HTS_MAC_RateController.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="TensorCodec.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="TensorCodec.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -498,9 +492,6 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_Session_Gateway.hpp">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="HTS_Tx_Scheduler.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_Tx_Scheduler.hpp">
@@ -578,9 +569,6 @@
     <ClInclude Include="lsh256.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="HTS_ARIA_Bridge.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="HTS_ARIA_Bridge.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -596,9 +584,6 @@
     <ClInclude Include="util.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="HTS_HMAC_Bridge.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="HTS_HMAC_Bridge.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -611,9 +596,6 @@
     <ClInclude Include="HTS_FEC_HARQ.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="HTS_V400_Dispatcher.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="HTS_V400_Dispatcher.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -621,9 +603,6 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_Holo_Tensor_Engine.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="HTS64_Native_ECCM_Core.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS64_Native_ECCM_Core.hpp">
@@ -806,10 +785,19 @@
     <ClInclude Include="HTS_OTA_AMI_Manager.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="cpu_info.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="arm_arch.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Text Include="Hts session15 handoff · MD" />
     <Text Include="Hts crypto module spec · MD" />
     <Text Include="Hts additional modules design,MD" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="# HTS B-CDMA 전수검사 통합 기준서.md" />
   </ItemGroup>
 </Project>

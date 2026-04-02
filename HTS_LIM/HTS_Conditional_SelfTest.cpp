@@ -12,9 +12,9 @@
 // [제약] try-catch 0, float/double 0, heap 0, iostream 0
 // =========================================================================
 #include "HTS_Conditional_SelfTest.h"
-#include "HTS_ARIA_Bridge.h"
+#include "HTS_ARIA_Bridge.hpp"
 #include "HTS_LEA_Bridge.h"
-#include "HTS_HMAC_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
 
 #if defined(HTS_CRYPTO_FIPS) || defined(HTS_CRYPTO_DUAL)
 #include "HTS_AES_Bridge.h"

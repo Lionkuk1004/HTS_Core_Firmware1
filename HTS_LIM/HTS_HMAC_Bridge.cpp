@@ -38,7 +38,7 @@
 //  Final:              ~6K사이클 ≈ 0.036ms @168MHz
 //  스택 사용량: ~320바이트 (HMAC_Context 스택 할당 기준)
 // =========================================================================
-#include "HTS_HMAC_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
 #include "HTS_Secure_Memory.h"
 #include <cstring>
 #include <limits>
@@ -86,7 +86,7 @@ namespace ProtectedEngine {
     static_assert(
         sizeof(Internal_HMAC_State) <= sizeof(HMAC_Context::inner_ctx),
         "HMAC_Context::inner_ctx too small for Internal_HMAC_State. "
-        "Increase inner_ctx size in HTS_HMAC_Bridge.h"
+        "Increase inner_ctx size in HTS_HMAC_Bridge.hpp"
         );
 
     // inner_ctx → Internal_HMAC_State* 캐스팅 (alignas(4) 보장)

@@ -25,8 +25,8 @@
 #include "HTS_Security_Session.h"
 
 // [BUG-02] .cpp에서만 내부 암호 모듈 include
-#include "HTS_HMAC_Bridge.h"
-#include "HTS_ARIA_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
+#include "HTS_ARIA_Bridge.hpp"
 #include "HTS_LEA_Bridge.h"
 #if defined(HTS_CRYPTO_FIPS) || defined(HTS_CRYPTO_DUAL)
 #include "HTS_AES_Bridge.h"    // [🟡 8] FIPS AES-256-CTR 지원

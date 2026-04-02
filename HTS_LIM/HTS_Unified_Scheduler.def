@@ -1,7 +1,0 @@
-; =========================================================================
-; HTS_Unified_Scheduler.def
-; Windows 호스트 DLL/테스트 선택 — Cortex-M 정적 링크 시 미사용
-; EXPORTS 절 없음: HTS_LIM 정적 라이브(.lib) 빌드에서 심볼은 TU 내부 연결
-; =========================================================================
-LIBRARY HTS_Unified_Scheduler
-DESCRIPTION "HTS B-CDMA unified DMA ping-pong TX scheduler"

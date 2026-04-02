@@ -18,7 +18,7 @@
 //         · PC:  MAX_RING_POW2=16384(64KB), CACHELINE=64 — 기존 유지
 //         · Flush() memset → SecWipe (Q16 파형 잔존 방지)
 // =========================================================================
-#include "HTS_Tx_Scheduler.h"
+#include "HTS_Tx_Scheduler.hpp"
 #include "HTS_Dynamic_Config.h"
 #include "HTS_Secure_Memory.h"
 

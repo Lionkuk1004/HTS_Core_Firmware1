@@ -39,7 +39,7 @@
 //  블록 암/복호화 (16B): ~3K사이클 ≈ 0.018ms @168MHz
 //  Flash: ~500바이트 (브릿지) + ~2KB (aria.c KISA 원본)
 // =========================================================================
-#include "HTS_ARIA_Bridge.h"
+#include "HTS_ARIA_Bridge.hpp"
 #include "HTS_Secure_Memory.h"
 #include <cstring>
 

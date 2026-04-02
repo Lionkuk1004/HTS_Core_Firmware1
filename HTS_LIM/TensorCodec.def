@@ -1,9 +1,0 @@
-; =========================================================================
-; TensorCodec.def
-; Windows 호스트 DLL/테스트 선택 — Cortex-M 정적 링크 시 미사용
-; EXPORTS 절 없음: HTS_LIM 정적 라이브(.lib) 빌드에서 TU 내부 연결
-; =========================================================================
-
-LIBRARY TensorCodec
-
-DESCRIPTION "HTS B-CDMA 3D tensor FEC codec (A55/server, D-2 BUG-41)"

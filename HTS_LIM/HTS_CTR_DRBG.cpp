@@ -27,7 +27,7 @@
 #include "HTS_AES_Bridge.h"
 #define DRBG_CIPHER_NAME "AES-256"
 #else
-#include "HTS_ARIA_Bridge.h"
+#include "HTS_ARIA_Bridge.hpp"
 #define DRBG_CIPHER_NAME "ARIA-256"
 #endif
 

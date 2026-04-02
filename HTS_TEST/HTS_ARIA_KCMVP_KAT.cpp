@@ -27,7 +27,7 @@
 //  · 검증: MUT(ARIA_Bridge) 암·복호·키변조만 상수 Expected와 교차 검증
 // =========================================================================
 
-#include "HTS_ARIA_Bridge.h"
+#include "HTS_ARIA_Bridge.hpp"
 #include "HTS_Secure_Memory.h"
 #include <iostream>
 #include <iomanip>

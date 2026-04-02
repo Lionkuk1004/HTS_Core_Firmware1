@@ -148,15 +148,17 @@
     <ClCompile Include="HTS_CoAP_Engine.cpp" />
     <ClCompile Include="HTS_Device_Status_Reporter.cpp" />
     <ClCompile Include="HTS_Emergency_Beacon.cpp" />
-    <ClCompile Include="HTS_Key_Provisioning.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
+    <ClCompile Include="HTS_IPC_Protocol.cpp" />
+    <ClCompile Include="HTS_Key_Provisioning.cpp" />
+    <ClCompile Include="HTS_KT_DSN_Adapter.cpp" />
     <ClCompile Include="HTS_Location_Engine.cpp" />
     <ClCompile Include="HTS_Mesh_Router.cpp" />
     <ClCompile Include="HTS_Mesh_Sync.cpp" />
     <ClCompile Include="HTS_Meter_Data_Manager.cpp" />
+    <ClCompile Include="HTS_Modbus_Gateway.cpp" />
     <ClCompile Include="HTS_Neighbor_Discovery.cpp" />
     <ClCompile Include="HTS_OTA_AMI_Manager.cpp" />
+    <ClCompile Include="HTS_OTA_Manager.cpp" />
     <ClCompile Include="HTS_Priority_Scheduler.cpp" />
     <ClCompile Include="HTS_Secure_Boot_Verify.cpp" />
     <ClCompile Include="HTS_Sensor_Aggregator.cpp" />
@@ -195,23 +197,11 @@
     <ClCompile Include="HTS_Holo_Tensor_4D.cpp" />
     <ClCompile Include="HTS_Holo_Tensor_Engine.cpp" />
     <ClCompile Include="HTS_IoT_Codec.cpp" />
-    <ClCompile Include="HTS_IPC_Protocol.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="HTS_IPC_Protocol_A55.cpp" />
-    <ClCompile Include="HTS_KT_DSN_Adapter.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="HTS_LEA_Bridge.cpp" />
     <ClCompile Include="HTS_LSH256_Bridge.cpp" />
-    <ClCompile Include="HTS_Modbus_Gateway.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="HTS_Network_Bridge.cpp" />
     <ClCompile Include="HTS_Orbital_Mapper.cpp" />
-    <ClCompile Include="HTS_OTA_Manager.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="HTS_Pointer_Auth.cpp" />
     <ClCompile Include="HTS_Physical_Entropy_Engine.cpp" />
     <ClCompile Include="HTS_Polymorphic_Shield.cpp" />
@@ -268,6 +258,8 @@
     <ClCompile Include="util.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="arm_arch.h" />
+    <ClInclude Include="cpu_info.h" />
     <ClInclude Include="HTS_CoAP_Engine.h" />
     <ClInclude Include="HTS_Device_Status_Reporter.h" />
     <ClInclude Include="HTS_Emergency_Beacon.h" />
@@ -284,7 +276,6 @@
     <ClInclude Include="HTS_Sensor_Fusion.h" />
     <ClInclude Include="HTS_Tamper_HAL.h" />
     <ClInclude Include="HTS_Tamper_HAL.hpp" />
-    <ClInclude Include="HTS64_Native_ECCM_Core.h" />
     <ClInclude Include="HTS64_Native_ECCM_Core.hpp" />
     <ClInclude Include="HTS_Adaptive_BPS_Controller.h" />
     <ClInclude Include="HTS_AES_Bridge.h" />
@@ -352,13 +343,11 @@
     <ClInclude Include="HTS_3D_Tensor_FEC.h" />
     <ClInclude Include="HTS_AEAD_Integrity.hpp" />
     <ClInclude Include="HTS_API.h" />
-    <ClInclude Include="HTS_ARIA_Bridge.h" />
     <ClInclude Include="HTS_ARIA_Bridge.hpp" />
     <ClInclude Include="HTS_Auto_Rollback_Manager.hpp" />
     <ClInclude Include="HTS_Config.h" />
     <ClInclude Include="HTS_Dynamic_Key_Rotator.hpp" />
     <ClInclude Include="HTS_FEC_HARQ.hpp" />
-    <ClInclude Include="HTS_HMAC_Bridge.h" />
     <ClInclude Include="HTS_HMAC_Bridge.hpp" />
     <ClInclude Include="HTS_LEA_Bridge.h" />
     <ClInclude Include="HTS_LSH256_Bridge.h" />
@@ -390,12 +379,9 @@
     <ClInclude Include="HTS_SHA256_Bridge.h" />
     <ClInclude Include="HTS_TRNG_Collector.h" />
     <ClInclude Include="HTS_TRNG_Collector.hpp" />
-    <ClInclude Include="HTS_Tx_Scheduler.h" />
     <ClInclude Include="HTS_Tx_Scheduler.hpp" />
     <ClInclude Include="HTS_Types.h" />
-    <ClInclude Include="HTS_Unified_Scheduler.h" />
     <ClInclude Include="HTS_Unified_Scheduler.hpp" />
-    <ClInclude Include="HTS_V400_Dispatcher.h" />
     <ClInclude Include="HTS_V400_Dispatcher.hpp" />
     <ClInclude Include="HTS_Voice_Codec_Bridge.h" />
     <ClInclude Include="HTS_Voice_Codec_Bridge_Defs.h" />
@@ -417,7 +403,6 @@
     <ClInclude Include="lsh512.h" />
     <ClInclude Include="lsh_def.h" />
     <ClInclude Include="lsh_local.h" />
-    <ClInclude Include="TensorCodec.h" />
     <ClInclude Include="TensorCodec.hpp" />
     <ClInclude Include="util.h" />
   </ItemGroup>
@@ -425,6 +410,9 @@
     <Text Include="Hts additional modules design,MD" />
     <Text Include="Hts crypto module spec · MD" />
     <Text Include="Hts session15 handoff · MD" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="# HTS B-CDMA 전수검사 통합 기준서.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

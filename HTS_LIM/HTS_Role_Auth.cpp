@@ -12,7 +12,7 @@
 // [제약] try-catch 0, float/double 0, heap 0
 // =========================================================================
 #include "HTS_Role_Auth.h"
-#include "HTS_HMAC_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
 #include "HTS_Secure_Logger.h"
 
 #include <atomic>

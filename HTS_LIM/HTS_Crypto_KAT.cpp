@@ -19,9 +19,9 @@
 //  LSH:  KS X 3262 / KISA 공식 배포
 // =========================================================================
 #include "HTS_Crypto_KAT.h"
-#include "HTS_ARIA_Bridge.h"
+#include "HTS_ARIA_Bridge.hpp"
 #include "HTS_LEA_Bridge.h"
-#include "HTS_HMAC_Bridge.h"
+#include "HTS_HMAC_Bridge.hpp"
 #include "HTS_LSH256_Bridge.h"
 #include "HTS_CTR_DRBG.h"      // DRBG KAT
 #include "HTS_Secure_Logger.h"

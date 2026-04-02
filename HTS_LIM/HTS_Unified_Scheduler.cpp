@@ -28,7 +28,7 @@
 //           · 타임아웃 100,000 루프(≈600us @168MHz) — 초과 시 쓰기 차단
 //           · 데이터 1프레임 유실 > FPGA 락업 (안전 우선)
 // =========================================================================
-#include "HTS_Unified_Scheduler.h"
+#include "HTS_Unified_Scheduler.hpp"
 #include "HTS_Hardware_Init.h"
 #include "HTS_Secure_Memory.h"
 
