@@ -5,7 +5,7 @@ void HMAC_SHA256(const u8 *message, u32 mlen, const u8 *key, u32 klen, u8 hmac[S
 {
 	SHA256_INFO hash_ctx;
 	u8 ipad = 0x36, opad = 0x5c;
-	int i = 0;
+	u32 i = 0;
 	u8 tk[SHA256_DIGEST_VALUELEN], tb[SHA256_DIGEST_BLOCKLEN];
 	
 	if (klen > SHA256_DIGEST_BLOCKLEN)
@@ -36,7 +36,7 @@ int Verify_HMAC_SHA256(const u8* message, u32 mlen, const u8* key, u32 klen, u8 
 {
 	SHA256_INFO hash_ctx;
 	u8 ipad = 0x36, opad = 0x5c;
-	int i = 0;
+	u32 i = 0;
 	u8 tk[SHA256_DIGEST_VALUELEN], tb[SHA256_DIGEST_BLOCKLEN], cmp_hmac[SHA256_DIGEST_VALUELEN];
 
 	if (klen > SHA256_DIGEST_BLOCKLEN)

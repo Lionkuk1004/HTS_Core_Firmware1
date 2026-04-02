@@ -43,24 +43,24 @@ int MAKE_FUNC(ccm_enc)(unsigned char *ct, unsigned char *T, const unsigned char 
 	}
 
 	/* Formatting of B0 */
-	tag[0] = ((Alen != 0) ? 0x40 : 0) | (((Tlen - 2) >> 1) << 3) | (14 - Nlen);
+	tag[0] = (unsigned char)(((Alen != 0) ? 0x40 : 0) | (((Tlen - 2) >> 1) << 3) | (14 - Nlen));
 	
 	for(i = 0; i < Nlen; i++)
 		tag[i + 1] = N[i];	/* Set N */
 		
-	tag[14] = pt_len >> 8, tag[15] = pt_len;
+	tag[14] = (unsigned char)(pt_len >> 8), tag[15] = (unsigned char)pt_len;
 	if(Nlen < 13)
-		tag[13] = pt_len >> 16;
+		tag[13] = (unsigned char)(pt_len >> 16);
 	if(Nlen < 12)
-		tag[12] = pt_len >> 24;
+		tag[12] = (unsigned char)(pt_len >> 24);
 
 	lea_encrypt_1block(tag, tag, key);
 
 	/* Formatting of the Associated Data */
 	if(Alen < 0xff00)
-		tag[0] ^= (Alen >> 8), tag[1] ^= Alen, i = 2;
+		tag[0] ^= (unsigned char)(Alen >> 8), tag[1] ^= (unsigned char)Alen, i = 2;
 	else
-		tag[0] ^= 0xff, tag[1] ^= 0xfe, tag[2] ^= (Alen >> 24), tag[3] ^= (Alen >> 16), tag[4] ^= (Alen >> 8), tag[5] ^= Alen, i = 6;
+		tag[0] ^= 0xff, tag[1] ^= 0xfe, tag[2] ^= (unsigned char)(Alen >> 24), tag[3] ^= (unsigned char)(Alen >> 16), tag[4] ^= (unsigned char)(Alen >> 8), tag[5] ^= (unsigned char)Alen, i = 6;
 
 	for(j = 0; j < Alen; i = 0)
 	{
@@ -81,7 +81,7 @@ int MAKE_FUNC(ccm_enc)(unsigned char *ct, unsigned char *T, const unsigned char 
 	}
 	
 	/* Formatting of the counter blocks */
-	ctr[0] = 14 - Nlen;
+	ctr[0] = (unsigned char)(14u - Nlen);
 
 	for(i = 0; i < Nlen; i++)
 		ctr[i + 1] = N[i];
@@ -130,24 +130,24 @@ int MAKE_FUNC(ccm_dec)(unsigned char *pt, const unsigned char *ct, unsigned int 
 	}
 
 	/* Formatting of B0 */
-	tag[0] = ((Alen != 0) ? 0x40 : 0) | (((Tlen - 2) >> 1) << 3) | (14 - Nlen);
+	tag[0] = (unsigned char)(((Alen != 0) ? 0x40 : 0) | (((Tlen - 2) >> 1) << 3) | (14 - Nlen));
 	
 	for(i = 0; i < Nlen; i++)
 		tag[i + 1] = N[i];	/* Set N */
 	
-	tag[14] = ct_len >> 8, tag[15] = ct_len;
+	tag[14] = (unsigned char)(ct_len >> 8), tag[15] = (unsigned char)ct_len;
 	if(Nlen < 13)
-		tag[13] = ct_len >> 16;
+		tag[13] = (unsigned char)(ct_len >> 16);
 	if(Nlen < 12)
-		tag[12] = ct_len >> 24;
+		tag[12] = (unsigned char)(ct_len >> 24);
 	
 	lea_encrypt_1block(tag, tag, key);
 
 	/* Formatting of the Associated Data */
 	if(Alen < 0xff00)
-		tag[0] ^= (Alen >> 8), tag[1] ^= Alen, i = 2;
+		tag[0] ^= (unsigned char)(Alen >> 8), tag[1] ^= (unsigned char)Alen, i = 2;
 	else
-		tag[0] ^= 0xff, tag[1] ^= 0xfe, tag[2] ^= (Alen >> 24), tag[3] ^= (Alen >> 16), tag[4] ^= (Alen >> 8), tag[5] ^= Alen, i = 6;
+		tag[0] ^= 0xff, tag[1] ^= 0xfe, tag[2] ^= (unsigned char)(Alen >> 24), tag[3] ^= (unsigned char)(Alen >> 16), tag[4] ^= (unsigned char)(Alen >> 8), tag[5] ^= (unsigned char)Alen, i = 6;
 
 	for(j = 0; j < Alen; i = 0)
 	{
@@ -158,7 +158,7 @@ int MAKE_FUNC(ccm_dec)(unsigned char *pt, const unsigned char *ct, unsigned int 
 	}
 
 	/* Formatting of the counter blocks */
-	ctr[0] = 14 - Nlen;
+	ctr[0] = (unsigned char)(14u - Nlen);
 
 	for(i = 0; i < Nlen; i++)
 		ctr[i + 1] = N[i];

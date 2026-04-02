@@ -209,15 +209,15 @@ int MAKE_FUNC(gcm_final)(LEA_GCM_CTX *ctx, unsigned char *tag, int tag_len)
 	ctx->aad_len <<= 3;
 	ctx->ct_len <<= 3;
 
-	tmp[4] = ctx->aad_len >> 24;
-	tmp[5] = ctx->aad_len >> 16;
-	tmp[6] = ctx->aad_len >> 8;
-	tmp[7] = ctx->aad_len;
+	tmp[4] = (unsigned char)(ctx->aad_len >> 24);
+	tmp[5] = (unsigned char)(ctx->aad_len >> 16);
+	tmp[6] = (unsigned char)(ctx->aad_len >> 8);
+	tmp[7] = (unsigned char)ctx->aad_len;
 
-	tmp[12] = ctx->ct_len >> 24;
-	tmp[13] = ctx->ct_len >> 16;
-	tmp[14] = ctx->ct_len >> 8;
-	tmp[15] = ctx->ct_len;
+	tmp[12] = (unsigned char)(ctx->ct_len >> 24);
+	tmp[13] = (unsigned char)(ctx->ct_len >> 16);
+	tmp[14] = (unsigned char)(ctx->ct_len >> 8);
+	tmp[15] = (unsigned char)ctx->ct_len;
 
 	gcm_ghash(ctx->tbl, tmp, 16, (const unsigned char (*)[16])ctx->h);
 

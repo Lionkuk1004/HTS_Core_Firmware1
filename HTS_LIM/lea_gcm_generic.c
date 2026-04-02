@@ -154,7 +154,7 @@ static void gcm_gfmul(unsigned char *r, const unsigned char *x, const unsigned c
 
 static void _gcm_ghash(unsigned char *r, const unsigned char *x, unsigned int x_len, const unsigned char hTable[][16])
 {
-	int i;
+	unsigned int i;
 	unsigned char y[16] = { 0, };
 
 	lea_memcpy(y, r, 16);
@@ -273,7 +273,7 @@ static void gcm_gfmul(unsigned char *r, const unsigned char *x, const unsigned c
 
 static void _gcm_ghash(unsigned char *r, const unsigned char *x, unsigned int x_len, const unsigned char hTable[][16])
 {
-	int i;
+	unsigned int i;
 	unsigned char y[16] = { 0, };
 
 	lea_memcpy(y, r, 16);

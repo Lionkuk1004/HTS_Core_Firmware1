@@ -22,6 +22,10 @@
 
 namespace ProtectedEngine {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
     // =====================================================================
     //  HMAC_Context — HMAC-SHA256 스트리밍 컨텍스트
     //
@@ -48,6 +52,9 @@ namespace ProtectedEngine {
         HMAC_Context(HMAC_Context&&) = delete;
         HMAC_Context& operator=(HMAC_Context&&) = delete;
     };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
     class HMAC_Bridge {
     public:

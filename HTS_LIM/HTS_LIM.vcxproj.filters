@@ -734,13 +734,7 @@
     <ClInclude Include="HTS_TRNG_Collector.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="HTS_TRNG_Collector.hpp">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="HTS_Tamper_HAL.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="HTS_Tamper_HAL.hpp">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_Key_Provisioning.h">

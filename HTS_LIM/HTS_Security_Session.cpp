@@ -58,6 +58,10 @@ namespace ProtectedEngine {
     // =====================================================================
     //  [BUG-02] Pimpl 구현 구조체
     // =====================================================================
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
     struct HTS_Security_Session::Impl {
         CipherAlgorithm cipher_alg = CipherAlgorithm::LEA_256_CTR;
         MacAlgorithm    mac_alg = MacAlgorithm::HMAC_SHA256;
@@ -257,6 +261,9 @@ namespace ProtectedEngine {
             return true;
         }
     };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
     // [BUG-18] Impl 크기 검증 — 생성자 내부에서 수행 (private 접근 가능)
     // 아래 static_assert는 get_impl() 함수 내부로 이동

@@ -142,7 +142,7 @@ namespace ProtectedEngine {
             CCTV_EventLog& slot = event_log[log_head & CCTV_EVENT_LOG_MASK];
             slot.event_type = evt;
             slot.severity = sev;
-            slot.count = prev_count + 1u;
+            slot.count = static_cast<uint16_t>(prev_count + 1u);
             slot.first_tick = (prev_count == 0u) ? current_tick : slot.first_tick;
             slot.last_tick = current_tick;
             log_head++;

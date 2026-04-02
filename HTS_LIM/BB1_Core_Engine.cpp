@@ -167,8 +167,8 @@ namespace ProtectedEngine {
         //  temp_vec: 인터리빙/역인터리빙 스크래치
         //  TX/RX 순차 실행 → 1개로 공유 (−32KB)
         struct {
-            uint32_t state_map[MAX_TENSOR_ELEMENTS] = {};
-            uint32_t temp_vec[MAX_TENSOR_ELEMENTS] = {};
+            mutable uint32_t state_map[MAX_TENSOR_ELEMENTS] = {};
+            mutable uint32_t temp_vec[MAX_TENSOR_ELEMENTS] = {};
         } shared = {};
 
         // ── TX 전용 상태 (경량) ──────────────────────────────────
@@ -180,7 +180,7 @@ namespace ProtectedEngine {
         //  [BUG-65] erased: uint8_t[4096] → uint32_t[128] 비트 패킹 (−3.5KB)
         //  [BUG-65] erasure_idx: 완전 제거 (−8KB) — 1-pass 인라인으로 대체
         static constexpr size_t ERASED_WORDS = MAX_TENSOR_ELEMENTS / 32u;
-        uint32_t erased_bits[ERASED_WORDS] = {};
+        mutable uint32_t erased_bits[ERASED_WORDS] = {};
 
         Gyro_Engine            rx_gyro;
         uint32_t               rx_gyro_phase = 0;
@@ -193,7 +193,7 @@ namespace ProtectedEngine {
         bool is_erased(size_t idx) const noexcept {
             return (erased_bits[idx >> 5u] & (1u << (idx & 31u))) != 0u;
         }
-        void clear_erased(size_t n) noexcept {
+        void clear_erased(size_t n) const noexcept {
             const size_t words = (n + 31u) >> 5u;
             std::memset(erased_bits, 0, words * sizeof(uint32_t));
         }
@@ -210,14 +210,14 @@ namespace ProtectedEngine {
 
         // ── 궤적 소거 (고정 크기 — 조건 분기 없음) ────────────────
         // [FIX-LOW] shared 이중 소거 제거: Wipe_Shared 분리
-        void Wipe_Shared() noexcept {
+        void Wipe_Shared() const noexcept {
             Secure_Wipe_BB1(shared.state_map, sizeof(shared.state_map));
             Secure_Wipe_BB1(shared.temp_vec, sizeof(shared.temp_vec));
         }
-        void Wipe_TX() noexcept {
+        void Wipe_TX() const noexcept {
             Wipe_Shared();
         }
-        void Wipe_RX() noexcept {
+        void Wipe_RX() const noexcept {
             Wipe_Shared();
             Secure_Wipe_BB1(erased_bits, sizeof(erased_bits));
         }
@@ -403,7 +403,7 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) HTS_BB1_UNLIKELY{ return RecoveryStats{}; }
         RecoveryStats copy;
-        uint32_t seq;
+        uint32_t seq = 0;
         do {
             seq = p->stats_seq.load(std::memory_order_acquire);
             copy = p->last_stats;
@@ -512,7 +512,7 @@ namespace ProtectedEngine {
             const uint32_t vs_lo = static_cast<uint32_t>(vs);
             const uint32_t vs_hi = static_cast<uint32_t>(vs >> 32);
 
-            int32_t holo_buf[HOLO_CHIP];
+            int32_t holo_buf[HOLO_CHIP] = {};
             for (size_t base = 0u; base < elements; base += HOLO_CHIP) {
                 const size_t chunk =
                     std::min<size_t>(HOLO_CHIP, elements - base);
@@ -594,7 +594,7 @@ namespace ProtectedEngine {
             const uint32_t vs_lo = static_cast<uint32_t>(vs);
             const uint32_t vs_hi = static_cast<uint32_t>(vs >> 32);
 
-            int32_t holo_buf[HOLO_CHIP];
+            int32_t holo_buf[HOLO_CHIP] = {};
             for (size_t base = 0u; base < elements; base += HOLO_CHIP) {
                 const size_t chunk =
                     std::min<size_t>(HOLO_CHIP, elements - base);

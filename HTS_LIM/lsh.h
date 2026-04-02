@@ -29,6 +29,11 @@
 extern "C" {
 #endif
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
+
 /**
  * LSH256 내부 상태를 저장하기 위한 구조체
  */
@@ -59,6 +64,10 @@ union LSH_ALIGNED_(32) LSH_Context{
 	LSH_ALIGNED_(32) struct LSH512_Context ctx512;
 	LSH_ALIGNED_(16) lsh_type algtype;
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 /**
  * LSH 해시 내부 상태를 초기화한다.

@@ -1,0 +1,4 @@
+// IntelliSense — lsh.h 정렬 매크로 (VCR102 완화)
+// lsh_def.h 는 LSH_ALIGNED_(x) 이름 사용; 힌트는 두 형태 모두 제공
+#define LSH_ALIGNED(x) __declspec(align(x))
+#define LSH_ALIGNED_(x) __declspec(align(x))

@@ -81,7 +81,8 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324;4702;4996</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -99,6 +100,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324;4702;4996</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -115,7 +117,8 @@
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);D:\HTS_ARM11_Firmware\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DisableLanguageExtensions>false</DisableLanguageExtensions>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324;4702;4996</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -135,7 +138,7 @@
       <DisableLanguageExtensions>false</DisableLanguageExtensions>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324;4702;4996</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -275,7 +278,6 @@
     <ClInclude Include="HTS_Sensor_Aggregator.h" />
     <ClInclude Include="HTS_Sensor_Fusion.h" />
     <ClInclude Include="HTS_Tamper_HAL.h" />
-    <ClInclude Include="HTS_Tamper_HAL.hpp" />
     <ClInclude Include="HTS64_Native_ECCM_Core.hpp" />
     <ClInclude Include="HTS_Adaptive_BPS_Controller.h" />
     <ClInclude Include="HTS_AES_Bridge.h" />
@@ -378,7 +380,6 @@
     <ClInclude Include="HTS_Session_Gateway.hpp" />
     <ClInclude Include="HTS_SHA256_Bridge.h" />
     <ClInclude Include="HTS_TRNG_Collector.h" />
-    <ClInclude Include="HTS_TRNG_Collector.hpp" />
     <ClInclude Include="HTS_Tx_Scheduler.hpp" />
     <ClInclude Include="HTS_Types.h" />
     <ClInclude Include="HTS_Unified_Scheduler.hpp" />

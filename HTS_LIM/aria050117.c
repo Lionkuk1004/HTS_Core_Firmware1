@@ -40,6 +40,9 @@
 /*********************************************************/
 
 #include <stdio.h>
+#if defined(_MSC_VER)
+#include <intrin.h> /* _lrotl, _lrotr */
+#endif
 
 typedef unsigned char Byte;
 typedef unsigned int  Word;
@@ -270,15 +273,15 @@ const Word X2[256] = {
   }
 #endif
 
-void printBlockOfLength(Byte* b, int len) {
-    int i;
+static void printBlockOfLength(Byte* b, int len) {
+    int i = 0;
 
     for (i = 0; i < len; i++, b++) {
         printf("%02x", *b);
         if (i % 4 == 3 && i < len - 1) printf(" ");
     }
 }
-void printBlock(Byte* b) {
+static void printBlock(Byte* b) {
     printBlockOfLength(b, 16);
 }
 
@@ -289,7 +292,7 @@ void printBlock(Byte* b) {
  * Byte *o:
  */
 void Crypt(const Byte* i, int Nr, const Byte* rk, Byte* o) {
-    register Word t0, t1, t2, t3;
+    register Word t0 = 0, t1 = 0, t2 = 0, t3 = 0;
 
     WordLoad(WO(i, 0), t0); WordLoad(WO(i, 1), t1);
     WordLoad(WO(i, 2), t2); WordLoad(WO(i, 3), t3);
@@ -345,9 +348,9 @@ void Crypt(const Byte* i, int Nr, const Byte* rk, Byte* o) {
  * int keyBits:        Ű
  */
 int EncKeySetup(const Byte* mk, Byte* rk, int keyBits) {
-    register Word t0, t1, t2, t3;
-    Word w0[4], w1[4], w2[4], w3[4];
-    int q, r;
+    register Word t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    Word w0[4] = { 0 }, w1[4] = { 0 }, w2[4] = { 0 }, w3[4] = { 0 };
+    int q = 0, r = 0;
 
     WordLoad(WO(mk, 0), w0[0]); WordLoad(WO(mk, 1), w0[1]);
     WordLoad(WO(mk, 2), w0[2]); WordLoad(WO(mk, 3), w0[3]);
@@ -414,15 +417,15 @@ int EncKeySetup(const Byte* mk, Byte* rk, int keyBits) {
  * int keyBits:        Ű
  */
 int DecKeySetup(const Byte* mk, Byte* rk, int keyBits) {
-    Word* a, * z;
-    int rValue;
+    Word* a = 0, * z = 0;
+    int rValue = 0;
 #if defined(_MSC_VER)
-    register Word w;
+    register Word w = 0;
 #else
-    register Byte sum;
+    register Byte sum = 0;
 #endif
-    register Word t0, t1, t2, t3;
-    Word s0, s1, s2, s3;
+    register Word t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    Word s0 = 0, s1 = 0, s2 = 0, s3 = 0;
 
     rValue = EncKeySetup(mk, rk, keyBits);
     a = (Word*)(rk);  z = a + rValue * 4;
@@ -456,9 +459,9 @@ int DecKeySetup(const Byte* mk, Byte* rk, int keyBits) {
  * ƴ϶  reference  ڵ            Ͽ
  * Ȯ            ĥ      ǰ   .
  */
-void ARIA_test() {
-    Byte rk[16 * 17], c[16], * b, mk[32];
-    int i, flag;
+static void ARIA_test(void) {
+    Byte rk[16 * 17] = { 0 }, c[16] = { 0 }, * b = 0, mk[32] = { 0 };
+    int i = 0, flag = 0;
     const Word NUMBER = 0x00000042;
     Byte p[16] = { 0x11, 0x11, 0x11, 0x11, 0xaa, 0xaa, 0xaa, 0xaa,
         0x11, 0x11, 0x11, 0x11, 0xbb, 0xbb, 0xbb, 0xbb };

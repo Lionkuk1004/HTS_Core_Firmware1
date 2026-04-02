@@ -272,7 +272,7 @@ int lea_online_final(LEA_ONLINE_CTX *ctx, unsigned char * out){
 	if (ctx->encType == LEA_ECB_PKCS5PAD_ENC || ctx->encType == LEA_CBC_PKCS5PAD_ENC){
 		more = 16 - ctx->nlast_block;
 		while (ctx->nlast_block < 16){
-			ctx->last_block[ctx->nlast_block] = more;
+			ctx->last_block[ctx->nlast_block] = (unsigned char)more;
 			ctx->nlast_block++;
 		}
 	}

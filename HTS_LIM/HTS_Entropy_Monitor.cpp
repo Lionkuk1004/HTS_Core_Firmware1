@@ -51,18 +51,10 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Entropy Fault 처리 — RCT/APT 공통
     // =====================================================================
+    // Execute_Self_Healing 은 [[noreturn]] — 진입 후 반환 없음(BUG-10).
+    // PC/ARM 공통: 엔트로피 Fault 는 중앙 집행점으로 위임만 수행.
     [[noreturn]] static void Entropy_Fault_Handler(uint32_t fault_code) noexcept {
         Auto_Rollback_Manager::Execute_Self_Healing(fault_code);
-
-#if defined(HTS_ENTROPY_ARM) || defined(HTS_ENTROPY_AARCH64)
-        while (true) {
-#if defined(__GNUC__) || defined(__clang__)
-            __asm__ __volatile__("" ::: "memory");
-#endif
-        }
-#else
-        std::abort();
-#endif
     }
 
     // =====================================================================

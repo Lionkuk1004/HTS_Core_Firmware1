@@ -31,7 +31,9 @@ void MAKE_FUNC(cbc_dec)(unsigned char *pt, const unsigned char *ct, unsigned int
 {
 	unsigned int remainBlock = ct_len >> 4;
 	const unsigned char *pIv = iv;
-	unsigned char tmp[128];// = {0, };
+#if MAX_BLK >= 8 || MAX_BLK >= 4
+	unsigned char tmp[128];
+#endif
 
 	if (pt == NULL)
 		return;
