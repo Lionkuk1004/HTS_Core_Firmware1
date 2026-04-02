@@ -108,7 +108,8 @@ namespace ProtectedEngine {
         static constexpr size_t SALT_LEN = 16u;
 
         /// @brief 비밀번호 → HMAC-SHA256 해시
-        static void Compute_Password_Hash(
+        /// @return HMAC 성공 시 true, 실패 시 false (out_32 소거됨)
+        [[nodiscard]] static bool Compute_Password_Hash(
             const uint8_t* password, size_t len,
             const uint8_t* salt, uint8_t* out_32) noexcept;
     };

@@ -7,7 +7,8 @@
 
 // 내부 전용 includes (헤더에 미노출)
 #include "HTS_Dynamic_Config.h"
-#include "HTS_RF_Metrics.h"     // SNR 프록시 기록용 (선택적)
+#include "HTS_RF_Metrics.h"
+#include "HTS_Secure_Memory.h"
 
 // ── Self-Contained 표준 헤더 (<atomic>, <cstdint> 등) ────────────────
 #include <atomic>
@@ -16,9 +17,11 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
-#if defined(_MSC_VER)
-#include <intrin.h>             // _BitScanReverse (CLZ 등가)
-#endif
+
+namespace {
+/// 소멸자 op_busy_ 스핀 상한 — 무한 대기(WDT/프리징) 방지. 초과 시 강제 파쇄(타 스레드·ISR 동시 접근 시 UAF 위험).
+constexpr uint32_t kDestructorSpinLimit = 10000000u;
+} // namespace
 
 // ── 플랫폼 검증 (int32_t/size_t) ───────────────────────────────────
 static_assert(sizeof(int32_t) == 4,
@@ -27,30 +30,19 @@ static_assert(sizeof(size_t) >= 2,
     "[HTS_Sync] size_t too narrow for expected buffer sizes");
 
 namespace ProtectedEngine {
-    static void Rx_Sync_Detector_Secure_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) { return; }
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
-    }
 
+    namespace {
 
-    // =====================================================================
-    //  보안 소거 (volatile + asm clobber + seq_cst)
-    //  상태 없는 검출기이지만 impl_buf_ 이중 소거를 위해 유지
-    // =====================================================================
-    static void SecWipe_Sync(void* ptr, size_t size) noexcept {
-        if (ptr == nullptr || size == 0u) { return; }
-        volatile unsigned char* p =
-            static_cast<volatile unsigned char*>(ptr);
-        for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
+        struct OpBusyGuard final {
+            std::atomic_flag* f_;
+            explicit OpBusyGuard(std::atomic_flag& fl) noexcept : f_(&fl) {
+                while (f_->test_and_set(std::memory_order_acquire)) {
+                }
+            }
+            ~OpBusyGuard() noexcept { f_->clear(std::memory_order_release); }
+            OpBusyGuard(const OpBusyGuard&) = delete;
+            OpBusyGuard& operator=(const OpBusyGuard&) = delete;
+        };
     }
 
     // ── CFAR 상수 ───────────────────────────────────────────────────────
@@ -100,7 +92,7 @@ namespace ProtectedEngine {
         HTS_Phy_Tier tier) noexcept
         : impl_valid_(false)
     {
-        SecWipe_Sync(impl_buf_, sizeof(impl_buf_));
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl(tier);
         impl_valid_.store(true, std::memory_order_release);
     }
@@ -108,13 +100,17 @@ namespace ProtectedEngine {
     // =====================================================================
     // =====================================================================
     HTS_Rx_Sync_Detector::~HTS_Rx_Sync_Detector() noexcept {
-        Impl* p = get_impl();
-        if (p != nullptr) {
-            p->~Impl();
-            Rx_Sync_Detector_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        uint32_t spins = 0;
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {
+            if (++spins >= kDestructorSpinLimit) {
+                break;
+            }
         }
-        SecWipe_Sync(impl_buf_, sizeof(impl_buf_));
-        impl_valid_.store(false, std::memory_order_release);
+        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
+        const bool was_valid = impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) { p->~Impl(); }
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
+        op_busy_.clear(std::memory_order_release);
     }
 
     // =====================================================================
@@ -123,6 +119,7 @@ namespace ProtectedEngine {
     void HTS_Rx_Sync_Detector::Set_CFAR_Multiplier(
         int32_t multiplier) noexcept
     {
+        OpBusyGuard guard(op_busy_);
         Impl* p = get_impl();
         if (p == nullptr) { return; }
         p->threshold_multiplier =
@@ -131,6 +128,7 @@ namespace ProtectedEngine {
     }
 
     int32_t HTS_Rx_Sync_Detector::Get_CFAR_Multiplier() const noexcept {
+        OpBusyGuard guard(op_busy_);
         const Impl* p = get_impl();
         return (p != nullptr) ? p->threshold_multiplier : MIN_CFAR_MULTIPLIER;
     }
@@ -139,12 +137,14 @@ namespace ProtectedEngine {
     //  uint8_t → uint32_t (향후 256+ 칩 확장 대비)
     // =====================================================================
     uint32_t HTS_Rx_Sync_Detector::Get_Chip_Count() const noexcept {
+        OpBusyGuard guard(op_busy_);
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
         return static_cast<uint32_t>(p->current_config.chip_count);
     }
 
     int32_t HTS_Rx_Sync_Detector::Get_Default_CFAR_Mult() const noexcept {
+        OpBusyGuard guard(op_busy_);
         const Impl* p = get_impl();
         return (p != nullptr)
             ? p->current_config.cfar_default_mult
@@ -154,13 +154,10 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Detect_Sync_Peak — CFAR 피크 검출
     //
-    //    energy_sum(양수) / buffer_size(전체) → 과소평가
-    //    → 음수 50% 시 noise_floor가 절반 → 임계치 절반 → 오탐 폭증
-    //    energy_sum(양수) / positive_count(양수만) → 정확한 평균
+    //  임계 판별(무 나눗셈): max_value * N_pos > energy_sum * k
+    //   ⇔ max_value > (energy_sum / N_pos) * k  (N_pos > 0)
     //
-    //    O(2N) 두 번 순회 → SRAM 이중 로드 → 대역폭 50% 낭비
-    //    1회 순회로 energy_sum + max_value/max_index 동시 추적
-    //
+    //  SNR 프록시(metrics 전용): energy_sum/N_pos, max/NF — 32비트 나눗셈 격리
     // =====================================================================
     int32_t HTS_Rx_Sync_Detector::Detect_Sync_Peak(
         const int32_t* correlation_buffer,
@@ -170,32 +167,30 @@ namespace ProtectedEngine {
         if (correlation_buffer == nullptr) { return -1; }
         if (buffer_size == 0u) { return -1; }
 
+        OpBusyGuard guard(op_busy_);
+
         Impl* p = get_impl();
         if (p == nullptr) { return -1; }
 
-        // ── 단일 O(N) 패스: 노이즈 + 피크 동시 추적 ─────────────────
-        int64_t energy_sum = 0;
+        int64_t energy_sum = 0LL;
         size_t  positive_count = 0u;
-        int64_t max_value = 0;
+        int64_t max_value = 0LL;
         int32_t max_index = -1;
 
         for (size_t i = 0u; i < buffer_size; ++i) {
             const int64_t val =
-                static_cast<int64_t>(correlation_buffer[i]);
+                static_cast<int64_t>(
+                    correlation_buffer[static_cast<size_t>(i)]);
 
-            // 양수 누산: 삼항 → ARM IT 블록 조건부 이동 (1사이클)
             energy_sum += (val > 0) ? val : 0;
             positive_count += (val > 0) ? 1u : 0u;
 
-            // 피크 추적
             if (val > max_value) {
                 max_value = val;
                 max_index = static_cast<int32_t>(i);
             }
         }
 
-        // 양수 0개: 신호 소실 → 즉시 동기 실패
-        // p_metrics가 있으면 snr_proxy = 0 기록 (컨트롤러가 NOISY로 판단)
         if (positive_count == 0u) {
             if (p_metrics != nullptr) {
                 p_metrics->snr_proxy.store(0, std::memory_order_release);
@@ -203,85 +198,31 @@ namespace ProtectedEngine {
             return -1;
         }
 
-        //
-        //  int64 평균: ldivmod 회피 — nf_num을 INT32 범위로 동일 비율 스케일
-        //  스케일량: hi=nf_num>>32에 대해 CLZ로 shift 산출(while 스케일과 동치)
-        int64_t  nf_num = energy_sum;
-        uint32_t nf_den = static_cast<uint32_t>(positive_count);
-
-        const uint32_t hi = static_cast<uint32_t>(
-            static_cast<uint64_t>(nf_num) >> 32u);
-
-        uint32_t shift = 0u;
-        if (hi != 0u) {
-            // hi > 0: nf_num > 0xFFFFFFFF
-            // CLZ(hi) = 상위 32비트의 선행 제로 수 (0~31)
-            // shift = 33 - CLZ(hi) → nf_num >> shift ≤ INT32_MAX
-#if defined(__GNUC__) || defined(__clang__)
-            // ARM Cortex-M4: CLZ = 1사이클 하드웨어 명령어
-            shift = 33u - static_cast<uint32_t>(__builtin_clz(hi));
-#elif defined(_MSC_VER)
-            //  idx = MSB 위치 (0~31), CLZ = 31 - idx
-            //  shift = 33 - (31 - idx) = idx + 2
-            unsigned long idx = 0;
-            const unsigned char bsr_ok =
-                _BitScanReverse(&idx, static_cast<unsigned long>(hi));
-            if (bsr_ok != 0u) {
-                shift = static_cast<uint32_t>(idx) + 2u;
-            }
-            else {
-                // hi!=0 조건에서 이 경로는 이론상 도달 불가.
-                // 정적분석기 경고(C6031)와 방어 코딩을 위해 유지.
-                shift = 1u;
-            }
-#else
-            // 범용 폴백 (시뮬레이션 전용)
-            uint32_t tmp = hi;
-            uint32_t bits = 0u;
-            while (tmp != 0u) { tmp >>= 1u; ++bits; }
-            shift = bits + 1u;
-#endif
-        }
-        else {
-            // hi == 0: nf_num ≤ 0xFFFFFFFF
-            // bit31 = 1 → nf_num > INT32_MAX → shift 1
-            // bit31 = 0 → nf_num ≤ INT32_MAX → shift 0
-            shift = static_cast<uint32_t>(nf_num) >> 31u;
-        }
-
-        nf_num >>= shift;
-        //  nf_den >>= shift → nf_den=1,shift=1 → nf_den=0 → 가드=1 → 2배 왜곡
-        //  nf_den가 shift를 수용 가능할 때만 시프트
-        //  불가 시: nf_den 유지 → 결과는 noise_floor 과소추정 (보수적 CFAR, 안전)
-        if (shift > 0u && nf_den >= (1u << shift)) {
-            nf_den >>= shift;
-        }
-        if (nf_den == 0u) { nf_den = 1u; }
-
-        // HW UDIV: 2~12사이클 (기존 __aeabi_ldivmod ~200사이클)
-        const int32_t noise_floor_32 = static_cast<int32_t>(
-            static_cast<uint32_t>(nf_num) / nf_den);
-        // int64_t 승격: cfar_threshold 곱셈 및 max_value 비교용 (나눗셈 아님)
-        const int64_t noise_floor = static_cast<int64_t>(noise_floor_32);
-
-        const int64_t cfar_threshold =
-            noise_floor *
+        const int64_t mult =
             static_cast<int64_t>(p->threshold_multiplier);
+        const int64_t lhs =
+            max_value * static_cast<int64_t>(positive_count);
+        const int64_t rhs = energy_sum * mult;
 
-        // ── SNR 프록시 계산 + metrics 기록 ───────────────────────────
-        //   max_value: correlation_buffer[i]의 최대 → ≤ INT32_MAX (int32_t 원소)
-        //   noise_floor_32: 양수 평균 → ≤ INT32_MAX
-        //   snr_raw: max_value / noise_floor → ≤ INT32_MAX → 클램핑 불필요
-        //   HW SDIV: 2~12사이클 (기존 __aeabi_ldivmod ~200사이클)
+        const bool peak_ok = (lhs > rhs);
+
         if (p_metrics != nullptr) {
             const int32_t max_val_32 = static_cast<int32_t>(max_value);
-            const int32_t snr_raw = (noise_floor_32 > 0)
-                ? (max_val_32 / noise_floor_32)
-                : 0;
-            p_metrics->snr_proxy.store(snr_raw, std::memory_order_release);
+            int32_t noise_floor_32 = 0;
+            if (positive_count > 0u) {
+                noise_floor_32 = static_cast<int32_t>(
+                    energy_sum / static_cast<int64_t>(positive_count));
+            }
+            if (noise_floor_32 <= 0) {
+                p_metrics->snr_proxy.store(0, std::memory_order_release);
+            }
+            else {
+                const int32_t snr_raw = max_val_32 / noise_floor_32;
+                p_metrics->snr_proxy.store(snr_raw, std::memory_order_release);
+            }
         }
 
-        return (max_value > cfar_threshold) ? max_index : -1;
+        return peak_ok ? max_index : -1;
     }
 
 } // namespace ProtectedEngine

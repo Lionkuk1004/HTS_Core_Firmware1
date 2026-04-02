@@ -2,6 +2,7 @@
 /// @brief HTS_Holo_Tensor_4D + HTS_Holo_Dispatcher Unit Test (Profile-Fixed)
 #include "HTS_Holo_Tensor_4D.h"
 #include "HTS_Holo_Dispatcher.h"
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 
@@ -170,7 +171,7 @@ static void test_07_time_diversity() {
     int8_t data[16]; for (int i = 0; i < 16; i++) data[i] = 1;
     int8_t c0[64], c1[64];
     eng.Encode_Block(data, 16, c0, 64);
-    eng.Advance_Time_Slot();
+    (void)eng.Advance_Time_Slot();
     eng.Encode_Block(data, 16, c1, 64);
 
     int diff = 0;
@@ -227,18 +228,18 @@ static void test_10_dispatcher_roundtrip() {
     // DATA_HOLO: K=16, 2 bytes/block, 4 bytes -> 2 blocks -> 128 chips
     uint8_t info[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
     int16_t outI[512], outQ[512];
-    int chips = tx_d.Build_Holo_Packet(
-        HoloPayload::DATA_HOLO, info, 4, 300, outI, outQ, 512);
-    printf("    Built %d chips (expect 128 = 2 blocks x 64)\n", chips);
-    CHECK(chips == 128, "2 blocks x 64 = 128 chips");
+    size_t chips = tx_d.Build_Holo_Packet(
+        HoloPayload::DATA_HOLO, info, 4u, 300, outI, outQ, 512u);
+    printf("    Built %zu chips (expect 128 = 2 blocks x 64)\n", chips);
+    CHECK(chips == 128u, "2 blocks x 64 = 128 chips");
 
-    uint8_t rec[16]; int out_len = 0;
+    uint8_t rec[16]; size_t out_len = 0u;
     rx_d.Set_Current_Mode(HoloPayload::DATA_HOLO);  // RX must know TX mode (from header)
     const uint32_t ok = rx_d.Decode_Holo_Block(outI, outQ,
         static_cast<uint16_t>(chips), 0xFFFFFFFFFFFFFFFFull, rec, &out_len);
     CHECK(ok == HTS_Holo_Dispatcher::SECURE_TRUE, "Decode success");
-    printf("    Recovered %d bytes: ", out_len);
-    for (int i = 0; i < out_len && i < 4; i++) printf("%02X ", rec[i]);
+    printf("    Recovered %zu bytes: ", out_len);
+    for (size_t i = 0u; i < out_len && i < 4u; i++) printf("%02X ", rec[i]);
     printf("\n");
 
     bool match = (out_len >= 4);
@@ -259,17 +260,17 @@ static void test_11_resilient_roundtrip() {
 
     uint8_t info[8] = { 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08 };
     int16_t outI[1024], outQ[1024];
-    int chips = tx_d.Build_Holo_Packet(
-        HoloPayload::RESILIENT_HOLO, info, 8, 300, outI, outQ, 1024);
-    printf("    Built %d chips (expect 512 = 8 blocks x 64)\n", chips);
-    CHECK(chips == 512, "8 blocks x 64 = 512 chips");
+    size_t chips = tx_d.Build_Holo_Packet(
+        HoloPayload::RESILIENT_HOLO, info, 8u, 300, outI, outQ, 1024u);
+    printf("    Built %zu chips (expect 512 = 8 blocks x 64)\n", chips);
+    CHECK(chips == 512u, "8 blocks x 64 = 512 chips");
 
-    uint8_t rec[16]; int out_len = 0;
+    uint8_t rec[16]; size_t out_len = 0u;
     rx_d.Set_Current_Mode(HoloPayload::RESILIENT_HOLO);  // RX must know TX mode
     rx_d.Decode_Holo_Block(outI, outQ,
         static_cast<uint16_t>(chips), 0xFFFFFFFFFFFFFFFFull, rec, &out_len);
-    printf("    Recovered %d bytes: ", out_len);
-    for (int i = 0; i < out_len && i < 8; i++) printf("%02X ", rec[i]);
+    printf("    Recovered %zu bytes: ", out_len);
+    for (size_t i = 0u; i < out_len && i < 8u; i++) printf("%02X ", rec[i]);
     printf("\n");
 
     bool match = (out_len >= 8);

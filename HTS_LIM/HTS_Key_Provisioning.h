@@ -50,6 +50,7 @@ namespace ProtectedEngine {
         NULL_INPUT = 0x05u,   ///< 입력 포인터 nullptr
         INVALID_LEN = 0x06u,   ///< 입력 길이 불일치
         LOCK_FAIL = 0x07u,   ///< 디버그 포트 잠금 실패
+        POWER_UNSTABLE = 0x08u,   ///< PVD/BOR 등 전압 불안정 — OTP·옵션바이트 쓰기 거부
     };
 
     class HTS_Key_Provisioning {
@@ -82,7 +83,7 @@ namespace ProtectedEngine {
         [[nodiscard]] uint32_t Is_Provisioned() const noexcept;
 
         /// @brief 래핑된 마스터 키를 언래핑 → OTP에 기록 → 검증
-        /// @param wrapped_key  AES-KW 래핑된 키 (24바이트)
+        /// @param wrapped_key  AES-KW(RFC 3394) 래핑된 키 (WRAPPED_KEY_SIZE=40바이트)
         /// @param wrapped_len  래핑된 키 길이 (WRAPPED_KEY_SIZE여야 함)
         /// @param factory_kek  공장 라인 KEK (Key Encryption Key, 32바이트)
         /// @param kek_len      KEK 길이 (MASTER_KEY_SIZE=32여야 함)
@@ -110,6 +111,7 @@ namespace ProtectedEngine {
         /// @brief 마스터 키 물리적 파기 (장비 폐기/변조 감지 시)
         /// @note OTP 키 영역에 0x00 덮어쓰기 → 비트 물리 소실 (비가역)
         /// @post 이후 Read_Master_Key 호출 시 0x00 반환 → 복호 불가
+        /// @note 전압 불안정이면 쓰기 생략. OTP 소각 실패 시 RAM 플래그는 갱신하지 않음(물리·논리 일치).
         void Destroy_Key() noexcept;
 
         /// @brief 안전 종료 — 내부 상태 소거

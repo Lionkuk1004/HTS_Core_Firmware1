@@ -8,6 +8,13 @@
 #include "HTS_Physical_Entropy_Engine.h"
 #include <atomic>
 
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#include <bit>
+#endif
+#if defined(_MSC_VER)
+#include <intrin.h>  // _ReadWriteBarrier (Execute_Tensor_Decoherence_Shredding)
+#endif
+
 // =========================================================================
 //  3단 플랫폼 분기
 // =========================================================================
@@ -66,8 +73,9 @@ namespace ProtectedEngine {
     //
     //  각 패스 사이 atomic_thread_fence(release): 패스 순서 가시성
     //
-    //  Physical_Entropy_Engine::Extract_Quantum_Seed() + DWT 틱 혼합
-    //  → 매 호출마다 고유한 패턴 → 전력 차단 시 잔존 데이터 비예측적
+    //  단일 워드 API: TRNG + DWT 틱 1회.
+    //  범위 API Execute_Tensor_Decoherence_Shredding_Range: TRNG 1회만 —
+    //  워드마다 TRNG를 반복 호출하지 않음 (B-CDMA MAC/PHY ISR 기아 방지).
     //
     // =====================================================================
 #if defined(__GNUC__) || defined(__clang__)
@@ -77,28 +85,35 @@ namespace ProtectedEngine {
 #pragma optimize("", off)
 #endif
 
-    void Hardware_Shield::Execute_Tensor_Decoherence_Shredding(
-        uint32_t* node) noexcept {
+namespace {
 
-        if (!node) return;
+    /// 버퍼 내 워드별 시드 — TRNG 없이 주소·인덱스로 분기 (빠른 경로)
+    uint32_t Mix_Per_Word(uint32_t base, size_t index, const uint32_t* addr) noexcept {
+        uint32_t x = base;
+        x ^= static_cast<uint32_t>(static_cast<uint32_t>(index) * 0x9E3779B9u);
+        x ^= static_cast<uint32_t>(reinterpret_cast<uintptr_t>(addr));
+        x ^= x >> 16u;
+        x *= 0x85EBCA6Bu;
+        if (x == 0u) {
+            x = 0x5C4E3D2Fu;
+        }
+        return x;
+    }
 
-        // ── 런타임 엔트로피 시드 생성 ────────────────────────────────
-        //  Physical_Entropy: TRNG/PUF 기반 하드웨어 시드
-        //  DWT 틱: 호출 시점 바인딩 (같은 데이터라도 시점마다 다른 패턴)
-        uint32_t seed = Physical_Entropy_Engine::Extract_Quantum_Seed();
-        seed ^= static_cast<uint32_t>(
-            Hardware_Bridge::Get_Physical_CPU_Tick() & 0xFFFFFFFFULL);
-
-        // 0 시드 방어 (seed=0 → 패턴이 val 그대로 → 파쇄 효과 없음)
-        if (seed == 0) seed = 0x5C4E3D2Fu;
-
-        // ── volatile 포인터: 모든 쓰기가 물리 메모리에 실행 ──────────
-        volatile uint32_t* vp = node;
+    void Shred_Single_Volatile_Word(volatile uint32_t* vp, uint32_t word_seed) noexcept {
+        uint32_t seed = word_seed;
+        if (seed == 0u) {
+            seed = 0x5C4E3D2Fu;
+        }
 
         // ── Pass 1: 런타임 랜덤 패턴 ─────────────────────────────────
-        uint32_t pattern = *node ^ seed;
-        pattern = (pattern << 13u) | (pattern >> 19u);  // RotL 13
-        pattern ^= 0x3D504F57u;                          // 도메인 상수 혼합
+        uint32_t pattern = *vp ^ seed;
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+        pattern = std::rotl(pattern, 13);
+#else
+        pattern = (pattern << 13u) | (pattern >> 19u);
+#endif
+        pattern ^= 0x3D504F57u;
         *vp = pattern;
         std::atomic_thread_fence(std::memory_order_release);
 
@@ -114,6 +129,47 @@ namespace ProtectedEngine {
 #elif defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(vp) : "memory");
 #endif
+    }
+
+} // namespace
+
+    void Hardware_Shield::Execute_Tensor_Decoherence_Shredding(
+        uint32_t* node) noexcept {
+
+        if (!node) return;
+
+        uint32_t base = Physical_Entropy_Engine::Extract_Quantum_Seed();
+        base ^= static_cast<uint32_t>(
+            Hardware_Bridge::Get_Physical_CPU_Tick() & 0xFFFFFFFFULL);
+        if (base == 0u) {
+            base = 0x5C4E3D2Fu;
+        }
+
+        Shred_Single_Volatile_Word(reinterpret_cast<volatile uint32_t*>(node), base);
+    }
+
+    void Hardware_Shield::Execute_Tensor_Decoherence_Shredding_Range(
+        uint32_t* first, size_t word_count) noexcept {
+
+        if (!first || word_count == 0u) return;
+
+        uint32_t base = Physical_Entropy_Engine::Extract_Quantum_Seed();
+        base ^= static_cast<uint32_t>(
+            Hardware_Bridge::Get_Physical_CPU_Tick() & 0xFFFFFFFFULL);
+        if (base == 0u) {
+            base = 0x5C4E3D2Fu;
+        }
+
+        if (word_count == 1u) {
+            Shred_Single_Volatile_Word(reinterpret_cast<volatile uint32_t*>(first), base);
+            return;
+        }
+
+        for (size_t i = 0u; i < word_count; ++i) {
+            const uint32_t word_seed = Mix_Per_Word(base, i, &first[i]);
+            Shred_Single_Volatile_Word(
+                reinterpret_cast<volatile uint32_t*>(&first[i]), word_seed);
+        }
     }
 
 #if defined(__GNUC__) || defined(__clang__)

@@ -161,6 +161,8 @@ namespace ProtectedEngine {
     };
 
     /// @brief 슬립 전/후 통지 콜백 (외부 모듈 상태 보존/복원)
+    /// @warning 이 콜백 안에서 HTS_Power_Manager의 다른 공개 API를 호출하면
+    ///          op_busy_ 재진입으로 데드락이 납니다. 호출 금지.
     struct Power_Notify_Callbacks {
         void (*on_pre_sleep)(PowerMode target);          ///< 슬립 진입 전 호출
         void (*on_post_wake)(PowerMode from, uint16_t wake_src); ///< 웨이크업 후 호출

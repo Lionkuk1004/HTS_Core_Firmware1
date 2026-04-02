@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>      // size_t
 #include <cstdint>      // uint8_t, uint64_t
+#include <cstdlib>      // std::abort — AArch64 틱 실패 시 엔트로피 0 주입 방지
 
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
 #define HTS_HWBRIDGE_ARM
@@ -85,9 +86,14 @@ namespace ProtectedEngine {
         //  clock_gettime(CLOCK_MONOTONIC)은 Linux vDSO를 통해 커널 타이머를
         //  유저스페이스에서 안전하게 읽음 (syscall 오버헤드 0, ~20ns)
         //  나노초 해상도: 엔트로피 수집/타이밍 방어에 충분
-        struct timespec ts = { 0, 0 };
+        //
+        //  MONOTONIC 실패 시 0 반환 금지(엔트로피/리플레이 방어 무력화) —
+        //  CLOCK_REALTIME 재시도 후에도 실패하면 프로세스 중단(fail-hard).
+        struct timespec ts{};
         if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-            return 0u;  // fail-closed: 타이머 읽기 실패 시 0 반환
+            if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+                std::abort();
+            }
         }
         return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
             + static_cast<uint64_t>(ts.tv_nsec);
@@ -124,7 +130,7 @@ namespace ProtectedEngine {
 
         volatile uint8_t* p = static_cast<volatile uint8_t*>(ptr);
         for (size_t i = 0; i < size_bytes; ++i) {
-            p[i] = 0x00;
+            p[i] = static_cast<uint8_t>(0u);
         }
 
         std::atomic_thread_fence(std::memory_order_release);

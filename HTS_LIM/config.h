@@ -90,17 +90,19 @@
 #		endif
 #	endif
 #elif defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH) || defined(__ARM_ARCH__)
 /* STM32F407 등 Cortex-M: 리틀엔디안 고정 (endian.h 미제공 툴체인 대비) */
 #define IS_LITTLE_ENDIAN 1
 #else
 /* use <endian.h> */
+// ⚠ [요검토: 툴체인이 __BYTE_ORDER__/__ORDER_LITTLE_ENDIAN__를 제공하지 않으면 IS_LITTLE_ENDIAN 판정 재검증]
 #	ifdef BSD
 #		include <sys/endian.h>
 #	else
 #		include <endian.h>
 #	endif
-#	if __BYTE_ORDER__ == __LITTLE_ENDIAN
+#	if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && \
+	    (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 #		define IS_LITTLE_ENDIAN 1
 #	else
 #		define IS_LITTLE_ENDIAN 0

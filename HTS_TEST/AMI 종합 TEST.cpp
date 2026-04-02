@@ -106,7 +106,7 @@ static void test_neighbor() {
     nd.On_Beacon_Received(pkt, 8u, 0xC4u, 1000u);
     CHECK("비콘 수신 → 이웃 등록", nd.Get_Neighbor_Count() >= 1u);
 
-    nd.Set_Mode(DiscoveryMode::ALERT);
+    nd.Set_Mode(DiscoveryMode::ALERT, 1000u);
     CHECK("ALERT 모드 전환", nd.Get_Mode() == DiscoveryMode::ALERT);
 
     nd.Shutdown();

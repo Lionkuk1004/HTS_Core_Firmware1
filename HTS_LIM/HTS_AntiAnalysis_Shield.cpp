@@ -48,8 +48,7 @@ namespace ProtectedEngine {
         //  start/end 사이 ISR 발생 → 수백 사이클 뻥튀기
         //        → baseline × 10 초과 → 디버거 오탐 → 정상 펌웨어 자폭
         //  PRIMASK로 start~end 구간 인터럽트 완전 차단
-        //  영향: ~200사이클 (PROBE_ITERATIONS=100) ≈ 1.2µs@168MHz
-        //        ISR 지연 1.2µs → 통신 영향 없음 (UART 바이트 간격 ~60µs)
+        //  영향: PROBE_ITERATIONS(아래 상수)에 비례 — 호출은 메인/부팅 경로 권장, ISR 금지
 
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
@@ -63,9 +62,11 @@ namespace ProtectedEngine {
             Hardware_Bridge::Get_Physical_CPU_Tick());
 
         // 고정 연산량 (volatile → 컴파일러 최적화 제거 차단)
+        // ^= 복합 대입 시 int 승격 경고 방지: 전부 uint32_t로 명시
         volatile uint32_t dummy = 0;
-        for (int i = 0; i < PROBE_ITERATIONS; ++i) {
-            dummy ^= static_cast<uint32_t>(i);
+        for (uint32_t i = 0u; i < static_cast<uint32_t>(PROBE_ITERATIONS); ++i) {
+            const uint32_t d = static_cast<uint32_t>(dummy);
+            dummy = static_cast<uint32_t>(d ^ i);
         }
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -230,7 +231,12 @@ namespace ProtectedEngine {
                 ^ CHAOS_MASK
                 ^ static_cast<uint32_t>(i * GOLDEN_RATIO);
 
-            tensor_data[i] ^= static_cast<T>(per_element_mask);
+            // T가 uint8/16 등일 때 ^= 의 정수 승격·암시적 좁히기 방지
+            {
+                const uint64_t cur_u64 = static_cast<uint64_t>(tensor_data[i]);
+                const uint64_t m_u64 = static_cast<uint64_t>(per_element_mask);
+                tensor_data[i] = static_cast<T>(cur_u64 ^ m_u64);
+            }
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
             tensor_data[i] = std::rotl(tensor_data[i], 3);

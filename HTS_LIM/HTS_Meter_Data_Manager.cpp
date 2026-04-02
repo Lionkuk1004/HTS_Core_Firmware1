@@ -7,6 +7,9 @@
 #include "HTS_Crc32Util.h"
 #include "HTS_Priority_Scheduler.h"
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -14,12 +17,21 @@
 
 namespace ProtectedEngine {
 
+    // EVENT_LOG_SIZE=8 → 링 인덱스는 & (SIZE-1) 로 UDIV 회피 (⑨)
+    static_assert((HTS_Meter_Data_Manager::EVENT_LOG_SIZE &
+        (HTS_Meter_Data_Manager::EVENT_LOG_SIZE - 1u)) == 0u,
+        "EVENT_LOG_SIZE must be 2^N for bitmask ring");
+    static constexpr uint32_t EVENT_LOG_MASK =
+        static_cast<uint32_t>(HTS_Meter_Data_Manager::EVENT_LOG_SIZE - 1u);
+
     static void Mtr_Secure_Wipe(void* p, size_t n) noexcept {
         if (p == nullptr || n == 0u) { return; }
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
+        __asm__ __volatile__("" : : "r"(q) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -178,11 +190,13 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
         const uint32_t pm = mtr_critical_enter();
-        MeterLogEntry& e = p->event_log[p->event_head];
+        const size_t hi = static_cast<size_t>(p->event_head);
+        MeterLogEntry& e = p->event_log[hi];
         e.timestamp = timestamp;
         e.event = event;
-        p->event_head = static_cast<uint8_t>(
-            (p->event_head + 1u) % EVENT_LOG_SIZE);
+        const uint32_t nh =
+            (static_cast<uint32_t>(p->event_head) + 1u) & EVENT_LOG_MASK;
+        p->event_head = static_cast<uint8_t>(nh);
         if (p->event_count < EVENT_LOG_SIZE) { p->event_count++; }
         mtr_critical_exit(pm);
     }
@@ -193,16 +207,22 @@ namespace ProtectedEngine {
     MeterReading HTS_Meter_Data_Manager::Get_Latest() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { MeterReading r = {}; return r; }
-        const uint32_t pm = mtr_critical_enter();
-        const MeterReading r = p->latest;
-        const uint32_t expect = p->latest_crc;
+        // CRC32(LUT)는 PRIMASK 밖에서 — N-10 ISR 기아 완화
+        MeterReading r;
+        uint32_t expect;
+        {
+            const uint32_t pm = mtr_critical_enter();
+            r = p->latest;
+            expect = p->latest_crc;
+            mtr_critical_exit(pm);
+        }
         if (meter_reading_crc(r) != expect) {
+            const uint32_t pm = mtr_critical_enter();
             p->crc_fault_latched = true;
             mtr_critical_exit(pm);
             MeterReading z = {};
             return z;
         }
-        mtr_critical_exit(pm);
         return r;
     }
 
@@ -220,7 +240,10 @@ namespace ProtectedEngine {
     {
         const Impl* p = get_impl();
         if (p == nullptr || slot >= PROFILE_SLOTS) { return 0u; }
-        return p->profile[slot];
+        const uint32_t pm = mtr_critical_enter();
+        const uint32_t v = p->profile[static_cast<size_t>(slot)];
+        mtr_critical_exit(pm);
+        return v;
     }
 
     size_t HTS_Meter_Data_Manager::Get_Event_Log(
@@ -230,8 +253,15 @@ namespace ProtectedEngine {
         if (p == nullptr || out == nullptr || cap == 0u) { return 0u; }
         const uint32_t pm = mtr_critical_enter();
         const size_t n = (p->event_count < cap) ? p->event_count : cap;
+        const uint8_t ec = p->event_count;
+        const uint8_t eh = p->event_head;
         for (size_t i = 0u; i < n; ++i) {
-            out[i] = p->event_log[i];
+            const uint32_t sum =
+                static_cast<uint32_t>(eh) + EVENT_LOG_SIZE
+                - static_cast<uint32_t>(ec) + static_cast<uint32_t>(i);
+            const size_t idx =
+                static_cast<size_t>(sum & EVENT_LOG_MASK);
+            out[i] = p->event_log[idx];
         }
         mtr_critical_exit(pm);
         return n;
@@ -256,19 +286,30 @@ namespace ProtectedEngine {
         // 15분 프로파일 기록
         const uint32_t prof_elapsed = systick_ms - p->last_profile_ms;
         if (prof_elapsed >= PROFILE_INTERVAL_MS) {
-            p->last_profile_ms += PROFILE_INTERVAL_MS;
-            const uint32_t pm = mtr_critical_enter();
-            const MeterReading lr = p->latest;
-            const uint32_t expect = p->latest_crc;
+            MeterReading lr;
+            uint32_t expect;
+            {
+                const uint32_t pm = mtr_critical_enter();
+                lr = p->latest;
+                expect = p->latest_crc;
+                mtr_critical_exit(pm);
+            }
             if (meter_reading_crc(lr) == expect) {
-                p->profile[p->profile_head] = lr.watt_hour;
-                p->profile_head = static_cast<uint8_t>(
-                    (p->profile_head + 1u) % PROFILE_SLOTS);
+                const uint32_t pm = mtr_critical_enter();
+                const size_t ph = static_cast<size_t>(p->profile_head);
+                p->profile[ph] = lr.watt_hour;
+                // PROFILE_SLOTS=96 → 2의 거듭제곱 아님 — 비교·래핑으로 UDIV 회피
+                uint32_t phn = static_cast<uint32_t>(p->profile_head) + 1u;
+                if (phn >= static_cast<uint32_t>(PROFILE_SLOTS)) { phn = 0u; }
+                p->profile_head = static_cast<uint8_t>(phn);
+                p->last_profile_ms += PROFILE_INTERVAL_MS;
+                mtr_critical_exit(pm);
             }
             else {
+                const uint32_t pm = mtr_critical_enter();
                 p->crc_fault_latched = true;
+                mtr_critical_exit(pm);
             }
-            mtr_critical_exit(pm);
         }
 
         // 1시간 보고
@@ -276,23 +317,31 @@ namespace ProtectedEngine {
         if (rpt_elapsed < REPORT_INTERVAL_MS) { return; }
         p->last_report_ms += REPORT_INTERVAL_MS;
 
-        // 보고 패킷 (8바이트 요약) — CRC 무결성 통과 시에만 유효 계량값 전송
+        // 보고 패킷 (8바이트 요약) — CRC는 잠금 밖에서 (LUT 순회 N-10)
         uint8_t pkt[8] = {};
-        const uint32_t pm = mtr_critical_enter();
-        const MeterReading lr = p->latest;
-        const uint32_t expect = p->latest_crc;
+        MeterReading lr;
+        uint32_t expect;
+        uint8_t evc = 0u;
+        uint16_t my_id_snap = 0u;
+        {
+            const uint32_t pm = mtr_critical_enter();
+            lr = p->latest;
+            expect = p->latest_crc;
+            evc = p->event_count;
+            my_id_snap = p->my_id;
+            mtr_critical_exit(pm);
+        }
         const bool ok = (meter_reading_crc(lr) == expect);
-        if (ok) {
-            ser_u16(&pkt[0], p->my_id);
-            ser_u32(&pkt[2], lr.cumul_kwh_x100);
-            pkt[6] = lr.power_factor;
-            pkt[7] = p->event_count;
-        }
-        else {
+        if (!ok) {
+            const uint32_t pm = mtr_critical_enter();
             p->crc_fault_latched = true;
+            mtr_critical_exit(pm);
+            return;
         }
-        mtr_critical_exit(pm);
-        if (!ok) { return; }
+        ser_u16(&pkt[0], my_id_snap);
+        ser_u32(&pkt[2], lr.cumul_kwh_x100);
+        pkt[6] = lr.power_factor;
+        pkt[7] = evc;
 
         const EnqueueResult enq = scheduler.Enqueue(
             PacketPriority::DATA,

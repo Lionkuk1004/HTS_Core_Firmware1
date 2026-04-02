@@ -180,7 +180,9 @@ namespace ProtectedEngine {
     }
 
     static void AddRoundKey(uint8_t* s, const uint8_t* rk) noexcept {
-        for (int i = 0; i < 16; ++i) s[i] ^= rk[i];
+        for (int i = 0; i < 16; ++i) {
+            s[i] = static_cast<uint8_t>(s[i] ^ rk[i]);
+        }
     }
 
     // =====================================================================
@@ -208,22 +210,25 @@ namespace ProtectedEngine {
         }
 
         uint8_t temp[4] = {};  // 루프 밖 선언 (소거 보장)
+        int cycle_cnt = 0;     // i % nk 대체 카운터 (0..nk-1)
+        int rcon_idx = 1;      // i / nk 대체 인덱스 (i=nk에서 1부터 시작)
         for (int i = nk; i < total_words; ++i) {
             temp[0] = expanded[4 * (i - 1)];
             temp[1] = expanded[4 * (i - 1) + 1];
             temp[2] = expanded[4 * (i - 1) + 2];
             temp[3] = expanded[4 * (i - 1) + 3];
 
-            if (i % nk == 0) {
+            if (cycle_cnt == 0) {
                 // RotWord + SubWord + Rcon
                 const uint8_t t0 = temp[0];
                 temp[0] = SBOX[temp[1]];
                 temp[1] = SBOX[temp[2]];
                 temp[2] = SBOX[temp[3]];
                 temp[3] = SBOX[t0];
-                temp[0] ^= RCON[i / nk];
+                temp[0] = static_cast<uint8_t>(temp[0] ^ RCON[rcon_idx]);
+                ++rcon_idx;
             }
-            else if (nk > 6 && (i % nk == 4)) {
+            else if (nk > 6 && cycle_cnt == 4) {
                 // SubWord only (AES-256 추가 단계)
                 temp[0] = SBOX[temp[0]];
                 temp[1] = SBOX[temp[1]];
@@ -231,10 +236,19 @@ namespace ProtectedEngine {
                 temp[3] = SBOX[temp[3]];
             }
 
-            expanded[4 * i] = expanded[4 * (i - nk)] ^ temp[0];
-            expanded[4 * i + 1] = expanded[4 * (i - nk) + 1] ^ temp[1];
-            expanded[4 * i + 2] = expanded[4 * (i - nk) + 2] ^ temp[2];
-            expanded[4 * i + 3] = expanded[4 * (i - nk) + 3] ^ temp[3];
+            expanded[4 * i] = static_cast<uint8_t>(
+                expanded[4 * (i - nk)] ^ temp[0]);
+            expanded[4 * i + 1] = static_cast<uint8_t>(
+                expanded[4 * (i - nk) + 1] ^ temp[1]);
+            expanded[4 * i + 2] = static_cast<uint8_t>(
+                expanded[4 * (i - nk) + 2] ^ temp[2]);
+            expanded[4 * i + 3] = static_cast<uint8_t>(
+                expanded[4 * (i - nk) + 3] ^ temp[3]);
+
+            ++cycle_cnt;
+            if (cycle_cnt == nk) {
+                cycle_cnt = 0;
+            }
         }
 
         AES_Secure_Zero(temp, sizeof(temp));

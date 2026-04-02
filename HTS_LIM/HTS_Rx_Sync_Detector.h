@@ -9,8 +9,8 @@
 //
 //  [CFAR 동작 원리]
 //   1. 상관도 버퍼 순회 → 양수 에너지 합산 / 양수 개수 = 노이즈 플로어
-//   2. 임계치 = 노이즈 플로어 × threshold_multiplier
-//   3. 임계치 초과 최대 피크의 인덱스 반환 (없으면 -1)
+//   2. 임계 판별: max×N_pos > energy_sum×k (교차 곱, 나눗셈 없음)
+//   3. 임계 초과 최대 피크의 인덱스 반환 (없으면 -1)
 //
 //  [사용법]
 //   1. 생성: HTS_Rx_Sync_Detector(tier)
@@ -21,12 +21,15 @@
 //      → ≥0: 피크 인덱스 (동기 획득), -1: 피크 없음
 //
 //  [메모리 요구량]
-//   sizeof(HTS_Rx_Sync_Detector) ≈ IMPL_BUF_SIZE + impl_valid_ + padding
-//   Impl: HTS_Phy_Config(≈36B) + int32_t(4B) ≈ 48B → IMPL_BUF_SIZE = 256B
+//   sizeof(HTS_Rx_Sync_Detector) ≈ IMPL_BUF_SIZE + impl_valid_ + op_busy_ + padding
+//
+//  [동시성]
+//   공개 API / 소멸자는 op_busy_ 로 Pimpl 접근 상호 배제 (ISR·소멸 UAF 방지).
+//   소멸자는 op_busy_ 무한 스핀 대신 상한 후 강제 파쇄 — 타 스레드·ISR 동시 접근 시 UAF 위험.
 //
 //  [보안 설계]
-//   상태 없는 순수 검출기 — 보안 소거 불필요
-//   impl_buf_: 소멸자에서 SecWipe — 전체 이중 소거
+//   Impl 내부는 CFAR 설정만 보유 — Pimpl 버퍼는 SecureMemory::secureWipe(D-2)
+//   impl_buf_: 생성자 선소거 + 소멸자에서 ~Impl 후 소거
 //   복사/이동: = delete (단일 인스턴스 원칙)
 //
 // ─────────────────────────────────────────────────────────────────────────
@@ -75,10 +78,7 @@ namespace ProtectedEngine {
         /// @brief CFAR 피크 검출
         /// @param correlation_buffer  int32_t 상관도 배열 (nullptr 불가)
         /// @param buffer_size         원소 수 (0 불가)
-        /// @param p_metrics           [선택] SNR 프록시 기록 대상 (nullptr 허용)
-        ///                            비nullptr 시 metrics.snr_proxy 갱신:
-        ///                            snr_proxy = max_value / noise_floor (정수비)
-        ///                            양수 0개 시 snr_proxy = 0 으로 기록
+        /// @param p_metrics           [선택] SNR 프록시 기록 (metrics 전용 32비트 나눗셈)
         /// @return ≥0: 피크 인덱스 (동기 성공), -1: 피크 없음 또는 방어 반환
         [[nodiscard]]
         int32_t Detect_Sync_Peak(
@@ -88,8 +88,6 @@ namespace ProtectedEngine {
 
     private:
         // ── Pimpl In-Place Storage (zero-heap) ─────────────────────
-        // Impl = HTS_Phy_Config(≈36B) + threshold_multiplier(4B) ≈ 48B
-        // impl_buf_ alignas(8) — Impl 요구 정렬(4) 이상
         static constexpr size_t IMPL_BUF_SIZE = 256u;
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
 
@@ -97,6 +95,7 @@ namespace ProtectedEngine {
 
         alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool> impl_valid_{ false };
+        mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
 
         Impl* get_impl() noexcept;
         const Impl* get_impl() const noexcept;

@@ -17,10 +17,58 @@
 #include "HTS_LSH256_Bridge.h"
 #include "HTS_Secure_Memory.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <new>
+
+namespace {
+/// C 링크(HTS_Secure_Boot_Check) + C++ API 공통 상호 배제 — impl_buf_/g_* 경쟁 UAF 방지
+std::atomic_flag g_sb_op_busy = ATOMIC_FLAG_INIT;
+
+constexpr uint32_t kSbDestructorSpinTries = 8u;
+
+struct SbOpBusyGuard final {
+    std::atomic_flag* f_;
+    explicit SbOpBusyGuard(std::atomic_flag& fl) noexcept : f_(&fl) {
+        while (f_->test_and_set(std::memory_order_acquire)) {
+        }
+    }
+    ~SbOpBusyGuard() noexcept { f_->clear(std::memory_order_release); }
+    SbOpBusyGuard(const SbOpBusyGuard&) = delete;
+    SbOpBusyGuard& operator=(const SbOpBusyGuard&) = delete;
+};
+
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || \
+    defined(__ARM_ARCH)
+[[noreturn]] static void HTS_SB_Destructor_Lock_Contention_Fault() noexcept {
+    static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
+    static constexpr uint32_t  AIRCR_RESET =
+        (0x05FAu << 16) | (1u << 2);
+    volatile uint32_t* const aircr =
+        reinterpret_cast<volatile uint32_t*>(ADDR_AIRCR);
+    *aircr = AIRCR_RESET;
+#if defined(__GNUC__) || defined(__clang__)
+    static constexpr uintptr_t ADDR_DBGMCU_FZ = 0xE0042008u;
+    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+    volatile uint32_t* const dbgmcu_fz =
+        reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
+    *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+    __asm__ __volatile__("dsb sy\n\tisb\n\t" ::: "memory");
+#endif
+    for (;;) {
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("wfi");
+#else
+        __asm__ __volatile__("nop");
+#endif
+    }
+}
+#endif
+} // namespace
 
 // ── 플랫폼 검증 ────────────────────────────────────────────────────────
 static_assert(sizeof(uint8_t) == 1, "uint8_t must be 1 byte");
@@ -86,6 +134,8 @@ namespace ProtectedEngine {
     static constexpr uint32_t HASH_MAGIC = 0x48415348u;       // "HASH"
 
     static constexpr uint32_t FLASH_BASE = 0x08000000u;
+    // 링커 ROM 이미지 길이와 반드시 일치(미일치 시 무결성 검증 무의미). F407VG 1MB Flash 중
+    // 실제 배치가 512KB인 경우의 상수 — 1MB 전체를 해시하려면 링커·OTP 프로비저닝과 함께 갱신.
     static constexpr uint32_t FW_SIZE = 512u * 1024u;
 
     // Flash 레지스터 (OTP 쓰기용)
@@ -122,6 +172,12 @@ namespace ProtectedEngine {
         }
         *flash_reg(FLASH_CR_OFF) |= FLASH_CR_PG;
         *reinterpret_cast<volatile uint8_t*>(addr) = val;
+#if defined(__GNUC__) || defined(__clang__)
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || \
+    defined(__ARM_ARCH)
+        __asm__ __volatile__("dsb sy" ::: "memory");
+#endif
+#endif
         guard = 100000u;
         while ((*flash_reg(FLASH_SR_OFF) & FLASH_SR_BSY) != 0u) {
             if (--guard == 0u) {
@@ -162,9 +218,9 @@ namespace ProtectedEngine {
         return (val == HASH_MAGIC);
     }
 
-    // Flash 해시 계산 (memory-mapped Flash 직접 읽기)
-    //  512KB를 64KB 청크로 분할, 청크 사이에 WDT 피딩
-    //  HSI 16MHz에서도 ~500ms 안에 완료 (IWDG 최대 8초)
+    // Flash 해시 (memory-mapped 직접 읽기)
+    //  LSH256_Bridge::Hash_256_WithPeriodicCallback: 64KB마다 IWDG 피드(해시 루프 중 타임아웃·리셋 방지).
+    //  클럭이 낮을수록 전체 시간 증가 — startup 주석의 SystemClock_Config·IWDG 설정과 함께 검증.
     static constexpr uint32_t IWDG_KR_ADDR = 0x40003000u;
     static constexpr uint32_t IWDG_FEED_KEY = 0x0000AAAAu;
 
@@ -173,11 +229,11 @@ namespace ProtectedEngine {
     }
 
     static bool compute_flash_hash(uint8_t* out32) noexcept {
-        // WDT 피딩 후 전체 해시 수행
         wdt_feed();
         const uint8_t* flash_ptr =
             reinterpret_cast<const uint8_t*>(FLASH_BASE);
-        const uint32_t ok = LSH256_Bridge::Hash_256(flash_ptr, FW_SIZE, out32);
+        const uint32_t ok = LSH256_Bridge::Hash_256_WithPeriodicCallback(
+            flash_ptr, FW_SIZE, out32, wdt_feed);
         wdt_feed();
         return (ok == LSH_SECURE_TRUE);
     }
@@ -265,6 +321,32 @@ namespace ProtectedEngine {
             : BootVerifyResult::HASH_MISMATCH;
     }
 
+    namespace detail {
+        /// 승인 시 g_boot_verified에 기록하는 다중 비트 매직(단일 비트 0/1보다 글리치 우회 난이도 증가)
+        constexpr uint32_t kBootVerifiedMagic = 0x5A5A5A5Au;
+
+        /// OK이면 kBootVerifiedMagic, 아니면 0 — if(r==OK) 없이 마스크만으로 커밋
+        uint32_t ct_boot_result_is_ok(BootVerifyResult r) noexcept {
+            uint8_t a = static_cast<uint8_t>(r);
+            uint8_t b = static_cast<uint8_t>(BootVerifyResult::OK);
+            const bool eq = ConstantTimeUtil::compare(&a, &b, 1u);
+            const uint32_t mask =
+                static_cast<uint32_t>(-(static_cast<int32_t>(eq)));
+            return mask & kBootVerifiedMagic;
+        }
+
+        /// g_boot_verified가 매직과 일치하는지 상수시간 4바이트 비교
+        bool boot_verified_storage_matches() noexcept {
+            const uint32_t gv = g_boot_verified;
+            const uint32_t mv = kBootVerifiedMagic;
+            uint8_t a[sizeof(gv)];
+            uint8_t b[sizeof(mv)];
+            std::memcpy(a, &gv, sizeof(gv));
+            std::memcpy(b, &mv, sizeof(mv));
+            return ConstantTimeUtil::compare(a, b, sizeof(a));
+        }
+    } // namespace detail
+
     // =====================================================================
     //  Pimpl 구현 구조체
     // =====================================================================
@@ -273,7 +355,7 @@ namespace ProtectedEngine {
         bool safe_mode = false;
 
         Impl() noexcept
-            : verified(g_boot_verified != 0u)
+            : verified(detail::boot_verified_storage_matches())
             , safe_mode(g_safe_mode != 0u)
         {
         }
@@ -311,31 +393,51 @@ namespace ProtectedEngine {
     HTS_Secure_Boot_Verify::HTS_Secure_Boot_Verify() noexcept
         : impl_valid_(false)
     {
+        SbOpBusyGuard guard(g_sb_op_busy);
         SecureMemory::secureWipe(impl_buf_, sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl();
         impl_valid_ = true;
     }
 
     HTS_Secure_Boot_Verify::~HTS_Secure_Boot_Verify() noexcept {
-        Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
-        SecureMemory::secureWipe(impl_buf_, IMPL_BUF_SIZE);
+        uint32_t spins = 0;
+        while (g_sb_op_busy.test_and_set(std::memory_order_acquire)) {
+            if (++spins >= kSbDestructorSpinTries) {
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || \
+    defined(__ARM_ARCH)
+                HTS_SB_Destructor_Lock_Contention_Fault();
+#else
+                std::abort();
+#endif
+            }
+        }
+        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
+        const bool was_valid = impl_valid_;
         impl_valid_ = false;
+        if (was_valid) { p->~Impl(); }
+        SecureMemory::secureWipe(impl_buf_, IMPL_BUF_SIZE);
+        g_sb_op_busy.clear(std::memory_order_release);
     }
 
     // =====================================================================
     //  Verify_Firmware — 글리치 방어 포함 (2회 시도)
     // =====================================================================
     BootVerifyResult HTS_Secure_Boot_Verify::Verify_Firmware() noexcept {
+        SbOpBusyGuard guard(g_sb_op_busy);
         Impl* p = get_impl();
         if (p == nullptr) { return BootVerifyResult::FLASH_READ_FAIL; }
 
-        // 1차 시도
+        if (p->verified) {
+            return BootVerifyResult::OK;
+        }
+
         BootVerifyResult r = do_verify_once();
 
-        if (r == BootVerifyResult::OK) {
-            p->verified = true;
-            g_boot_verified = 1u;
+        const uint32_t ok_mask = detail::ct_boot_result_is_ok(r);
+        g_boot_verified |= ok_mask;
+        p->verified = detail::boot_verified_storage_matches();
+
+        if (ok_mask != 0u) {
             return BootVerifyResult::OK;
         }
 
@@ -345,16 +447,15 @@ namespace ProtectedEngine {
             return BootVerifyResult::NOT_PROVISIONED;
         }
 
-        // 글리치 방어: 1회 재시도
         r = do_verify_once();
+        const uint32_t ok_mask2 = detail::ct_boot_result_is_ok(r);
+        g_boot_verified |= ok_mask2;
+        p->verified = detail::boot_verified_storage_matches();
 
-        if (r == BootVerifyResult::OK) {
-            p->verified = true;
-            g_boot_verified = 1u;
+        if (ok_mask2 != 0u) {
             return BootVerifyResult::OK;
         }
 
-        // 재시도 실패 → 안전 모드
         p->safe_mode = true;
         g_safe_mode = 1u;
         return BootVerifyResult::RETRY_FAIL;
@@ -364,11 +465,13 @@ namespace ProtectedEngine {
     //  Is_Verified / Is_Safe_Mode
     // =====================================================================
     bool HTS_Secure_Boot_Verify::Is_Verified() const noexcept {
+        SbOpBusyGuard guard(g_sb_op_busy);
         const Impl* p = get_impl();
         return (p != nullptr) && p->verified;
     }
 
     bool HTS_Secure_Boot_Verify::Is_Safe_Mode() const noexcept {
+        SbOpBusyGuard guard(g_sb_op_busy);
         const Impl* p = get_impl();
         return (p != nullptr) && p->safe_mode;
     }
@@ -379,6 +482,7 @@ namespace ProtectedEngine {
     bool HTS_Secure_Boot_Verify::Provision_Expected_Hash(
         const uint8_t* hash, size_t len) noexcept
     {
+        SbOpBusyGuard guard(g_sb_op_busy);
         if (hash == nullptr || len != HASH_SIZE) { return false; }
 
         // 이미 기록됨
@@ -430,38 +534,44 @@ extern "C" {
 
     int32_t HTS_Secure_Boot_Check(void) {
         using namespace ProtectedEngine;
+        using ProtectedEngine::detail::ct_boot_result_is_ok;
+
+        // C 런타임(BSS) 초기화 전에 startup에서 호출될 수 있음 — g_sb_op_busy 미초기화
+        // 데드락 방지를 위해 본 함수에서는 락을 사용하지 않음(단일 코어·인터럽트 미개입 가정).
 
         g_boot_verified = 0u;
         g_safe_mode = 0u;
 
-        // 1차 시도
         BootVerifyResult r = do_verify_once();
 
-        if (r == BootVerifyResult::OK) {
-            g_boot_verified = 1u;
-            return 0;  // 성공
-        }
+        const uint32_t ok_mask = ct_boot_result_is_ok(r);
+        g_boot_verified = ok_mask;
 
-        //  미프로비저닝 → 안전 모드(프로비저닝만). 공장 첫 출하는 Provision_Expected_Hash() 후 정상 부팅
-        if (r == BootVerifyResult::NOT_PROVISIONED) {
-            g_safe_mode = 1u;
-            return 1;  // 안전 모드 (프로비저닝 필요)
-        }
-
-        // 글리치 방어 재시도
-        r = do_verify_once();
-        if (r == BootVerifyResult::OK) {
-            g_boot_verified = 1u;
+        if (ok_mask != 0u) {
             return 0;
         }
 
-        // 실패 → 안전 모드
+        if (r == BootVerifyResult::NOT_PROVISIONED) {
+            g_safe_mode = 1u;
+            return 1;
+        }
+
+        r = do_verify_once();
+        const uint32_t ok_mask2 = ct_boot_result_is_ok(r);
+        g_boot_verified |= ok_mask2;
+
+        if (ok_mask2 != 0u) {
+            return 0;
+        }
+
         g_safe_mode = 1u;
         return 1;
     }
 
     int32_t HTS_Secure_Boot_Is_Verified(void) {
-        return (g_boot_verified != 0u) ? 1 : 0;
+        using ProtectedEngine::detail::boot_verified_storage_matches;
+        SbOpBusyGuard lock(g_sb_op_busy);
+        return boot_verified_storage_matches() ? 1 : 0;
     }
 
 } // extern "C"

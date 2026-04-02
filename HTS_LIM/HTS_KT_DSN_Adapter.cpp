@@ -16,6 +16,7 @@
 #include "HTS_IPC_Protocol.h"
 #include <new>
 #include <atomic>
+#include <cstddef>
 
 namespace ProtectedEngine {
 
@@ -24,7 +25,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -51,28 +52,33 @@ namespace ProtectedEngine {
 
     static inline void DSN_Write_U16(uint8_t* b, uint16_t v) noexcept
     {
-        b[0] = static_cast<uint8_t>(v >> 8u);
-        b[1] = static_cast<uint8_t>(v & 0xFFu);
+        b[static_cast<size_t>(0u)] = static_cast<uint8_t>(v >> 8u);
+        b[static_cast<size_t>(1u)] = static_cast<uint8_t>(v & 0xFFu);
     }
     static inline void DSN_Write_U32(uint8_t* b, uint32_t v) noexcept
     {
-        b[0] = static_cast<uint8_t>(v >> 24u);
-        b[1] = static_cast<uint8_t>((v >> 16u) & 0xFFu);
-        b[2] = static_cast<uint8_t>((v >> 8u) & 0xFFu);
-        b[3] = static_cast<uint8_t>(v & 0xFFu);
+        b[static_cast<size_t>(0u)] = static_cast<uint8_t>(v >> 24u);
+        b[static_cast<size_t>(1u)] = static_cast<uint8_t>((v >> 16u) & 0xFFu);
+        b[static_cast<size_t>(2u)] = static_cast<uint8_t>((v >> 8u) & 0xFFu);
+        b[static_cast<size_t>(3u)] = static_cast<uint8_t>(v & 0xFFu);
     }
     static inline uint16_t DSN_Read_U16(const uint8_t* b) noexcept
     {
         return static_cast<uint16_t>(
-            (static_cast<uint16_t>(b[0]) << 8u) | static_cast<uint16_t>(b[1]));
+            (static_cast<uint16_t>(b[static_cast<size_t>(0u)]) << 8u)
+            | static_cast<uint16_t>(b[static_cast<size_t>(1u)]));
     }
     static inline uint32_t DSN_Read_U32(const uint8_t* b) noexcept
     {
-        return (static_cast<uint32_t>(b[0]) << 24u) |
-            (static_cast<uint32_t>(b[1]) << 16u) |
-            (static_cast<uint32_t>(b[2]) << 8u) |
-            static_cast<uint32_t>(b[3]);
+        return (static_cast<uint32_t>(b[static_cast<size_t>(0u)]) << 24u) |
+            (static_cast<uint32_t>(b[static_cast<size_t>(1u)]) << 16u) |
+            (static_cast<uint32_t>(b[static_cast<size_t>(2u)]) << 8u) |
+            static_cast<uint32_t>(b[static_cast<size_t>(3u)]);
     }
+
+    /// Wire: [MSG_TYPE(1)][CRC16(2)] — CRC width matches DSN_FRAME_CRC_SIZE.
+    static constexpr uint32_t DSN_HEARTBEAT_FRAME_BYTES = 1u + DSN_FRAME_CRC_SIZE;
+    static_assert(DSN_HEARTBEAT_FRAME_BYTES == 3u, "DSN heartbeat: 1-byte type + CRC16");
 
     // ============================================================
     //  Impl Structure
@@ -159,16 +165,22 @@ namespace ProtectedEngine {
             const uint32_t data_region = static_cast<uint32_t>(len) - DSN_FRAME_CRC_SIZE;
             if (data_region < DSN_FRAME_HEADER_SIZE) { return; }
             const uint16_t computed = IPC_Compute_CRC16(data, data_region);
-            const uint16_t received = DSN_Read_U16(&data[data_region]);
+            const uint16_t received = DSN_Read_U16(
+                &data[static_cast<size_t>(data_region)]);
             if (computed != received) { return; }
 
             // Parse header
-            const DSN_MsgType msg_type = static_cast<DSN_MsgType>(data[0]);
-            const uint16_t disaster_code = DSN_Read_U16(&data[1]);
-            const DSN_Severity severity = static_cast<DSN_Severity>(data[3]);
-            const uint32_t area_code = DSN_Read_U32(&data[4]);
-            const uint32_t timestamp = DSN_Read_U32(&data[8]);
-            const uint8_t payload_len = data[12];
+            const DSN_MsgType msg_type =
+                static_cast<DSN_MsgType>(data[static_cast<size_t>(0u)]);
+            const uint16_t disaster_code = DSN_Read_U16(
+                &data[static_cast<size_t>(1u)]);
+            const DSN_Severity severity =
+                static_cast<DSN_Severity>(data[static_cast<size_t>(3u)]);
+            const uint32_t area_code = DSN_Read_U32(
+                &data[static_cast<size_t>(4u)]);
+            const uint32_t timestamp = DSN_Read_U32(
+                &data[static_cast<size_t>(8u)]);
+            const uint8_t payload_len = data[static_cast<size_t>(12u)];
 
             // Payload bounds (overflow-safe)
             if (payload_len > DSN_MAX_TEXT_LEN) { return; }
@@ -176,7 +188,9 @@ namespace ProtectedEngine {
                 return;
             }
 
-            const uint8_t* payload = (payload_len > 0u) ? &data[DSN_FRAME_HEADER_SIZE] : nullptr;
+            const uint8_t* payload = (payload_len > 0u)
+                ? &data[static_cast<size_t>(DSN_FRAME_HEADER_SIZE)]
+                : nullptr;
 
             // Area matching
             if (!Is_Area_Match(area_code)) { return; }
@@ -270,11 +284,12 @@ namespace ProtectedEngine {
         {
             // Deactivate matching alert slots
             for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-                if (alerts[i].active != 0u &&
-                    alerts[i].disaster_code == disaster_code &&
-                    alerts[i].area_code == area_code)
+                const size_t idx = static_cast<size_t>(i);
+                if (alerts[idx].active != 0u &&
+                    alerts[idx].disaster_code == disaster_code &&
+                    alerts[idx].area_code == area_code)
                 {
-                    alerts[i].active = 0u;
+                    alerts[idx].active = 0u;
                 }
             }
 
@@ -304,30 +319,38 @@ namespace ProtectedEngine {
             if (ipc == nullptr) { return; }
 
             uint32_t pos = 0u;
-            frame_buf[pos++] = static_cast<uint8_t>(type);
-            DSN_Write_U16(&frame_buf[pos], disaster_code);  pos += 2u;
-            frame_buf[pos++] = static_cast<uint8_t>(severity);
-            DSN_Write_U32(&frame_buf[pos], area_code);      pos += 4u;
-            DSN_Write_U32(&frame_buf[pos], timestamp);       pos += 4u;
-            frame_buf[pos++] = text_len;
+            frame_buf[static_cast<size_t>(pos)] = static_cast<uint8_t>(type);
+            pos += 1u;
+            DSN_Write_U16(&frame_buf[static_cast<size_t>(pos)], disaster_code);
+            pos += 2u;
+            frame_buf[static_cast<size_t>(pos)] = static_cast<uint8_t>(severity);
+            pos += 1u;
+            DSN_Write_U32(&frame_buf[static_cast<size_t>(pos)], area_code);
+            pos += 4u;
+            DSN_Write_U32(&frame_buf[static_cast<size_t>(pos)], timestamp);
+            pos += 4u;
+            frame_buf[static_cast<size_t>(pos)] = text_len;
+            pos += 1u;
 
             // Copy text payload
             if (text != nullptr) {
                 const uint8_t safe_len = (text_len <= DSN_MAX_TEXT_LEN)
                     ? text_len : static_cast<uint8_t>(DSN_MAX_TEXT_LEN);
                 for (uint8_t i = 0u; i < safe_len; ++i) {
-                    frame_buf[pos + i] = text[i];
+                    frame_buf[static_cast<size_t>(pos)
+                        + static_cast<size_t>(i)] = text[i];
                 }
                 pos += static_cast<uint32_t>(safe_len);
             }
 
             // CRC-16
             const uint16_t crc = IPC_Compute_CRC16(frame_buf, pos);
-            DSN_Write_U16(&frame_buf[pos], crc);
+            DSN_Write_U16(&frame_buf[static_cast<size_t>(pos)], crc);
             pos += DSN_FRAME_CRC_SIZE;
 
             ipc->Send_Frame(IPC_Command::DATA_TX,
                 frame_buf, static_cast<uint16_t>(pos));
+            DSN_Secure_Wipe(frame_buf, static_cast<size_t>(pos));
         }
 
         // ============================================================
@@ -338,17 +361,19 @@ namespace ProtectedEngine {
         {
             // Search existing
             for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-                if (alerts[i].active != 0u &&
-                    alerts[i].disaster_code == disaster_code &&
-                    alerts[i].area_code == area_code)
+                const size_t idx = static_cast<size_t>(i);
+                if (alerts[idx].active != 0u &&
+                    alerts[idx].disaster_code == disaster_code &&
+                    alerts[idx].area_code == area_code)
                 {
-                    return &alerts[i];
+                    return &alerts[idx];
                 }
             }
             // Allocate free slot
             for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-                if (alerts[i].active == 0u) {
-                    return &alerts[i];
+                const size_t idx = static_cast<size_t>(i);
+                if (alerts[idx].active == 0u) {
+                    return &alerts[idx];
                 }
             }
             return nullptr;  // All slots busy
@@ -358,7 +383,7 @@ namespace ProtectedEngine {
         {
             uint32_t count = 0u;
             for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-                if (alerts[i].active != 0u) { count++; }
+                if (alerts[static_cast<size_t>(i)].active != 0u) { count++; }
             }
             return count;
         }
@@ -385,32 +410,42 @@ namespace ProtectedEngine {
         // ============================================================
         void Process_Retransmissions() noexcept
         {
-            bool any_retx = false;
             for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-                if (alerts[i].active == 0u) { continue; }
-                if (alerts[i].retransmit_remain == 0u) { continue; }
+                const size_t idx = static_cast<size_t>(i);
+                if (alerts[idx].active == 0u) { continue; }
+                if (alerts[idx].retransmit_remain == 0u) { continue; }
 
                 // Pacing check: has enough time elapsed since last send?
-                const uint32_t elapsed = current_tick - alerts[i].last_retransmit_tick;
+                const uint32_t elapsed =
+                    current_tick - alerts[idx].last_retransmit_tick;
                 if (elapsed < DSN_RETRANSMIT_INTERVAL) { continue; }
 
                 // Relay again (header only on retransmit, no text duplication)
                 Relay_Alert_To_BCDMA(
                     DSN_MsgType::CBS_ALERT,
-                    alerts[i].disaster_code,
-                    alerts[i].severity,
-                    alerts[i].area_code,
-                    alerts[i].timestamp,
+                    alerts[idx].disaster_code,
+                    alerts[idx].severity,
+                    alerts[idx].area_code,
+                    alerts[idx].timestamp,
                     nullptr, 0u);
 
-                alerts[i].retransmit_remain--;
+                alerts[idx].retransmit_remain--;
                 // Drift-free: advance by interval, not overwrite with current_tick
-                alerts[i].last_retransmit_tick += DSN_RETRANSMIT_INTERVAL;
-                any_retx = true;
+                alerts[idx].last_retransmit_tick += DSN_RETRANSMIT_INTERVAL;
             }
 
-            if (any_retx) {
-                // Stay in RETRANSMITTING or transition to it
+            bool has_pending_retx = false;
+            for (uint32_t j = 0u; j < DSN_MAX_ACTIVE_ALERTS; ++j) {
+                const size_t jdx = static_cast<size_t>(j);
+                if (alerts[jdx].active != 0u &&
+                    alerts[jdx].retransmit_remain > 0u)
+                {
+                    has_pending_retx = true;
+                    break;
+                }
+            }
+
+            if (has_pending_retx) {
                 if ((static_cast<uint8_t>(state) &
                     static_cast<uint8_t>(DSN_State::RETRANSMITTING)) == 0u)
                 {
@@ -436,10 +471,12 @@ namespace ProtectedEngine {
         void Expire_Alerts() noexcept
         {
             for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-                if (alerts[i].active == 0u) { continue; }
-                const uint32_t elapsed = current_tick - alerts[i].received_tick;
+                const size_t idx = static_cast<size_t>(i);
+                if (alerts[idx].active == 0u) { continue; }
+                const uint32_t elapsed =
+                    current_tick - alerts[idx].received_tick;
                 if (elapsed >= DSN_ALERT_EXPIRY) {
-                    alerts[i].active = 0u;
+                    alerts[idx].active = 0u;
                 }
             }
 
@@ -470,7 +507,7 @@ namespace ProtectedEngine {
             "HTS_KT_DSN_Adapter::Impl exceeds IMPL_BUF_SIZE");
 
         for (uint32_t i = 0u; i < IMPL_BUF_SIZE; ++i) {
-            impl_buf_[i] = 0u;
+            impl_buf_[static_cast<size_t>(i)] = 0u;
         }
     }
 
@@ -515,7 +552,7 @@ namespace ProtectedEngine {
         impl->ch_cb.restore_normal = nullptr;
 
         for (uint32_t i = 0u; i < DSN_MAX_ACTIVE_ALERTS; ++i) {
-            impl->alerts[i].active = 0u;
+            impl->alerts[static_cast<size_t>(i)].active = 0u;
         }
 
         impl->Transition_State(DSN_State::MONITORING);
@@ -536,11 +573,12 @@ namespace ProtectedEngine {
 
         impl->state = DSN_State::OFFLINE;
         impl->ipc = nullptr;
+
+        initialized_.store(false, std::memory_order_release);
+
         impl->~Impl();
 
         DSN_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-
-        initialized_.store(false, std::memory_order_release);
     }
 
     void HTS_KT_DSN_Adapter::Register_Receive_Callbacks(
@@ -598,13 +636,15 @@ namespace ProtectedEngine {
         // Heartbeat (drift-free)
         if ((systick_ms - impl->last_heartbeat_tick) >= DSN_HEARTBEAT_INTERVAL) {
             if (impl->ipc != nullptr) {
-                uint8_t hb[3] = {
-                    static_cast<uint8_t>(DSN_MsgType::HEARTBEAT),
-                    0u, 0u
-                };
+                uint8_t hb[DSN_HEARTBEAT_FRAME_BYTES] = {};
+                hb[static_cast<size_t>(0u)] =
+                    static_cast<uint8_t>(DSN_MsgType::HEARTBEAT);
                 const uint16_t crc = IPC_Compute_CRC16(hb, 1u);
-                DSN_Write_U16(&hb[1], crc);
-                impl->ipc->Send_Frame(IPC_Command::DATA_TX, hb, 3u);
+                static_assert(sizeof(hb) >= 1u + DSN_FRAME_CRC_SIZE,
+                    "heartbeat buffer must hold type byte + CRC16");
+                DSN_Write_U16(&hb[static_cast<size_t>(1u)], crc);
+                impl->ipc->Send_Frame(IPC_Command::DATA_TX, hb,
+                    static_cast<uint16_t>(sizeof(hb)));
             }
             impl->last_heartbeat_tick += DSN_HEARTBEAT_INTERVAL;
         }

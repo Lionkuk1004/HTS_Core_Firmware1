@@ -37,19 +37,27 @@
 #include <atomic>
 #include <cstring>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace ProtectedEngine {
 
     // =====================================================================
     //  유틸리티 — 보안 소거 + 상수 시간 비교
     // =====================================================================
     static void KAT_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) return;
+        if (p == nullptr || n == 0u) { return; }
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) q[i] = 0u;
+        while (n--) {
+            *q++ = 0u;
+        }
+        // LTO/DCE가 스택 버퍼 소거 루프를 제거하지 못하도록 p 기준 memory clobber
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(p) : "memory");
+#else
+        std::atomic_thread_fence(std::memory_order_seq_cst);
 #endif
-        std::atomic_thread_fence(std::memory_order_release);
     }
 
     static bool KAT_CT_Eq(const uint8_t* a,
@@ -92,7 +100,7 @@ namespace ProtectedEngine {
             }
         }
 
-        if (!KAT_CT_Eq(ct, expected_ct, 16)) {
+        if (!KAT_CT_Eq(ct, expected_ct, 16u)) {
             KAT_Wipe(ct, sizeof(ct));
             return false;
         }
@@ -112,7 +120,7 @@ namespace ProtectedEngine {
             }
         }
 
-        bool ok = KAT_CT_Eq(dec, pt, 16);
+        bool ok = KAT_CT_Eq(dec, pt, 16u);
 
         KAT_Wipe(ct, sizeof(ct));
         KAT_Wipe(dec, sizeof(dec));
@@ -146,7 +154,7 @@ namespace ProtectedEngine {
         std::memcpy(work, pt, 16);
         {
             LEA_Bridge bridge;
-            if (bridge.Initialize(key, 16u, iv) != LEA_Bridge::SECURE_TRUE) return false;
+            if (bridge.Initialize(key, 16u, iv, 16u) != LEA_Bridge::SECURE_TRUE) return false;
             if (bridge.Encrypt_Payload(work, 4u) != LEA_Bridge::SECURE_TRUE) {
                 KAT_Wipe(work, sizeof(work));
                 return false;
@@ -154,7 +162,7 @@ namespace ProtectedEngine {
         }
 
         // CT가 PT와 달라야 함 (CTR 스트림 XOR 적용 확인)
-        if (KAT_CT_Eq(reinterpret_cast<const uint8_t*>(work), pt, 16)) {
+        if (KAT_CT_Eq(reinterpret_cast<const uint8_t*>(work), pt, 16u)) {
             // 암호화 후에도 평문과 동일 = 암호화 미적용
             KAT_Wipe(work, sizeof(work));
             return false;
@@ -165,7 +173,7 @@ namespace ProtectedEngine {
         std::memcpy(dec, work, 16);
         {
             LEA_Bridge bridge;
-            if (bridge.Initialize(key, 16u, iv) != LEA_Bridge::SECURE_TRUE) {
+            if (bridge.Initialize(key, 16u, iv, 16u) != LEA_Bridge::SECURE_TRUE) {
                 KAT_Wipe(work, sizeof(work));
                 return false;
             }
@@ -176,7 +184,7 @@ namespace ProtectedEngine {
             }
         }
 
-        bool ok = KAT_CT_Eq(reinterpret_cast<const uint8_t*>(dec), pt, 16);
+        bool ok = KAT_CT_Eq(reinterpret_cast<const uint8_t*>(dec), pt, 16u);
 
         KAT_Wipe(work, sizeof(work));
         KAT_Wipe(dec, sizeof(dec));
@@ -211,12 +219,12 @@ namespace ProtectedEngine {
         uint8_t result[32] = {};
 
         // HMAC_Bridge::Generate(message, msg_len, key, key_len, output)
-        if (!HMAC_Bridge::Generate(msg, 8, key, 20, result)) {
+        if (HMAC_Bridge::Generate(msg, 8u, key, 20u, result) != HMAC_Bridge::SECURE_TRUE) {
             KAT_Wipe(result, sizeof(result));
             return false;
         }
 
-        bool ok = KAT_CT_Eq(result, expected, 32);
+        bool ok = KAT_CT_Eq(result, expected, 32u);
         KAT_Wipe(result, sizeof(result));
         return ok;
     }
@@ -247,7 +255,7 @@ namespace ProtectedEngine {
             return false;
         }
 
-        bool ok = KAT_CT_Eq(result, expected, 32);
+        bool ok = KAT_CT_Eq(result, expected, 32u);
         KAT_Wipe(result, sizeof(result));
         return ok;
     }
@@ -274,13 +282,13 @@ namespace ProtectedEngine {
         // 1회차
         HTS_CTR_DRBG drbg1;
         if (drbg1.Instantiate(entropy, sizeof(entropy),
-            nonce, sizeof(nonce), nullptr, 0) != DRBG_Status::OK) {
+            nonce, sizeof(nonce), nullptr, 0u) != DRBG_Status::OK) {
             KAT_Wipe(entropy, sizeof(entropy));
             return false;
         }
 
         uint8_t out1[32] = {};
-        if (drbg1.Generate(out1, 32) != DRBG_Status::OK) {
+        if (drbg1.Generate(out1, 32u) != DRBG_Status::OK) {
             drbg1.Uninstantiate();
             KAT_Wipe(entropy, sizeof(entropy));
             KAT_Wipe(out1, sizeof(out1));
@@ -288,10 +296,19 @@ namespace ProtectedEngine {
         }
         drbg1.Uninstantiate();
 
-        // 비제로 확인
-        volatile uint8_t nz = 0u;
-        for (size_t i = 0u; i < 32u; ++i) nz |= out1[i];
-        if (nz == 0u) {
+        // 비제로 확인 (DRBG 출력이 전부 0인 치명적 고장 방지)
+        uint32_t nz_check = 0u;
+        for (size_t i = 0u; i < 32u; ++i) {
+            nz_check |= static_cast<uint32_t>(out1[i]);
+#if defined(__GNUC__) || defined(__clang__)
+            __asm__ __volatile__("" : "+r"(nz_check) : "r"(i) : "memory");
+#elif defined(_MSC_VER)
+            _ReadWriteBarrier();
+#else
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
+        }
+        if (nz_check == 0u) {
             KAT_Wipe(entropy, sizeof(entropy));
             KAT_Wipe(out1, sizeof(out1));
             return false;
@@ -300,14 +317,14 @@ namespace ProtectedEngine {
         // 2회차 — 동일 시드 → 동일 출력 (결정론 검증)
         HTS_CTR_DRBG drbg2;
         if (drbg2.Instantiate(entropy, sizeof(entropy),
-            nonce, sizeof(nonce), nullptr, 0) != DRBG_Status::OK) {
+            nonce, sizeof(nonce), nullptr, 0u) != DRBG_Status::OK) {
             KAT_Wipe(entropy, sizeof(entropy));
             KAT_Wipe(out1, sizeof(out1));
             return false;
         }
 
         uint8_t out2[32] = {};
-        if (drbg2.Generate(out2, 32) != DRBG_Status::OK) {
+        if (drbg2.Generate(out2, 32u) != DRBG_Status::OK) {
             drbg2.Uninstantiate();
             KAT_Wipe(entropy, sizeof(entropy));
             KAT_Wipe(out1, sizeof(out1));
@@ -315,7 +332,7 @@ namespace ProtectedEngine {
         }
         drbg2.Uninstantiate();
 
-        bool ok_det = KAT_CT_Eq(out1, out2, 32);
+        bool ok_det = KAT_CT_Eq(out1, out2, 32u);
 
         KAT_Wipe(entropy, sizeof(entropy));
         KAT_Wipe(out1, sizeof(out1));
@@ -364,7 +381,7 @@ namespace ProtectedEngine {
             }
         }
 
-        if (!KAT_CT_Eq(ct, expected_ct, 16)) {
+        if (!KAT_CT_Eq(ct, expected_ct, 16u)) {
             KAT_Wipe(ct, sizeof(ct));
             return false;
         }
@@ -384,7 +401,7 @@ namespace ProtectedEngine {
             }
         }
 
-        bool ok = KAT_CT_Eq(dec, pt, 16);
+        bool ok = KAT_CT_Eq(dec, pt, 16u);
         KAT_Wipe(ct, sizeof(ct));
         KAT_Wipe(dec, sizeof(dec));
         return ok;
@@ -412,12 +429,12 @@ namespace ProtectedEngine {
         uint8_t result[32] = {};
 
         // SHA256_Bridge::Hash — KISA SHA256_Encrpyt 래퍼
-        if (!SHA256_Bridge::Hash(msg, 3, result)) {
+        if (!SHA256_Bridge::Hash(msg, 3u, result)) {
             KAT_Wipe(result, sizeof(result));
             return false;
         }
 
-        bool ok = KAT_CT_Eq(result, expected, 32);
+        bool ok = KAT_CT_Eq(result, expected, 32u);
         KAT_Wipe(result, sizeof(result));
         return ok;
     }

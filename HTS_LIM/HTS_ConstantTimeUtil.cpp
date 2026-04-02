@@ -67,12 +67,16 @@ namespace ProtectedEngine {
             // null 포인터 경로에서는 idx를 0으로 강제해 OOB 방어
             const size_t idx_a = i * (a_null ^ static_cast<size_t>(1u));
             const size_t idx_b = i * (b_null ^ static_cast<size_t>(1u));
-            result = static_cast<uint8_t>(result | (safe_a[idx_a] ^ safe_b[idx_b]));
+            result = static_cast<uint8_t>(
+                static_cast<uint8_t>(result)
+                | (static_cast<uint8_t>(safe_a[idx_a])
+                    ^ static_cast<uint8_t>(safe_b[idx_b])));
 
             // → 컴파일러가 result 값을 추론하여 조기 종료 삽입 차단
             // → 루프 벡터화/언롤링 패턴 변형 차단
+            // → "r"(i): 루프 인덱스와의 인위적 의존 — LTO 시 이터레이션 병합/축소 억제
 #if defined(__GNUC__) || defined(__clang__)
-            __asm__ __volatile__("" : "+r"(result) : : "memory");
+            __asm__ __volatile__("" : "+r"(result) : "r"(i) : "memory");
 #elif defined(_MSC_VER)
             _ReadWriteBarrier();
 #endif
@@ -132,13 +136,17 @@ namespace ProtectedEngine {
             const size_t idx_b =
                 (i * cond_b) + ((safe_len_b - 1u) * (cond_b ^ static_cast<size_t>(1u)));
 
-            const uint8_t val_a = safe_a[idx_a] & mask_a;
-            const uint8_t val_b = safe_b[idx_b] & mask_b;
+            const uint8_t val_a = static_cast<uint8_t>(
+                static_cast<uint8_t>(safe_a[idx_a]) & mask_a);
+            const uint8_t val_b = static_cast<uint8_t>(
+                static_cast<uint8_t>(safe_b[idx_b]) & mask_b);
 
-            result = static_cast<uint8_t>(result | (val_a ^ val_b));
+            result = static_cast<uint8_t>(
+                static_cast<uint8_t>(result)
+                | (static_cast<uint8_t>(val_a) ^ static_cast<uint8_t>(val_b)));
 
 #if defined(__GNUC__) || defined(__clang__)
-            __asm__ __volatile__("" : "+r"(result) : : "memory");
+            __asm__ __volatile__("" : "+r"(result) : "r"(i) : "memory");
 #elif defined(_MSC_VER)
             _ReadWriteBarrier();
 #endif

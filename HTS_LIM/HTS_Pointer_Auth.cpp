@@ -8,6 +8,18 @@
 #include "HTS_Secure_Logger.h"
 #include "HTS_Secure_Memory.h"
 #include <atomic>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+#if (defined(__GNUC__) || defined(__clang__)) && \
+    (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
+    !defined(__aarch64__)
+#define HTS_PAC_PRIMASK_KEYSTORE 1
+#else
+#define HTS_PAC_PRIMASK_KEYSTORE 0
+#endif
 
 namespace ProtectedEngine {
 
@@ -26,6 +38,29 @@ namespace ProtectedEngine {
         constexpr uint32_t PAC_DONE = 2u;
     }
 
+#if HTS_PAC_PRIMASK_KEYSTORE
+    // Seqlock 키 갱신 중 ISR이 Load_Runtime_Key로 홀수 ver·반쪽 읽기에 걸리지 않도록
+    namespace {
+        struct Pac_Primask_Guard {
+            uint32_t saved_primask_;
+            explicit Pac_Primask_Guard() noexcept
+                : saved_primask_(0u) {
+                __asm__ volatile (
+                    "mrs %0, primask\n\t"
+                    "cpsid i"
+                    : "=r"(saved_primask_) :: "memory");
+            }
+            ~Pac_Primask_Guard() noexcept {
+                __asm__ volatile (
+                    "msr primask, %0"
+                    :: "r"(saved_primask_) : "memory");
+            }
+            Pac_Primask_Guard(const Pac_Primask_Guard&) = delete;
+            Pac_Primask_Guard& operator=(const Pac_Primask_Guard&) = delete;
+        };
+    } // namespace
+#endif
+
     // =====================================================================
     //  PAC 키: 64비트 tearing 방지 — hi/lo를 atomic<uint32_t>로 분리
     // =====================================================================
@@ -38,8 +73,11 @@ namespace ProtectedEngine {
     // =====================================================================
     static std::atomic<uint32_t> g_pac_key_ver{ 0u };  // 짝수=안정, 홀수=쓰기중
 
-    // 키 쓰기 — seqlock 보호
+    // 키 쓰기 — seqlock 보호 + (Cortex-M) PRIMASK로 키 갱신 구간 원자성
     static void Store_Runtime_Key(uint64_t key) noexcept {
+#if HTS_PAC_PRIMASK_KEYSTORE
+        Pac_Primask_Guard irq_guard;
+#endif
         // ver → 홀수 (쓰기 시작)
         g_pac_key_ver.fetch_add(1u, std::memory_order_release);
         g_pac_key_hi.store(static_cast<uint32_t>(key >> 32),
@@ -142,30 +180,107 @@ namespace ProtectedEngine {
             entropy_seed = PAC_FALLBACK_KEY;
         }
 
-        // 상태를 IN_PROGRESS로 전환 (어떤 상태에서든)
-        // → Load_Runtime_Key 호출자가 seqlock으로 대기/재시도
-        // → Ensure_Key_Initialized 호출자가 spin-wait
-        uint32_t prev = g_pac_init_state.exchange(
-            PAC_IN_PROGRESS, std::memory_order_acq_rel);
-        (void)prev;
+        // exchange 금지: DONE/IN_PROGRESS와의 LDREX/STREX 경합으로 상태·키 이중 초기화 방지
+        // UNINIT→IN_PROGRESS 또는 DONE→IN_PROGRESS만 CAS로 획득
+        constexpr uint32_t INIT_WAIT_MAX = 100000u;
 
-        // seqlock 보호 키 쓰기
+        for (;;) {
+            const uint32_t s = g_pac_init_state.load(std::memory_order_acquire);
+
+            if (s == PAC_IN_PROGRESS) {
+                for (uint32_t spin = 0u; spin < INIT_WAIT_MAX; ++spin) {
+                    if (g_pac_init_state.load(std::memory_order_acquire) == PAC_DONE) {
+                        return;
+                    }
+#if (defined(__GNUC__) || defined(__clang__)) && \
+    (defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__ARM_ARCH))
+                    __asm__ __volatile__("yield");
+#endif
+                }
+                g_pac_init_state.store(PAC_UNINIT, std::memory_order_release);
+                Halt_PAC_Violation("PAC Initialize_Runtime_Key wait timeout");
+            }
+            else if (s == PAC_UNINIT) {
+                uint32_t expected = PAC_UNINIT;
+                if (g_pac_init_state.compare_exchange_strong(
+                    expected, PAC_IN_PROGRESS, std::memory_order_acq_rel)) {
+                    break;
+                }
+                continue;
+            }
+            else if (s == PAC_DONE) {
+                uint32_t expected = PAC_DONE;
+                if (g_pac_init_state.compare_exchange_strong(
+                    expected, PAC_IN_PROGRESS, std::memory_order_acq_rel)) {
+                    break;
+                }
+                continue;
+            }
+            else {
+                g_pac_init_state.store(PAC_UNINIT, std::memory_order_release);
+                Halt_PAC_Violation("PAC Initialize_Runtime_Key invalid state");
+            }
+        }
+
         Store_Runtime_Key(Mix_Key_64(entropy_seed));
-
-        // DONE 전환 — 이후 Sign/Auth가 새 키 사용
         g_pac_init_state.store(PAC_DONE, std::memory_order_release);
+    }
+
+    // =====================================================================
+    //  Sign_Pointer_Untyped / Authenticate_Pointer_Untyped
+    //  (템플릿 Sign/Auth는 헤더에서 본 함수로 위임 — 구현 단일화)
+    // =====================================================================
+    uint64_t PAC_Manager::Sign_Pointer_Untyped(void* ptr) noexcept {
+        Ensure_Key_Initialized();
+        if (ptr == nullptr) {
+            Halt_PAC_Violation("Attempt to sign nullptr");
+        }
+
+        const uint64_t raw_addr =
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ptr)) & ADDR_MASK;
+
+        const uint32_t pac = Compute_PAC(raw_addr);
+        const uint64_t pac_field = static_cast<uint64_t>(
+            pac & static_cast<uint32_t>((1ULL << PAC_BITS) - 1u));
+
+        return (pac_field << PAC_SHIFT) | raw_addr;
+    }
+
+    void* PAC_Manager::Authenticate_Pointer_Untyped(uint64_t signed_ptr) noexcept {
+        Ensure_Key_Initialized();
+
+        const uint32_t stored_pac = static_cast<uint32_t>(
+            (signed_ptr >> PAC_SHIFT) &
+            static_cast<uint64_t>((1ULL << PAC_BITS) - 1u));
+        const uint64_t raw_addr = signed_ptr & ADDR_MASK;
+
+        uint32_t expected_pac = Compute_PAC(raw_addr);
+        expected_pac &= static_cast<uint32_t>((1ULL << PAC_BITS) - 1u);
+
+        volatile uint32_t diff = stored_pac ^ expected_pac;
+
+        if (diff != 0u) {
+            Halt_PAC_Violation("PAC mismatch — pointer tampered");
+        }
+        if (diff != 0u) {
+            Halt_PAC_Violation("PAC mismatch — redundant check");
+        }
+
+        void* const out =
+            reinterpret_cast<void*>(static_cast<uintptr_t>(raw_addr));
+        if (out == nullptr) {
+            Halt_PAC_Violation("Authenticated pointer is nullptr");
+        }
+        return out;
     }
 
     // =====================================================================
     // =====================================================================
     void PAC_Manager::Wipe_Runtime_Key() noexcept {
-        g_pac_key_ver.fetch_add(1u, std::memory_order_release);  // 홀수
-        g_pac_key_hi.store(0u, std::memory_order_relaxed);
-        g_pac_key_lo.store(0u, std::memory_order_relaxed);
-        g_pac_key_ver.fetch_add(1u, std::memory_order_release);  // 짝수
-
-        // 상태를 미초기화로 → 다음 Sign/Auth 시 Halt (재초기화 필요)
+        // Zero-key 창 차단: 먼저 UNINIT으로 강등 → Ensure가 DONE으로 오인하지 않음
         g_pac_init_state.store(PAC_UNINIT, std::memory_order_release);
+        // 0 대신 도메인 분리 폴백 키로 덮어쓰기 — Store_Runtime_Key가 PRIMASK+seqlock 처리
+        Store_Runtime_Key(PAC_FALLBACK_KEY);
     }
 
     // =====================================================================
@@ -176,9 +291,9 @@ namespace ProtectedEngine {
         const uint32_t state = g_pac_init_state.load(std::memory_order_acquire);
         if (state == PAC_DONE) return;
 
-        // IN_PROGRESS: Initialize_Runtime_Key가 진행 중 → 짧은 대기
+        // IN_PROGRESS: Initialize_Runtime_Key가 진행 중 — RTOS/버스 지연 흡수
         if (state == PAC_IN_PROGRESS) {
-            constexpr uint32_t MAX_SPIN = 100u;
+            constexpr uint32_t MAX_SPIN = 100000u;
             for (uint32_t spin = 0; spin < MAX_SPIN; ++spin) {
                 if (g_pac_init_state.load(std::memory_order_acquire) == PAC_DONE) {
                     return;
@@ -222,9 +337,12 @@ namespace ProtectedEngine {
         // Murmur3 fmix32 이중 해시
         volatile uint32_t hash = Murmur3_Fmix32(mix_lo, mix_hi);
 
+        // LTO 시 PAC 중간값 소거 방지 — memory clobber / MSVC 배리어
 #if (defined(__GNUC__) || defined(__clang__)) && \
     (defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__ARM_ARCH))
-        __asm__ __volatile__("" : : "r"(static_cast<uint32_t>(hash)));
+        __asm__ volatile ("" : : "r"(static_cast<uint32_t>(hash)) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
 
         return static_cast<uint32_t>(hash);

@@ -106,8 +106,11 @@ namespace ProtectedEngine {
 
     private:
         struct Impl;
-        alignas(4) uint8_t impl_buf_[IMPL_BUF_SIZE];
+        /// Pimpl 버퍼: ARM32·x64 테스트 빌드에서 alignof(Impl)≤8 (함수 포인터/원자적 패딩)
+        alignas(8) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool>  initialized_{ false };
+        /// 공개 API / Shutdown 상호 배제(OTA/Modbus 패턴). ISR은 Handle_PVD_Event에서 논블로킹 시도.
+        mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
     };
 
     static_assert(sizeof(HTS_Power_Manager) <= 512u,

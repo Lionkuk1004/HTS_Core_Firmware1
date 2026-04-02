@@ -63,8 +63,11 @@ namespace ProtectedEngine {
     static uint8_t g_status_pkt_slot = 0u;
 
     static uint8_t* acquire_status_pkt_slot() noexcept {
+        // 호출 컨텍스트(ISR/메인)에 무관하게 슬롯 인덱스 갱신 원자성 보장.
+        const uint32_t pm = rpt_critical_enter();
         uint8_t* const pkt = g_status_pkt_pool[g_status_pkt_slot];
         g_status_pkt_slot = static_cast<uint8_t>((g_status_pkt_slot + 1u) & STATUS_PKT_SLOT_MASK);
+        rpt_critical_exit(pm);
         return pkt;
     }
 
@@ -146,7 +149,8 @@ namespace ProtectedEngine {
         void build_packet(uint8_t* pkt) const noexcept {
             ser_u16(&pkt[0], my_id);
             pkt[2] = battery_pct;
-            pkt[3] = static_cast<uint8_t>(temperature);
+            pkt[3] = static_cast<uint8_t>(
+                static_cast<uint8_t>(temperature) & static_cast<uint8_t>(0xFFu));
             pkt[4] = fault_flags;
             pkt[5] = module_flags;
             pkt[6] = uptime_hours;  // 누적 카운터 (래핑 면역)
@@ -331,18 +335,20 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        //  On_WoR_Scan ISR이 build_packet 호출 시 boot_ms/last_rpt_ms
-        //  미초기화 값 읽기 방지
-        const uint32_t pm = rpt_critical_enter();
-
-        // 첫 Tick 초기화
+        // 첫 Tick 초기화만 짧게 PRIMASK — tick_uptime의 O(N) while는 IRQ 허용 구간에서 실행
         if (p->first_tick) {
+            const uint32_t pm0 = rpt_critical_enter();
             p->last_hour_ms = systick_ms;
             p->last_rpt_ms = systick_ms - p->get_interval();
             p->first_tick = false;
+            rpt_critical_exit(pm0);
         }
 
+        // Deep sleep 복귀 등으로 now_ms가 크게 점프해도 인터럽트는 처리 가능해야 함
         p->tick_uptime(systick_ms);
+
+        //  On_WoR_Scan ISR이 build_packet 호출 시 last_rpt_ms 등 일관성
+        const uint32_t pm = rpt_critical_enter();
 
         // WOR_ONLY: 주기 전송은 스킵 (uptime 누적은 유지)
         if (p->rpt_mode == ReportMode::WOR_ONLY) {

@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_LSH256_Bridge.cpp
 // KCMVP LSH-256 / LSH-224 해시 브릿지 구현부
 // 규격: KS X 3262
@@ -15,10 +15,15 @@
 // =========================================================================
 extern "C" {
 #include "lsh256.h"
-#include "lsh.h"
 }
 
 namespace ProtectedEngine {
+
+    static_assert(
+        LSH256_DIGEST_BYTES == static_cast<size_t>(LSH256_HASH_VAL_MAX_BYTE_LEN),
+        "LSH256 digest length must match NSR LSH256_HASH_VAL_MAX_BYTE_LEN");
+    static_assert(LSH224_DIGEST_BYTES == 28u,
+        "LSH-224 output is 224 bits (28 bytes)");
 
     // =====================================================================
     //  보안 메모리 소거 — D-2 / X-5-1: SecureMemory::secureWipe (HTS_Secure_Memory.cpp)
@@ -42,11 +47,14 @@ namespace ProtectedEngine {
         const uint8_t* data,
         size_t         data_len,
         uint8_t* output,
-        size_t         output_len) noexcept {
+        size_t         output_len,
+        void (*feed_callback)(void)) noexcept {
 
         // 출력 버퍼 필수 / 데이터 포인터는 길이 0이면 null 허용
-        if (!output) return LSH_SECURE_FALSE;
-        if (data_len > 0 && !data) {
+        if (output == nullptr) {
+            return LSH_SECURE_FALSE;
+        }
+        if (data_len > 0u && data == nullptr) {
             Secure_Zero_LSH(output, output_len);
             return LSH_SECURE_FALSE;
         }
@@ -59,8 +67,8 @@ namespace ProtectedEngine {
             return LSH_SECURE_FALSE;
         }
 
-        // LSH-256 컨텍스트 초기화
-        struct LSH256_Context ctx;
+        // LSH-256 컨텍스트 초기화 (NSR lsh.h: struct LSH256_Context — 키워드 없이 동일 태그)
+        LSH256_Context ctx;
         Secure_Zero_LSH(&ctx, sizeof(ctx));
 
         lsh_err err = lsh256_init(&ctx, algtype);
@@ -71,11 +79,34 @@ namespace ProtectedEngine {
         }
 
         // 데이터 주입 (비트 단위)
-        if (data_len > 0) {
-            size_t databitlen = data_len * 8u;
-            err = lsh256_update(&ctx,
-                reinterpret_cast<const lsh_u8*>(data),
-                databitlen);
+        // feed_callback==nullptr: 기존과 동일 — 단일 lsh256_update (LTO/TBAA·KCMVP 경로 보존)
+        // feed_callback!=nullptr: 동일 비트스트림을 64KB 청크로 분할 + 청크마다 피드(IWDG 등)
+        if (data_len > 0u) {
+            if (feed_callback == nullptr) {
+                const size_t databitlen =
+                    data_len * static_cast<size_t>(8u);
+                err = lsh256_update(&ctx,
+                    reinterpret_cast<const lsh_u8*>(data),
+                    databitlen);
+            } else {
+                static constexpr size_t kUpdateChunkBytes = 64u * 1024u;
+                size_t off = 0u;
+                while (off < data_len && err == LSH_SUCCESS) {
+                    size_t n = data_len - off;
+                    if (n > kUpdateChunkBytes) {
+                        n = kUpdateChunkBytes;
+                    }
+                    const size_t databitlen =
+                        n * static_cast<size_t>(8u);
+                    err = lsh256_update(&ctx,
+                        reinterpret_cast<const lsh_u8*>(data + off),
+                        databitlen);
+                    off += n;
+                    if (err == LSH_SUCCESS) {
+                        feed_callback();
+                    }
+                }
+            }
             if (err != LSH_SUCCESS) {
                 Secure_Zero_LSH(&ctx, sizeof(ctx));
                 Secure_Zero_LSH(output, output_len);
@@ -105,12 +136,37 @@ namespace ProtectedEngine {
         size_t         data_len,
         uint8_t* output_32) noexcept {
 
-        if (!output_32) return LSH_SECURE_FALSE;
+        if (output_32 == nullptr) {
+            return LSH_SECURE_FALSE;
+        }
 
         return Do_Hash(
             LSH_TYPE_256_256,
             data, data_len,
-            output_32, LSH256_DIGEST_BYTES);
+            output_32, LSH256_DIGEST_BYTES,
+            static_cast<void (*)(void)>(nullptr));
+    }
+
+    // =====================================================================
+    //  Hash_256 — 주기 콜백 (펌웨어 Flash 해시 / IWDG 피드)
+    // =====================================================================
+    uint32_t LSH256_Bridge::Hash_256_WithPeriodicCallback(
+        const uint8_t* data,
+        size_t         data_len,
+        uint8_t*       output_32,
+        void (*callback)(void)) noexcept {
+
+        if (output_32 == nullptr) {
+            return LSH_SECURE_FALSE;
+        }
+        if (callback == nullptr) {
+            return Hash_256(data, data_len, output_32);
+        }
+        return Do_Hash(
+            LSH_TYPE_256_256,
+            data, data_len,
+            output_32, LSH256_DIGEST_BYTES,
+            callback);
     }
 
     // =====================================================================
@@ -121,12 +177,15 @@ namespace ProtectedEngine {
         size_t         data_len,
         uint8_t* output_28) noexcept {
 
-        if (!output_28) return LSH_SECURE_FALSE;
+        if (output_28 == nullptr) {
+            return LSH_SECURE_FALSE;
+        }
 
         return Do_Hash(
             LSH_TYPE_256_224,
             data, data_len,
-            output_28, LSH224_DIGEST_BYTES);
+            output_28, LSH224_DIGEST_BYTES,
+            static_cast<void (*)(void)>(nullptr));
     }
 
 } // namespace ProtectedEngine

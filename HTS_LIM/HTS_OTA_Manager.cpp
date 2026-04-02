@@ -10,6 +10,9 @@
 #include <new>
 #include <atomic>
 #include <cstring>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
@@ -22,6 +25,26 @@ extern "C" __attribute__((weak)) bool HTS_OTA_Board_Power_Stable(void) {
 namespace ProtectedEngine {
 
     // ============================================================
+    //  공개 API / Shutdown 상호 배제 (Modbus/AMI 패턴 — 스핀락)
+    // ============================================================
+    struct OTA_Busy_Guard {
+        std::atomic_flag& f;
+        explicit OTA_Busy_Guard(std::atomic_flag& flag) noexcept
+            : f(flag)
+        {
+            while (f.test_and_set(std::memory_order_acquire)) {
+                // spin — Shutdown과 교차 시 완료까지 대기
+            }
+        }
+        ~OTA_Busy_Guard() noexcept
+        {
+            f.clear(std::memory_order_release);
+        }
+        OTA_Busy_Guard(const OTA_Busy_Guard&) = delete;
+        OTA_Busy_Guard& operator=(const OTA_Busy_Guard&) = delete;
+    };
+
+    // ============================================================
     //  [OTA-2] 보안 메모리 소거 (프로젝트 표준)
     // ============================================================
     static void OTA_Secure_Wipe(void* ptr, size_t size) noexcept {
@@ -31,6 +54,8 @@ namespace ProtectedEngine {
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(ptr) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -41,27 +66,28 @@ namespace ProtectedEngine {
 
     static inline void OTA_Write_U16(uint8_t* b, uint16_t v) noexcept
     {
-        b[0] = static_cast<uint8_t>(v >> 8u);
-        b[1] = static_cast<uint8_t>(v & 0xFFu);
+        b[static_cast<size_t>(0u)] = static_cast<uint8_t>(v >> 8u);
+        b[static_cast<size_t>(1u)] = static_cast<uint8_t>(v & 0xFFu);
     }
     static inline void OTA_Write_U32(uint8_t* b, uint32_t v) noexcept
     {
-        b[0] = static_cast<uint8_t>(v >> 24u);
-        b[1] = static_cast<uint8_t>((v >> 16u) & 0xFFu);
-        b[2] = static_cast<uint8_t>((v >> 8u) & 0xFFu);
-        b[3] = static_cast<uint8_t>(v & 0xFFu);
+        b[static_cast<size_t>(0u)] = static_cast<uint8_t>(v >> 24u);
+        b[static_cast<size_t>(1u)] = static_cast<uint8_t>((v >> 16u) & 0xFFu);
+        b[static_cast<size_t>(2u)] = static_cast<uint8_t>((v >> 8u) & 0xFFu);
+        b[static_cast<size_t>(3u)] = static_cast<uint8_t>(v & 0xFFu);
     }
     static inline uint16_t OTA_Read_U16(const uint8_t* b) noexcept
     {
         return static_cast<uint16_t>(
-            (static_cast<uint16_t>(b[0]) << 8u) | static_cast<uint16_t>(b[1]));
+            (static_cast<uint16_t>(b[static_cast<size_t>(0u)]) << 8u)
+            | static_cast<uint16_t>(b[static_cast<size_t>(1u)]));
     }
     static inline uint32_t OTA_Read_U32(const uint8_t* b) noexcept
     {
-        return (static_cast<uint32_t>(b[0]) << 24u) |
-            (static_cast<uint32_t>(b[1]) << 16u) |
-            (static_cast<uint32_t>(b[2]) << 8u) |
-            static_cast<uint32_t>(b[3]);
+        return (static_cast<uint32_t>(b[static_cast<size_t>(0u)]) << 24u) |
+            (static_cast<uint32_t>(b[static_cast<size_t>(1u)]) << 16u) |
+            (static_cast<uint32_t>(b[static_cast<size_t>(2u)]) << 8u) |
+            static_cast<uint32_t>(b[static_cast<size_t>(3u)]);
     }
 
     // ============================================================
@@ -87,7 +113,7 @@ namespace ProtectedEngine {
         uint32_t crc, const uint8_t* data, uint32_t len) noexcept
     {
         for (uint32_t i = 0u; i < len; ++i) {
-            crc = CRC32_Update(crc, data[i]);
+            crc = CRC32_Update(crc, data[static_cast<size_t>(i)]);
         }
         return crc;
     }
@@ -114,7 +140,8 @@ namespace ProtectedEngine {
 
         // --- Progress ---
         uint16_t received_chunks;
-        uint16_t expected_next_seq;
+        /// 다음 기대 청크 시퀀스 (0..total_chunks-1), uint32로 래핑 모호 제거
+        uint32_t expected_next_seq;
         uint32_t write_offset;       ///< Current write offset within Bank B
 
         // [OTA-1] Q16 역수: 100/total_chunks를 Q16 고정소수점으로 사전 계산
@@ -166,11 +193,16 @@ namespace ProtectedEngine {
                 return;
             }
 
-            image_header.total_size = OTA_Read_U32(&payload[0]);
-            image_header.fw_version = OTA_Read_U32(&payload[4]);
-            image_header.expected_crc32 = OTA_Read_U32(&payload[8]);
-            image_header.total_chunks = OTA_Read_U16(&payload[12]);
-            image_header.chunk_size = OTA_Read_U16(&payload[14]);
+            image_header.total_size =
+                OTA_Read_U32(&payload[static_cast<size_t>(0u)]);
+            image_header.fw_version =
+                OTA_Read_U32(&payload[static_cast<size_t>(4u)]);
+            image_header.expected_crc32 =
+                OTA_Read_U32(&payload[static_cast<size_t>(8u)]);
+            image_header.total_chunks =
+                OTA_Read_U16(&payload[static_cast<size_t>(12u)]);
+            image_header.chunk_size =
+                OTA_Read_U16(&payload[static_cast<size_t>(14u)]);
 
             // Validate size
             if (image_header.total_size == 0u || image_header.total_size > OTA_BANK_SIZE) {
@@ -257,12 +289,20 @@ namespace ProtectedEngine {
                 return;
             }
 
-            const uint16_t seq = OTA_Read_U16(&payload[0]);
-            const uint16_t total = OTA_Read_U16(&payload[2]);
-            const uint8_t  chunk_len = payload[4];
+            const uint16_t seq = OTA_Read_U16(&payload[static_cast<size_t>(0u)]);
+            const uint16_t total = OTA_Read_U16(&payload[static_cast<size_t>(2u)]);
+            const uint8_t  chunk_len = payload[static_cast<size_t>(4u)];
 
-            // Sequence validation
-            if (seq != expected_next_seq) {
+            const uint32_t seq32 = static_cast<uint32_t>(seq);
+
+            // 이미 커밋된 시퀀스 재전송 — Flash 재기록 방지(마모·STM32 AND 쓰기 오염 방지)
+            if (seq32 < expected_next_seq) {
+                last_result = OTA_Result::IN_PROGRESS;
+                return;
+            }
+
+            // Sequence validation (다음 기대 시퀀스와 일치)
+            if (seq32 != expected_next_seq) {
                 last_result = OTA_Result::SEQUENCE_FAIL;
                 return;
             }
@@ -297,7 +337,10 @@ namespace ProtectedEngine {
             // Write to Flash Bank B
             if (flash_cb.write_flash != nullptr) {
                 const uint32_t addr = OTA_BANK_B_BASE + write_offset;
-                if (!flash_cb.write_flash(addr, &payload[5], static_cast<uint32_t>(chunk_len))) {
+                if (!flash_cb.write_flash(addr,
+                    &payload[static_cast<size_t>(5u)],
+                    static_cast<uint32_t>(chunk_len)))
+                {
                     last_result = OTA_Result::FLASH_FAIL;
                     Transition_State(OTA_State::ERROR);
                     return;
@@ -306,8 +349,7 @@ namespace ProtectedEngine {
 
             write_offset += static_cast<uint32_t>(chunk_len);
             received_chunks++;
-            expected_next_seq = static_cast<uint16_t>(
-                (static_cast<uint32_t>(expected_next_seq) + 1u) & 0xFFFFu);
+            ++expected_next_seq;
             last_result = OTA_Result::IN_PROGRESS;
         }
 
@@ -340,11 +382,21 @@ namespace ProtectedEngine {
                 return;
             }
 
+            // 수신 경로에 사용된 Flash HAL이 없으면 CRC 검증 무의미(무음 통과 방지)
+            if (flash_cb.erase_sector == nullptr
+                || flash_cb.write_flash == nullptr
+                || flash_cb.read_flash == nullptr)
+            {
+                last_result = OTA_Result::FLASH_FAIL;
+                Transition_State(OTA_State::ERROR);
+                return;
+            }
+
             // CRC-32 verification over entire Bank B image
             //  [OTA-5] 256B 스택 버퍼로 청크 읽기
             static constexpr uint32_t VERIFY_CHUNK = 256u;
             uint32_t crc = 0xFFFFFFFFu;
-            if (flash_cb.read_flash != nullptr) {
+            {
                 uint8_t read_buf[VERIFY_CHUNK];
                 uint32_t remaining = image_header.total_size;
                 uint32_t offset = 0u;
@@ -352,8 +404,14 @@ namespace ProtectedEngine {
                 while (remaining > 0u) {
                     const uint32_t chunk = (remaining < VERIFY_CHUNK)
                         ? remaining : VERIFY_CHUNK;
-                    flash_cb.read_flash(
-                        OTA_BANK_B_BASE + offset, read_buf, chunk);
+                    if (!flash_cb.read_flash(
+                        OTA_BANK_B_BASE + offset, read_buf, chunk))
+                    {
+                        last_result = OTA_Result::FLASH_FAIL;
+                        Transition_State(OTA_State::ERROR);
+                        OTA_Secure_Wipe(read_buf, VERIFY_CHUNK);
+                        return;
+                    }
                     crc = CRC32_Update_Block(crc, read_buf, chunk);
                     offset += chunk;
                     remaining -= chunk;
@@ -437,11 +495,14 @@ namespace ProtectedEngine {
             if (ipc == nullptr) { return; }
 
             uint32_t pos = 0u;
-            rsp_buf[pos++] = static_cast<uint8_t>(OTA_Command::STATUS_RSP);
-            rsp_buf[pos++] = static_cast<uint8_t>(state);
-            rsp_buf[pos++] = static_cast<uint8_t>(last_result);
-            OTA_Write_U16(&rsp_buf[pos], received_chunks);  pos += 2u;
-            OTA_Write_U16(&rsp_buf[pos], image_header.total_chunks);  pos += 2u;
+            rsp_buf[static_cast<size_t>(pos++)] =
+                static_cast<uint8_t>(OTA_Command::STATUS_RSP);
+            rsp_buf[static_cast<size_t>(pos++)] = static_cast<uint8_t>(state);
+            rsp_buf[static_cast<size_t>(pos++)] = static_cast<uint8_t>(last_result);
+            OTA_Write_U16(&rsp_buf[static_cast<size_t>(pos)], received_chunks);
+            pos += 2u;
+            OTA_Write_U16(&rsp_buf[static_cast<size_t>(pos)], image_header.total_chunks);
+            pos += 2u;
 
             ipc->Send_Frame(IPC_Command::DATA_TX,
                 rsp_buf, static_cast<uint16_t>(pos));
@@ -469,6 +530,8 @@ namespace ProtectedEngine {
 
     IPC_Error HTS_OTA_Manager::Initialize(HTS_IPC_Protocol* ipc) noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         bool expected = false;
         if (!initialized_.compare_exchange_strong(
             expected, true, std::memory_order_acq_rel))
@@ -504,20 +567,24 @@ namespace ProtectedEngine {
     // [OTA-2] Shutdown: impl 소멸 후 impl_buf_ 전체 보안 소거
     void HTS_OTA_Manager::Shutdown() noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        // 파괴·소거 전 공개 API 차단 — ~Impl/버퍼 소거 중 Get_* UAF 방지
+        initialized_.store(false, std::memory_order_release);
         impl->ipc = nullptr;
         impl->state = OTA_State::IDLE;
         impl->~Impl();
 
         // [OTA-2] 보안 소거 — 프로젝트 표준 3중 방어
         OTA_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-
-        initialized_.store(false, std::memory_order_release);
     }
 
     void HTS_OTA_Manager::Register_Flash_Callbacks(const OTA_Flash_Callbacks& cb) noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->flash_cb = cb;
     }
@@ -525,19 +592,24 @@ namespace ProtectedEngine {
     void HTS_OTA_Manager::Process_OTA_Command(const uint8_t* payload,
         uint16_t len) noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (payload == nullptr) { return; }
         if (len < 1u) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
-        const OTA_Command cmd = static_cast<OTA_Command>(payload[0]);
+        const OTA_Command cmd =
+            static_cast<OTA_Command>(payload[static_cast<size_t>(0u)]);
 
         switch (cmd) {
         case OTA_Command::BEGIN:
-            impl->Handle_Begin(&payload[1], static_cast<uint16_t>(len - 1u));
+            impl->Handle_Begin(&payload[static_cast<size_t>(1u)],
+                static_cast<uint16_t>(len - 1u));
             break;
         case OTA_Command::CHUNK_DATA:
-            impl->Handle_Chunk(&payload[1], static_cast<uint16_t>(len - 1u));
+            impl->Handle_Chunk(&payload[static_cast<size_t>(1u)],
+                static_cast<uint16_t>(len - 1u));
             break;
         case OTA_Command::VERIFY:
             impl->Handle_Verify();
@@ -558,6 +630,8 @@ namespace ProtectedEngine {
 
     OTA_State HTS_OTA_Manager::Get_State() const noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (!initialized_.load(std::memory_order_acquire)) { return OTA_State::IDLE; }
         return reinterpret_cast<const Impl*>(impl_buf_)->state;
     }
@@ -574,6 +648,8 @@ namespace ProtectedEngine {
     //   received=2200 특수 처리로 100% 보장
     uint8_t HTS_OTA_Manager::Get_Progress_Percent() const noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
         if (impl->image_header.total_chunks == 0u) { return 0u; }
@@ -597,12 +673,16 @@ namespace ProtectedEngine {
 
     OTA_Result HTS_OTA_Manager::Get_Last_Result() const noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (!initialized_.load(std::memory_order_acquire)) { return OTA_Result::NOT_READY; }
         return reinterpret_cast<const Impl*>(impl_buf_)->last_result;
     }
 
     uint16_t HTS_OTA_Manager::Get_Received_Chunks() const noexcept
     {
+        OTA_Busy_Guard guard(op_busy_);
+
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         return reinterpret_cast<const Impl*>(impl_buf_)->received_chunks;
     }

@@ -111,9 +111,10 @@ namespace ProtectedEngine {
         // ─── 설정 ───────────────────────────────────────────
 
         /// @brief 전력 모드 전환
-        /// @param mode  DEEP_SLEEP / WATCH / ALERT
+        /// @param mode        DEEP_SLEEP / WATCH / ALERT / REALTIME
+        /// @param systick_ms  현재 틱 — 주기 단축 전환 시 이웃 last_seen_ms 그레이스 부여에 사용
         /// @note  Emergency_Beacon 연동: SOS 발동 시 ALERT 자동 전환
-        void Set_Mode(DiscoveryMode mode) noexcept;
+        void Set_Mode(DiscoveryMode mode, uint32_t systick_ms) noexcept;
 
         /// @brief 현재 전력 모드 조회
         [[nodiscard]] DiscoveryMode Get_Mode() const noexcept;

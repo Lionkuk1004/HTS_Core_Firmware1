@@ -1,4 +1,4 @@
-﻿/// @file  HTS_Device_Profile.cpp
+/// @file  HTS_Device_Profile.cpp
 /// @brief HTS Device Profile Engine -- STM32 Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -33,7 +33,7 @@ namespace ProtectedEngine {
         HTS_Console_Manager* console;
 
         // --- State ---
-        ProfileState  state;
+        std::atomic<ProfileState> state{ ProfileState::UNCONFIGURED };
         DeviceMode    current_mode;
         uint8_t       active_periph_mask;
         uint8_t       cfi_violation_count;  ///< CFI violation counter (security audit)
@@ -57,21 +57,22 @@ namespace ProtectedEngine {
         ///          SWITCHING -> ACTIVE via glitch (must complete Execute_Switch)
         bool Transition_State(ProfileState target) noexcept
         {
-            if (!Profile_Is_Legal_Transition(state, target)) {
+            const ProfileState current = state.load(std::memory_order_acquire);
+            if (!Profile_Is_Legal_Transition(current, target)) {
                 // Illegal transition detected -- force ERROR state
                 // Do NOT blindly overwrite: verify ERROR is reachable from current
-                if (Profile_Is_Legal_Transition(state, ProfileState::ERROR)) {
-                    state = ProfileState::ERROR;
+                if (Profile_Is_Legal_Transition(current, ProfileState::ERROR)) {
+                    state.store(ProfileState::ERROR, std::memory_order_release);
                 }
                 // If even ERROR is unreachable (e.g., glitched state=0xFF),
                 // force to UNCONFIGURED as absolute fallback
                 else {
-                    state = ProfileState::UNCONFIGURED;
+                    state.store(ProfileState::UNCONFIGURED, std::memory_order_release);
                 }
                 cfi_violation_count++;
                 return false;
             }
-            state = target;
+            state.store(target, std::memory_order_release);
             return true;
         }
 
@@ -215,7 +216,7 @@ namespace ProtectedEngine {
         Impl* impl = new (impl_buf_) Impl{};
 
         impl->console = console;
-        impl->state = ProfileState::UNCONFIGURED;
+        impl->state.store(ProfileState::UNCONFIGURED, std::memory_order_release);
         impl->current_mode = DeviceMode::SENSOR_GATEWAY;
         impl->active_periph_mask = 0u;
         impl->cfi_violation_count = 0u;
@@ -243,7 +244,7 @@ namespace ProtectedEngine {
 
         // Disable all peripherals
         impl->Apply_Periph_Mask(0u);
-        impl->state = ProfileState::UNCONFIGURED;
+        impl->state.store(ProfileState::UNCONFIGURED, std::memory_order_release);
         impl->console = nullptr;
 
         impl->~Impl();
@@ -304,7 +305,7 @@ namespace ProtectedEngine {
             return ProfileState::UNCONFIGURED;
         }
         const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
-        return impl->state;
+        return impl->state.load(std::memory_order_acquire);
     }
 
     uint8_t HTS_Device_Profile::Get_Active_Periph_Mask() const noexcept
@@ -315,3 +316,5 @@ namespace ProtectedEngine {
     }
 
 } // namespace ProtectedEngine
+
+

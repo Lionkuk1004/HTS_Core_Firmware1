@@ -8,6 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #if (HTS_ORBITAL_MAPPER_ARM == 0)
 #include <vector>
 #endif
@@ -24,6 +27,8 @@ namespace ProtectedEngine {
         for (size_t i = 0; i < size; ++i) p[i] = 0;
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(p) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -46,23 +51,12 @@ namespace ProtectedEngine {
     //  크로스 플랫폼 결정적: GCC/MSVC/Clang 동일 출력 보장
     // =====================================================================
     namespace {
-        struct Orbital_Busy_Guard final {
-            std::atomic_flag& f;
-            bool locked;
-            explicit Orbital_Busy_Guard(std::atomic_flag& flag) noexcept
-                : f(flag), locked(false) {
-                if (!f.test_and_set(std::memory_order_acquire)) {
-                    locked = true;
-                }
-            }
-            ~Orbital_Busy_Guard() noexcept {
-                if (locked) {
-                    f.clear(std::memory_order_release);
-                }
-            }
-        };
+        // MAX_H×W = 256×60 = 15360 — scatter/gather 상한과 일치
+        static constexpr size_t MAX_PERM_N = 15360u;
+        static constexpr size_t BITMAP_WORDS = (MAX_PERM_N + 31u) / 32u;  // 480
 
-        static std::atomic_flag g_orbital_busy = ATOMIC_FLAG_INIT;
+        // 스택 1KB+ 방지 — BSS 단일 버퍼(병렬 호출 시 호출부에서 직렬화 필요)
+        static uint32_t g_visited_bitmap[BITMAP_WORDS];
 
         struct SplitMix64 {
             uint64_t state;
@@ -79,26 +73,28 @@ namespace ProtectedEngine {
                 return z;
             }
 
+            /// [0, bound) 균등 근사 — Lemire식 (r*bound)>>32, UMULL만 사용
+            uint32_t bounded_u32(uint32_t bound) noexcept {
+                const uint64_t z = next();
+                const uint32_t r =
+                    static_cast<uint32_t>(z ^ (z >> 32));
+                const uint64_t prod =
+                    static_cast<uint64_t>(r) * static_cast<uint64_t>(bound);
+                return static_cast<uint32_t>(prod >> 32);
+            }
+
             void fisher_yates(uint32_t* arr, uint32_t n) noexcept {
-                if (n <= 1u) { return; }  // 0 또는 1 요소 → 셔플 불필요
-                for (uint32_t i = n - 1; i > 0; --i) {
-                    // [항목⑨] % 불가피: Fisher-Yates 균등분포를 위한 range reduction
-                    uint32_t j = static_cast<uint32_t>(next() % (i + 1));
-                    uint32_t tmp = arr[i];
-                    arr[i] = arr[j];
-                    arr[j] = tmp;
+                if (n <= 1u) { return; }
+                for (uint32_t i = n - 1u; i > 0u; --i) {
+                    const uint32_t j = bounded_u32(i + 1u);
+                    const uint32_t tmp =
+                        arr[static_cast<size_t>(i)];
+                    arr[static_cast<size_t>(i)] =
+                        arr[static_cast<size_t>(j)];
+                    arr[static_cast<size_t>(j)] = tmp;
                 }
             }
         };
-
-        // =================================================================
-        //
-        //  비트맵: MAX_TENSOR/32 = 256 uint32_t = 1KB (BSS)
-        //  단일 메인 루프 전용 — static 재진입 안전
-        // =================================================================
-
-        static constexpr size_t MAX_PERM_N = 8192u;
-        static constexpr size_t BITMAP_WORDS = MAX_PERM_N / 32u;  // 256
 
         static inline void bmp_clear(uint32_t* bmp, size_t n_bits) noexcept {
             // ⑨ /32u → >>5u
@@ -106,34 +102,32 @@ namespace ProtectedEngine {
             std::memset(bmp, 0, words * sizeof(uint32_t));
         }
         static inline bool bmp_test(const uint32_t* bmp, size_t idx) noexcept {
-            return (bmp[idx >> 5u] & (1u << (idx & 31u))) != 0u;
+            const size_t wi = static_cast<size_t>(idx >> 5u);
+            return (bmp[wi] & (1u << (idx & 31u))) != 0u;
         }
         static inline void bmp_set(uint32_t* bmp, size_t idx) noexcept {
-            bmp[idx >> 5u] |= (1u << (idx & 31u));
+            const size_t wi = static_cast<size_t>(idx >> 5u);
+            bmp[wi] |= (1u << (idx & 31u));
         }
 
         bool inplace_scatter(
             uint32_t* tensor,
             const uint32_t* map,
             size_t n) noexcept {
-            Orbital_Busy_Guard guard(g_orbital_busy);
-            if (!guard.locked) return false;
-
             if (n > MAX_PERM_N) return false;
 
-            static uint32_t visited[BITMAP_WORDS];
-            bmp_clear(visited, n);
+            bmp_clear(g_visited_bitmap, n);
 
             for (size_t i = 0; i < n; ++i) {
-                if (bmp_test(visited, i)) continue;
-                if (map[i] == static_cast<uint32_t>(i)) {
-                    bmp_set(visited, i);
+                if (bmp_test(g_visited_bitmap, i)) continue;
+                if (map[static_cast<size_t>(i)] == static_cast<uint32_t>(i)) {
+                    bmp_set(g_visited_bitmap, i);
                     continue;
                 }
 
-                uint32_t saved = tensor[i];
-                size_t dst = map[i];
-                bmp_set(visited, i);
+                uint32_t saved = tensor[static_cast<size_t>(i)];
+                size_t dst = static_cast<size_t>(map[static_cast<size_t>(i)]);
+                bmp_set(g_visited_bitmap, i);
 
                 size_t steps = 0;
                 while (dst != i) {
@@ -141,10 +135,10 @@ namespace ProtectedEngine {
                     uint32_t tmp = tensor[dst];
                     tensor[dst] = saved;
                     saved = tmp;
-                    bmp_set(visited, dst);
-                    dst = map[dst];
+                    bmp_set(g_visited_bitmap, dst);
+                    dst = static_cast<size_t>(map[dst]);
                 }
-                tensor[i] = saved;
+                tensor[static_cast<size_t>(i)] = saved;
             }
             return true;
         }
@@ -153,33 +147,29 @@ namespace ProtectedEngine {
             uint32_t* tensor,
             const uint32_t* map,
             size_t n) noexcept {
-            Orbital_Busy_Guard guard(g_orbital_busy);
-            if (!guard.locked) return false;
-
             if (n > MAX_PERM_N) return false;
 
-            static uint32_t visited[BITMAP_WORDS];
-            bmp_clear(visited, n);
+            bmp_clear(g_visited_bitmap, n);
 
             for (size_t i = 0; i < n; ++i) {
-                if (bmp_test(visited, i)) continue;
-                if (map[i] == static_cast<uint32_t>(i)) {
-                    bmp_set(visited, i);
+                if (bmp_test(g_visited_bitmap, i)) continue;
+                if (map[static_cast<size_t>(i)] == static_cast<uint32_t>(i)) {
+                    bmp_set(g_visited_bitmap, i);
                     continue;
                 }
 
-                uint32_t saved = tensor[i];
+                uint32_t saved = tensor[static_cast<size_t>(i)];
                 size_t cur = i;
-                bmp_set(visited, cur);
+                bmp_set(g_visited_bitmap, cur);
 
-                size_t src = map[cur];
+                size_t src = static_cast<size_t>(map[cur]);
                 size_t steps = 0;
                 while (src != i) {
                     if (++steps > n) return false;
                     tensor[cur] = tensor[src];
-                    bmp_set(visited, src);
+                    bmp_set(g_visited_bitmap, src);
                     cur = src;
-                    src = map[cur];
+                    src = static_cast<size_t>(map[cur]);
                 }
                 tensor[cur] = saved;
             }
@@ -199,8 +189,10 @@ namespace ProtectedEngine {
         //          raw API(Generate_Pauli_State_Map_Raw) 추가 후 전환 예정
 
         if (tensor_size <= 60) {
-            for (size_t i = 0; i < tensor_size; ++i)
-                state_map[i] = static_cast<uint32_t>(i);
+            for (size_t i = 0; i < tensor_size; ++i) {
+                state_map[static_cast<size_t>(i)] =
+                    static_cast<uint32_t>(i);
+            }
             return state_map;
         }
 
@@ -218,25 +210,32 @@ namespace ProtectedEngine {
             return state_map;
         }
 
-        static uint32_t block_shuffle[MAX_H];
-        static uint32_t offset_shuffle[W];
+        uint32_t block_shuffle[MAX_H];
+        uint32_t offset_shuffle[W];
 
-        for (uint32_t i = 0; i < H; ++i) block_shuffle[i] = i;
+        for (uint32_t i = 0u; i < H; ++i) {
+            block_shuffle[static_cast<size_t>(i)] = i;
+        }
         rng.fisher_yates(block_shuffle, H);
 
-        for (uint32_t i = 0; i < W; ++i) offset_shuffle[i] = i;
+        for (uint32_t i = 0u; i < W; ++i) {
+            offset_shuffle[static_cast<size_t>(i)] = i;
+        }
         rng.fisher_yates(offset_shuffle, W);
 
-        uint32_t physical_pos = 0;
+        uint32_t physical_pos = 0u;
 
-        for (uint32_t o_idx = 0; o_idx < W; ++o_idx) {
-            const uint32_t offset = offset_shuffle[o_idx];
-            for (uint32_t b_idx = 0; b_idx < H; ++b_idx) {
-                const uint32_t block = block_shuffle[b_idx];
+        for (uint32_t o_idx = 0u; o_idx < W; ++o_idx) {
+            const uint32_t offset =
+                offset_shuffle[static_cast<size_t>(o_idx)];
+            for (uint32_t b_idx = 0u; b_idx < H; ++b_idx) {
+                const uint32_t block =
+                    block_shuffle[static_cast<size_t>(b_idx)];
                 const uint64_t logical_index =
-                    static_cast<uint64_t>(block) * W + offset;
+                    static_cast<uint64_t>(block) * static_cast<uint64_t>(W)
+                    + static_cast<uint64_t>(offset);
 
-                if (logical_index < tensor_size) {
+                if (logical_index < static_cast<uint64_t>(tensor_size)) {
                     state_map[static_cast<size_t>(logical_index)] =
                         physical_pos++;
                 }

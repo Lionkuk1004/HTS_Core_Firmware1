@@ -11,6 +11,7 @@
 #include "HTS_Secure_Logger.h"
 #include <new>        // placement new
 #include <atomic>
+#include <cstddef>
 #include <cstring>    // memcpy (channel_config 원자적 복사용)
 
 // ============================================================
@@ -40,6 +41,17 @@ static inline void con_critical_exit(uint32_t) noexcept {}
 namespace ProtectedEngine {
 
     namespace {
+        // 민감 버퍼 소거가 LTO/DCE로 제거되지 않도록 강제.
+        static void Console_Secure_Wipe_Strict(void* ptr, std::size_t size) noexcept {
+            volatile uint8_t* p = static_cast<volatile uint8_t*>(ptr);
+            while (size--) { *p++ = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+            __asm__ __volatile__("" ::: "memory");
+#else
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
+        }
+
         static std::atomic<uint8_t> g_console_auth_fail_count{ 0u };
         static constexpr uint8_t CONSOLE_AUTH_FAIL_MAX = 8u;
 
@@ -634,12 +646,12 @@ namespace ProtectedEngine {
         impl->ipc = nullptr;
         impl->state = ConsoleState::OFFLINE;
 
-        IPC_Secure_Wipe(impl->rsp_buf, IPC_MAX_PAYLOAD);
+        Console_Secure_Wipe_Strict(impl->rsp_buf, IPC_MAX_PAYLOAD);
         std::atomic_thread_fence(std::memory_order_release);
 
         impl->~Impl();
 
-        IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        Console_Secure_Wipe_Strict(impl_buf_, IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);
         // 종료 완료: 다음 Initialize() 허용

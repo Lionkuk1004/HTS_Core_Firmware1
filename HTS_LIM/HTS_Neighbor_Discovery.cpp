@@ -13,6 +13,9 @@
 #include "HTS_Neighbor_Discovery.h"
 #include "HTS_Priority_Scheduler.h"
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +35,8 @@ namespace ProtectedEngine {
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(q) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -116,7 +121,7 @@ namespace ProtectedEngine {
         static constexpr uint8_t lqi_table[9] = {
             0, 12, 25, 37, 50, 62, 75, 87, 100
         };
-        return lqi_table[cnt];
+        return lqi_table[static_cast<size_t>(cnt)];
     }
 
     // =====================================================================
@@ -165,6 +170,7 @@ namespace ProtectedEngine {
 
         uint32_t get_rx_window() const noexcept {
             switch (mode) {
+            case DiscoveryMode::DEEP_SLEEP: return 0u;  // Is_RX_Window: 항상 false (since_tx < 0 거짓)
             case DiscoveryMode::REALTIME: return 0xFFFFFFFFu; // 항상 ON
             case DiscoveryMode::ALERT:    return 0xFFFFFFFFu; // 항상 ON
             case DiscoveryMode::WATCH:    return get_interval() >> 1u;
@@ -247,9 +253,11 @@ namespace ProtectedEngine {
 
     HTS_Neighbor_Discovery::~HTS_Neighbor_Discovery() noexcept {
         Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
-        ND_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        if (p == nullptr) { return; }
+        // 파괴·소거 전에 공개 경로 차단 — get_impl() UAF 방지
         impl_valid_.store(false, std::memory_order_release);
+        p->~Impl();
+        ND_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
     }
 
     // =====================================================================
@@ -268,7 +276,9 @@ namespace ProtectedEngine {
     // =====================================================================
     //  전력 모드 전환
     // =====================================================================
-    void HTS_Neighbor_Discovery::Set_Mode(DiscoveryMode mode) noexcept {
+    void HTS_Neighbor_Discovery::Set_Mode(
+        DiscoveryMode mode, uint32_t systick_ms) noexcept
+    {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
         const uint8_t mode_v = static_cast<uint8_t>(mode);
@@ -276,7 +286,18 @@ namespace ProtectedEngine {
         const uint32_t pm = nd_critical_enter();
 
         const DiscoveryMode prev = p->mode;
+        const uint32_t old_interval = p->get_interval();
         p->mode = mode;
+        const uint32_t new_interval = p->get_interval();
+
+        // 주기 단축(더 빠른 모드): 타임아웃이 바로 줄어 토폴로지 일거 붕괴 방지 — 유효 이웃 last_seen 정렬
+        if (new_interval < old_interval) {
+            for (size_t j = 0u; j < MAX_NBR; ++j) {
+                if (p->table[j].valid != 0u) {
+                    p->table[j].last_seen_ms = systick_ms;
+                }
+            }
+        }
 
         // DEEP_SLEEP → WATCH/ALERT 전환: 즉시 비콘 재개
         //  first_tick=true → 다음 Tick에서 즉시 첫 비콘 송출
@@ -304,20 +325,13 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        //  last_beacon_ms 미갱신 → 49일 래핑 시 유령 윈도우
-        //  타이머 연산 자체를 건너뛰고 무조건 false
-        //  DEEP_SLEEP에서는 모듈 일시정지 → RF OFF → Power_Manager 슬립
-        if (p->mode == DiscoveryMode::DEEP_SLEEP) { return false; }
+        const uint32_t pm = nd_critical_enter();
+        const uint32_t last_beacon_ms = p->last_beacon_ms;
+        const uint32_t rx_win = p->get_rx_window();
+        nd_critical_exit(pm);
 
-        // REALTIME / ALERT: 항상 수신
-        if (p->mode == DiscoveryMode::REALTIME ||
-            p->mode == DiscoveryMode::ALERT) {
-            return true;
-        }
-
-        // WATCH: 비콘 주기 전반 50% 수신
-        const uint32_t since_tx = systick_ms - p->last_beacon_ms;
-        return (since_tx < p->get_rx_window());
+        const uint32_t since_tx = systick_ms - last_beacon_ms;
+        return since_tx < rx_win;
     }
 
     // =====================================================================
@@ -416,9 +430,11 @@ namespace ProtectedEngine {
         //  TX 차단: RF/PA 미가동 → 배터리 보존
         //  타임아웃 차단: 이웃 테이블 동결 (WATCH 전환 시 재활용)
         //  WATCH/ALERT 전환 시 first_tick=true로 즉시 비콘 재개
-        if (p->mode == DiscoveryMode::DEEP_SLEEP) { return; }
-
         const uint32_t pm = nd_critical_enter();
+        if (p->mode == DiscoveryMode::DEEP_SLEEP) {
+            nd_critical_exit(pm);
+            return;
+        }
 
         const uint32_t cur_interval = p->get_interval();
         const uint32_t cur_timeout = p->get_timeout();
@@ -430,10 +446,9 @@ namespace ProtectedEngine {
         }
 
         // ── 1. 타임아웃 검사 (모드별 타임아웃 적용) ──
-        //  5번째 만료 이웃도 Wipe → 콜백 미도달 → 라우팅 좀비
-        //  expired_count >= 4 → break → 다음 Tick에서 재검사
+        //  만료 시 ND_Secure_Wipe는 PRIMASK 안에서 수행 — 락 밖으로 내리면 On_Beacon과 슬롯 재사용 레이스
         uint16_t expired_ids[4] = {};
-        size_t   expired_count = 0u;
+        uint8_t  expired_count = 0u;
 
         for (size_t i = 0u; i < MAX_NBR; ++i) {
             if (p->table[i].valid == 0u) { continue; }
@@ -443,7 +458,8 @@ namespace ProtectedEngine {
                 if (expired_count >= 4u) {
                     break;  // 한도 초과 → 남은 만료 이웃은 다음 Tick에서 처리
                 }
-                expired_ids[expired_count] = p->table[i].node_id;
+                expired_ids[static_cast<size_t>(expired_count)] =
+                    p->table[i].node_id;
                 ++expired_count;
                 ND_Secure_Wipe(&p->table[i], sizeof(NbrEntry));
             }
@@ -454,25 +470,19 @@ namespace ProtectedEngine {
                 //   On_Beacon_Received 직후 Tick → age ≈ 0 → 스킵 ✅
                 if (age < cur_interval) { continue; }
 
-                // [방어 2] 기대 미수신 횟수 산출 (32비트 UDIV)
-                const uint32_t expected_misses =
-                    age / cur_interval;
-
-                // [방어 3] 비트맵 상한: 8비트이므로 8회 이상 감가 무의미
-                //   8회 감가 → 비트맵 0x00 → LQI=0 (최저)
-                //   이후 추가 감가는 CPU 낭비만 → 차단
+                // [방어 2] UDIV 대신 곱셈 임계: floor(age/cur) > decay_applied
+                //   ⇔ age >= (decay_applied+1)*cur_interval (Tick당 최대 1회 감가와 동등)
                 static constexpr uint8_t MAX_DECAY = 8u;
-                const uint8_t cap_misses = (expected_misses > MAX_DECAY)
-                    ? MAX_DECAY
-                    : static_cast<uint8_t>(expected_misses);
-
-                // [방어 4] decay_applied < cap → 1회 감가 (Tick당 최대 1회)
-                if (p->table[i].decay_applied < cap_misses)
-                {
-                    p->table[i].beacon_rx_bits = static_cast<uint8_t>(
-                        p->table[i].beacon_rx_bits << 1u);
-                    p->table[i].lqi = calc_lqi(p->table[i].beacon_rx_bits);
-                    p->table[i].decay_applied++;
+                const uint8_t da = p->table[i].decay_applied;
+                if (da < MAX_DECAY) {
+                    const uint32_t next_threshold =
+                        (static_cast<uint32_t>(da) + 1u) * cur_interval;
+                    if (age >= next_threshold) {
+                        p->table[i].beacon_rx_bits = static_cast<uint8_t>(
+                            p->table[i].beacon_rx_bits << 1u);
+                        p->table[i].lqi = calc_lqi(p->table[i].beacon_rx_bits);
+                        p->table[i].decay_applied++;
+                    }
                 }
             }
         }
@@ -510,8 +520,9 @@ namespace ProtectedEngine {
 
         // 만료 이웃 콜백 (비콘 인큐 후 실행 — 스택 안전)
         if (expired_count > 0u && p->link_down_cb != nullptr) {
-            for (size_t i = 0u; i < expired_count; ++i) {
-                p->link_down_cb(expired_ids[i]);
+            for (uint8_t i = 0u; i < expired_count; ++i) {
+                p->link_down_cb(
+                    expired_ids[static_cast<size_t>(i)]);
             }
         }
     }
@@ -521,7 +532,11 @@ namespace ProtectedEngine {
     // =====================================================================
     size_t HTS_Neighbor_Discovery::Get_Neighbor_Count() const noexcept {
         const Impl* p = get_impl();
-        return (p != nullptr) ? static_cast<size_t>(p->neighbor_count) : 0u;
+        if (p == nullptr) { return 0u; }
+        const uint32_t pm = nd_critical_enter();
+        const size_t c = static_cast<size_t>(p->neighbor_count);
+        nd_critical_exit(pm);
+        return c;
     }
 
     bool HTS_Neighbor_Discovery::Get_Neighbor(

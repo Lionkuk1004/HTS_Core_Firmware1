@@ -13,6 +13,8 @@
 //
 //  [탐지 방식]
 //   ARM: CoreDebug→DHCSR.C_DEBUGEN 직접 읽기 (HW 레벨, 우회 불가)
+//  [RDP/퓨즈] 옵션 바이트 RDP Level 검사는 부팅 경로(예: HTS_Hardware_Init,
+//   HTS_BOOT_ENFORCE_RDP_LEVEL2)에서 수행 — 본 모듈은 런타임 DHCSR 보완 탐지
 //
 //  [사용법]
 //   AntiDebugManager::checkDebuggerPresence();

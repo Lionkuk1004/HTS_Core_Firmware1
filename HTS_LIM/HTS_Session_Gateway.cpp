@@ -7,7 +7,7 @@
 #include "HTS_Secure_Memory.h"
 #include "HTS_Secure_Logger.h"
 #include "HTS_Auto_Rollback_Manager.hpp"
-#include "HTS_PUF_Adapter.h"
+#include "HTS_Physical_Entropy_Engine.h"
 #include "HTS_Anti_Debug.h"
 #include "HTS_Anti_Glitch.h"
 #include "HTS_POST_Manager.h"
@@ -19,7 +19,6 @@ namespace ProtectedEngine {
 
     // ── 매직 넘버 상수화 (J-3) ───────────────────────────────────
     namespace {
-        constexpr uint32_t HEAL_PUF_FAIL = 0xDEAD0000u;  ///< PUF 시드 추출 실패
         constexpr uint32_t HEAL_ALLOC_FAIL = 0xDEAD0001u;  ///< 세션 초기화 실패
         constexpr uint32_t HEAL_TRAP_CODE = 0xFA11FA11u;  ///< 하드웨어 탬퍼 코드
         constexpr uint32_t SESSION_LOCK_MAX_ATTEMPTS = 128u; ///< bounded spin
@@ -70,20 +69,21 @@ namespace ProtectedEngine {
             glitchShield.unlockSystem();
             glitchShield.verifyCriticalExecution();
 
-            // PUF 챌린지: 고정 4바이트 (힙 할당 0)
-            uint8_t hwChallenge[4] = { 0x01, 0x02, 0x03, 0x04 };
-
-            seed_len = 0;
-            if (!PUF_Adapter::getHardwareSeed_Fixed(
-                hwChallenge, sizeof(hwChallenge),
-                master_seed, MAX_SEED_SIZE, &seed_len)) {
-                seed_len = 0;
+            // 물리 엔트로피 엔진(TRNG+DWT 혼합)으로 마스터 시드 256비트 채움 (힙 0)
+            constexpr size_t kHwSeedBytes = 32u;
+            static_assert(kHwSeedBytes <= MAX_SEED_SIZE, "master seed capacity");
+            for (size_t i = 0u; i < kHwSeedBytes; i += 4u) {
+                const uint32_t word = Physical_Entropy_Engine::Extract_Quantum_Seed();
+                master_seed[static_cast<size_t>(i) + 0u] =
+                    static_cast<uint8_t>((word >> 24u) & 0xFFu);
+                master_seed[static_cast<size_t>(i) + 1u] =
+                    static_cast<uint8_t>((word >> 16u) & 0xFFu);
+                master_seed[static_cast<size_t>(i) + 2u] =
+                    static_cast<uint8_t>((word >> 8u) & 0xFFu);
+                master_seed[static_cast<size_t>(i) + 3u] =
+                    static_cast<uint8_t>(word & 0xFFu);
             }
-
-            if (seed_len == 0) {
-                session_release_locks_before_fatal();
-                Auto_Rollback_Manager::Execute_Self_Healing(HEAL_PUF_FAIL);
-            }
+            seed_len = kHwSeedBytes;
 
             SecureMemory::lockMemory(master_seed, seed_len);
             is_valid = true;

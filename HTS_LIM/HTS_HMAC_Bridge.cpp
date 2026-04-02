@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_HMAC_Bridge.cpp
 // KCMVP HMAC-SHA256 브릿지 구현부 (KISA 부분 블록 버그 우회 내장)
 // 규격: KS X ISO/IEC 9797-2 / RFC 2104
@@ -165,7 +165,10 @@ namespace ProtectedEngine {
         size_t         data_len) noexcept {
 
         if (!ctx.is_initialized) return SECURE_FALSE;
-        if (!data || data_len == 0) return SECURE_TRUE;  // 빈 청크 허용
+        // 빈 청크(msg_len==0)는 RFC 2104 상 합법 — nullptr 허용
+        if (data_len == 0u) return SECURE_TRUE;
+        // Fail-closed: 길이>0 인데 포인터 없음 → 조용히 성공 금지
+        if (!data) return SECURE_FALSE;
         constexpr size_t U32MAX =
             static_cast<size_t>(std::numeric_limits<uint32_t>::max());
         if (data_len > U32MAX) return SECURE_FALSE;
@@ -240,8 +243,8 @@ namespace ProtectedEngine {
             reinterpret_cast<const unsigned char*>(inner_hash),
             static_cast<unsigned int>(SHA256_DIGEST));
 
-        // 출력 버퍼 사전 소거 (이전 메모리 잔존 방지)
-        SecureMemory::secureWipe(static_cast<void*>(output_hmac_32bytes), SHA256_DIGEST);
+        // 출력은 HTS_SHA256_FINAL이 전부 덮어씀. 호출 전 소거는 Verify_Final(computed) 등
+        // 호출자 수명/오류 경로와 충돌할 수 있어 여기서는 하지 않음.
         HTS_SHA256_FINAL(&outer,
             reinterpret_cast<unsigned char*>(output_hmac_32bytes));
 
@@ -288,8 +291,9 @@ namespace ProtectedEngine {
         const uint8_t* key, size_t key_len,
         uint8_t* output_hmac_32bytes) noexcept {
 
-        if (!message || msg_len == 0 || !key ||
-            key_len == 0 || !output_hmac_32bytes) return SECURE_FALSE;
+        // 빈 메시지(msg_len==0, header-only 등)는 RFC 2104 상 합법 — msg_len>0일 때만 message 필수
+        if (!key || key_len == 0 || !output_hmac_32bytes) return SECURE_FALSE;
+        if (msg_len > 0u && !message) return SECURE_FALSE;
 
         HMAC_Context ctx;
         if (Init(ctx, key, key_len) != SECURE_TRUE) return SECURE_FALSE;
@@ -309,8 +313,8 @@ namespace ProtectedEngine {
         const uint8_t* key, size_t key_len,
         const uint8_t* received_hmac_32bytes) noexcept {
 
-        if (!message || msg_len == 0 || !key ||
-            key_len == 0 || !received_hmac_32bytes) return SECURE_FALSE;
+        if (!key || key_len == 0 || !received_hmac_32bytes) return SECURE_FALSE;
+        if (msg_len > 0u && !message) return SECURE_FALSE;
 
         HMAC_Context ctx;
         if (Init(ctx, key, key_len) != SECURE_TRUE) return SECURE_FALSE;

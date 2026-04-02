@@ -57,18 +57,21 @@ namespace ProtectedEngine {
         //
         //  master_key:      마스터 키 (null 불가)
         //  key_len_bytes:   16(128bit) / 24(192bit) / 32(256bit)
-        //  initial_vector:  128비트 초기 카운터 (16바이트, null 불가)
+        //  initial_vector:  초기 IV/CTR (null 불가)
+        //  iv_len_bytes:    반드시 16 (128비트 블록) — 길이 미검증 시 OOB read 방지
         // =================================================================
         [[nodiscard]] uint32_t Initialize(
             const uint8_t* master_key,
             uint32_t       key_len_bytes,
-            const uint8_t* initial_vector) noexcept;
+            const uint8_t* initial_vector,
+            uint32_t       iv_len_bytes) noexcept;
 
         // =================================================================
         //  Encrypt_Payload — LEA-CTR 암호화 (인플레이스)
         //
-        //  CTR 카운터: KISA lea_ctr_enc가 내부 증가 (수동 증가 불필요)
-        //  payload_data는 4바이트 정렬된 버퍼여야 함 (uint32_t* 계약)
+        //  CTR: tx_iv_counter만 사용 (수신과 분리)
+        //  바이트 길이(elements×4)는 16의 배수여야 함
+        //  payload_data는 4바이트 정렬 (uint32_t* 계약)
         // =================================================================
         [[nodiscard]] uint32_t Encrypt_Payload(
             uint32_t* payload_data, size_t elements) noexcept;
@@ -76,8 +79,9 @@ namespace ProtectedEngine {
         // =================================================================
         //  Decrypt_Payload — LEA-CTR 복호화 (인플레이스)
         //
-        //  CTR 카운터: KISA lea_ctr_dec가 내부 증가 (수동 증가 불필요)
-        //  payload_data는 4바이트 정렬된 버퍼여야 함 (uint32_t* 계약)
+        //  CTR: rx_iv_counter만 사용 (송신과 분리)
+        //  바이트 길이(elements×4)는 16의 배수여야 함
+        //  payload_data는 4바이트 정렬 (uint32_t* 계약)
         // =================================================================
         [[nodiscard]] uint32_t Decrypt_Payload(
             uint32_t* payload_data, size_t elements) noexcept;
@@ -85,7 +89,8 @@ namespace ProtectedEngine {
     private:
         // [C26495] LEA_KEY는 POD — 값 초기화는 생성자에서 Secure_Zero로 수행
         LEA_KEY  session_key;
-        uint8_t  iv_counter[16] = {};   // CTR 모드 128비트 카운터
+        uint8_t  tx_iv_counter[16] = {};  ///< Encrypt_Payload 전용 CTR
+        uint8_t  rx_iv_counter[16] = {};  ///< Decrypt_Payload 전용 CTR
         bool     is_initialized = false;
         std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
     };

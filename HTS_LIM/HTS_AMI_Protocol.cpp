@@ -34,24 +34,6 @@ namespace ProtectedEngine {
 #define HTS_AMI_PRIMASK_SHUTDOWN 0
 #endif
 
-    namespace {
-        struct AMI_Busy_Guard {
-            std::atomic_flag& f;
-            bool locked;
-            explicit AMI_Busy_Guard(std::atomic_flag& flag) noexcept
-                : f(flag), locked(false) {
-                if (!f.test_and_set(std::memory_order_acquire)) {
-                    locked = true;
-                }
-            }
-            ~AMI_Busy_Guard() noexcept {
-                if (locked) {
-                    f.clear(std::memory_order_release);
-                }
-            }
-        };
-    } // namespace
-
     // ============================================================
     //  [AMI-1] 보안 메모리 소거 (프로젝트 표준)
     // ============================================================
@@ -412,7 +394,7 @@ namespace ProtectedEngine {
         }
     };
 
-    // Tick → Send_Periodic_Report 재진입 방지: 공개 API와 동일 본문 (Busy_Guard 단일)
+    // Tick / Send_Periodic_Report 공용 본문 (동일 알고리즘)
     IPC_Error HTS_AMI_Protocol::ami_send_periodic_report_impl(Impl* impl) noexcept
     {
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
@@ -497,11 +479,9 @@ namespace ProtectedEngine {
     }
 
     // [AMI-1] Shutdown: impl_buf_ 전체 보안 소거
-    // A-5: op_busy_ 대기는 IRQ 허용(인터럽트가 완료·락 해제 가능) → 짧은 구간만 PRIMASK
+    // 짧은 구간만 PRIMASK(다른 컨텍스트와의 동시 impl 접근은 호출자가 직렬화)
     void HTS_AMI_Protocol::Shutdown() noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-
-        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
 
 #if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
         uint32_t primask_saved;
@@ -511,7 +491,6 @@ namespace ProtectedEngine {
 #endif
 
         if (!initialized_.load(std::memory_order_acquire)) {
-            op_busy_.clear(std::memory_order_release);
 #if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
             __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
 #endif
@@ -528,7 +507,6 @@ namespace ProtectedEngine {
         // [AMI-1] impl_buf_ 전체 보안 소거 (함수 포인터, device_id, apdu_buf 등)
         AMI_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
         initialized_.store(false, std::memory_order_release);
-        op_busy_.clear(std::memory_order_release);
 
 #if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
         __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
@@ -540,8 +518,6 @@ namespace ProtectedEngine {
         const OBIS_Dictionary* dict) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->obis_dict = dict;
     }
@@ -551,8 +527,6 @@ namespace ProtectedEngine {
         const AMI_SecuritySuite* suite) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->security = suite;
     }
@@ -561,15 +535,11 @@ namespace ProtectedEngine {
         const MeterCallbacks& cb) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->meter_cb = cb;
     }
 
     void HTS_AMI_Protocol::Set_Report_Interval(uint32_t interval_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->report_interval_ms = interval_ms;
     }
 
@@ -578,8 +548,6 @@ namespace ProtectedEngine {
     //  추가 방어 불필요 — MISRA C++ Rule 5-0-4 unsigned wrap 허용
     void HTS_AMI_Protocol::Tick(uint32_t systick_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         if (impl->report_interval_ms > 0u) {
@@ -593,8 +561,6 @@ namespace ProtectedEngine {
     }
 
     IPC_Error HTS_AMI_Protocol::Send_Periodic_Report() noexcept {
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return IPC_Error::BUSY; }
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
@@ -608,8 +574,6 @@ namespace ProtectedEngine {
         if (apdu == nullptr) { return; }
         if (apdu_len < AMI_APDU_HEADER_SIZE + AMI_APDU_CRC_SIZE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         // [A2] 수신 복호화 (security suite 등록 시)
@@ -710,8 +674,6 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return AMI_State::OFFLINE;
         }
-        AMI_Busy_Guard g(op_busy_);
-        if (!g.locked) { return AMI_State::OFFLINE; }
         return reinterpret_cast<const Impl*>(impl_buf_)->state;
     }
 

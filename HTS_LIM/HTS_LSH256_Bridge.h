@@ -62,6 +62,13 @@ namespace ProtectedEngine {
             const uint8_t* data, size_t data_len,
             uint8_t* output_32) noexcept;
 
+        /// @brief 장시간 Flash 연속 해시용 — 64KB 단위 lsh256_update 후 callback (IWDG 피드 등).
+        ///        알고리즘 출력은 Hash_256(단일 update)과 동일.
+        [[nodiscard]] static uint32_t Hash_256_WithPeriodicCallback(
+            const uint8_t* data, size_t data_len,
+            uint8_t* output_32,
+            void (*callback)(void)) noexcept;
+
         // =================================================================
         //  Hash_224 — LSH-224 해시 (28바이트 출력)
         //

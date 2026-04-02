@@ -8,9 +8,17 @@
 //  · 정적 링버퍼 (힙 0회)
 //  · 재밍 감지 시 P2 전송 억제 → P0/P1 대역폭 보장
 //  · P2 에이징: 2초 초과 → P1 승격 (기아 방지)
-//  · 3중 보안 소거 (패킷 데이터 잔류 방지)
+//  · 패킷 소거: SecureMemory::secureWipe (B-CDMA D-2 단일화)
+//
+//  B-CDMA 검수 요약 (본 TU)
+//   ① LTO/TBAA: 소거는 HTS_Secure_Memory D-2; Pimpl은 impl_buf_+placement Impl.
+//   ② ISR: Enqueue/Dequeue/Tick/Get_* 는 PRIMASK critical_enter/exit로 큐와 정합.
+//      Tick 본문은 잠금 구간이 길 수 있음 — SysTick 주기·우선순위 [요검토].
+//   ③ Flash/BOR: 본 모듈 Flash 쓰기 없음.
+//   ④ RDP: HTS_Hardware_Init 부트 검사.
 // =========================================================================
 #include "HTS_Priority_Scheduler.h"
+#include "HTS_Secure_Memory.h"
 
 #include <atomic>
 #include <cstddef>
@@ -22,19 +30,6 @@ static_assert(sizeof(uint8_t) == 1, "uint8_t must be 1 byte");
 static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
 
 namespace ProtectedEngine {
-
-    // =====================================================================
-    //  3중 보안 소거
-    // =====================================================================
-    static void PriSched_Secure_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) { return; }
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
-    }
 
     // =====================================================================
     //  큐 항목 (16바이트 고정)
@@ -62,6 +57,9 @@ namespace ProtectedEngine {
     static constexpr size_t SOS_CAP = 4u;
     static constexpr size_t VOICE_CAP = 8u;
     static constexpr size_t DATA_CAP = 8u;
+    static_assert((SOS_CAP & (SOS_CAP - 1u)) == 0u && SOS_CAP >= 1u, "SOS_CAP must be power of 2");
+    static_assert((VOICE_CAP & (VOICE_CAP - 1u)) == 0u && VOICE_CAP >= 1u, "VOICE_CAP must be power of 2");
+    static_assert((DATA_CAP & (DATA_CAP - 1u)) == 0u && DATA_CAP >= 1u, "DATA_CAP must be power of 2");
 
     struct RingQ_SOS {
         QueueItem items[SOS_CAP] = {};
@@ -91,8 +89,10 @@ namespace ProtectedEngine {
         const QueueItem& item) noexcept
     {
         if (count >= cap) { return false; }
-        items[tail] = item;
-        tail = static_cast<uint8_t>((tail + 1u) % cap);
+        // cap은 2의 거듭제곱 — % 대신 마스크 (B-CDMA 가변 분모 나눗셈 회피)
+        items[static_cast<size_t>(tail)] = item;
+        tail = static_cast<uint8_t>(
+            (static_cast<uint32_t>(tail) + 1u) & static_cast<uint32_t>(cap - 1u));
         ++count;
         return true;
     }
@@ -102,9 +102,11 @@ namespace ProtectedEngine {
         QueueItem& out) noexcept
     {
         if (count == 0u) { return false; }
-        out = items[head];
-        PriSched_Secure_Wipe(&items[head], sizeof(QueueItem));
-        head = static_cast<uint8_t>((head + 1u) % cap);
+        const size_t hi = static_cast<size_t>(head);
+        out = items[hi];
+        SecureMemory::secureWipe(static_cast<void*>(&items[hi]), sizeof(QueueItem));
+        head = static_cast<uint8_t>(
+            (static_cast<uint32_t>(head) + 1u) & static_cast<uint32_t>(cap - 1u));
         --count;
         return true;
     }
@@ -113,13 +115,13 @@ namespace ProtectedEngine {
         const QueueItem* items, uint8_t head, uint8_t count) noexcept
     {
         if (count == 0u) { return nullptr; }
-        return &items[head];
+        return &items[static_cast<size_t>(head)];
     }
 
     static void ring_flush(QueueItem* items, size_t total_bytes,
         uint8_t& head, uint8_t& tail, uint8_t& count) noexcept
     {
-        PriSched_Secure_Wipe(items, total_bytes);
+        SecureMemory::secureWipe(static_cast<void*>(items), total_bytes);
         head = 0u;
         tail = 0u;
         count = 0u;
@@ -214,16 +216,18 @@ namespace ProtectedEngine {
     HTS_Priority_Scheduler::HTS_Priority_Scheduler() noexcept
         : impl_valid_(false)
     {
-        PriSched_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl();
         impl_valid_.store(true, std::memory_order_release);
     }
 
     HTS_Priority_Scheduler::~HTS_Priority_Scheduler() noexcept {
-        Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
-        PriSched_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        Impl* const p = get_impl();
+        if (p == nullptr) { return; }
+        // ISR/TX 콜백의 UAF 방지: 유효 플래그를 먼저 내린 뒤 파괴·소거
         impl_valid_.store(false, std::memory_order_release);
+        p->~Impl();
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
     }
 
     // =====================================================================
@@ -298,7 +302,7 @@ namespace ProtectedEngine {
             std::memcpy(out_data, item.data, item.len);
             out_len = static_cast<size_t>(item.len);
             out_priority = PacketPriority::SOS;
-            PriSched_Secure_Wipe(&item, sizeof(item));
+            SecureMemory::secureWipe(static_cast<void*>(&item), sizeof(item));
             return true;
         }
 
@@ -310,7 +314,7 @@ namespace ProtectedEngine {
             std::memcpy(out_data, item.data, item.len);
             out_len = static_cast<size_t>(item.len);
             out_priority = PacketPriority::VOICE;
-            PriSched_Secure_Wipe(&item, sizeof(item));
+            SecureMemory::secureWipe(static_cast<void*>(&item), sizeof(item));
             return true;
         }
 
@@ -323,7 +327,7 @@ namespace ProtectedEngine {
                 std::memcpy(out_data, item.data, item.len);
                 out_len = static_cast<size_t>(item.len);
                 out_priority = PacketPriority::DATA;
-                PriSched_Secure_Wipe(&item, sizeof(item));
+                SecureMemory::secureWipe(static_cast<void*>(&item), sizeof(item));
                 return true;
             }
         }
@@ -374,7 +378,7 @@ namespace ProtectedEngine {
                     p->q_voice.tail, p->q_voice.count, aged);
 
                 critical_exit(pm);
-                PriSched_Secure_Wipe(&aged, sizeof(aged));
+                SecureMemory::secureWipe(static_cast<void*>(&aged), sizeof(aged));
                 return;  // pm 이미 해제됨 → 아래 exit 건너뜀
             }
             // 조건 미충족 시: pop 하지 않음 → FIFO 순서 보존
@@ -405,22 +409,38 @@ namespace ProtectedEngine {
     // =====================================================================
     size_t HTS_Priority_Scheduler::Get_SOS_Count() const noexcept {
         const Impl* p = get_impl();
-        return (p != nullptr) ? static_cast<size_t>(p->q_sos.count) : 0u;
+        if (p == nullptr) { return 0u; }
+        const uint32_t pm = critical_enter();
+        const size_t n = static_cast<size_t>(p->q_sos.count);
+        critical_exit(pm);
+        return n;
     }
 
     size_t HTS_Priority_Scheduler::Get_VOICE_Count() const noexcept {
         const Impl* p = get_impl();
-        return (p != nullptr) ? static_cast<size_t>(p->q_voice.count) : 0u;
+        if (p == nullptr) { return 0u; }
+        const uint32_t pm = critical_enter();
+        const size_t n = static_cast<size_t>(p->q_voice.count);
+        critical_exit(pm);
+        return n;
     }
 
     size_t HTS_Priority_Scheduler::Get_DATA_Count() const noexcept {
         const Impl* p = get_impl();
-        return (p != nullptr) ? static_cast<size_t>(p->q_data.count) : 0u;
+        if (p == nullptr) { return 0u; }
+        const uint32_t pm = critical_enter();
+        const size_t n = static_cast<size_t>(p->q_data.count);
+        critical_exit(pm);
+        return n;
     }
 
     bool HTS_Priority_Scheduler::Is_DATA_Suppressed() const noexcept {
         const Impl* p = get_impl();
-        return (p != nullptr) && p->data_suppressed;
+        if (p == nullptr) { return false; }
+        const uint32_t pm = critical_enter();
+        const bool s = p->data_suppressed;
+        critical_exit(pm);
+        return s;
     }
 
 } // namespace ProtectedEngine

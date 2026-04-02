@@ -278,6 +278,7 @@ namespace ProtectedEngine {
         static void Conv_Encode(const uint8_t* in, int n, uint8_t* out) noexcept;
         static void Viterbi_Decode(const int32_t* soft, int nc,
             uint8_t* out, int no, WorkBuf& wb) noexcept;
+        /// @param n 비트 길이 — FEC 경로에서는 `TOTAL_CODED`(688) 고정. `WorkBuf::perm`/`tmp_soft` 상한.
         static void Bit_Interleave(uint8_t* bits, int n, uint32_t seed) noexcept;
         static void Bit_Deinterleave(int32_t* soft, int n, uint32_t seed,
             WorkBuf& wb) noexcept;

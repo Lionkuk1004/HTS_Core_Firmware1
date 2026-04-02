@@ -21,7 +21,6 @@
 #include "HTS_AES_Bridge.h"
 #endif
 
-#include <atomic>
 #include <cstring>
 
 namespace ProtectedEngine {
@@ -32,7 +31,11 @@ namespace ProtectedEngine {
     static bool CST_CT_Eq(const uint8_t* a,
         const uint8_t* b, size_t n) noexcept {
         volatile uint8_t d = 0u;
-        for (size_t i = 0u; i < n; ++i) d |= a[i] ^ b[i];
+        for (size_t i = 0u; i < n; ++i) {
+            const uint8_t x = static_cast<uint8_t>(
+                static_cast<uint8_t>(a[i]) ^ static_cast<uint8_t>(b[i]));
+            d = static_cast<uint8_t>(static_cast<uint8_t>(d) | x);
+        }
         return (d == 0u);
     }
 
@@ -112,7 +115,7 @@ namespace ProtectedEngine {
         std::memcpy(work, pt_raw, 16);
         {
             LEA_Bridge enc;
-            if (enc.Initialize(key, key_len_bytes, iv_16) != LEA_Bridge::SECURE_TRUE) return false;
+            if (enc.Initialize(key, key_len_bytes, iv_16, 16u) != LEA_Bridge::SECURE_TRUE) return false;
             if (enc.Encrypt_Payload(work, 4u) != LEA_Bridge::SECURE_TRUE) {
                 SecureMemory::secureWipe(work, sizeof(work));
                 return false;
@@ -122,7 +125,7 @@ namespace ProtectedEngine {
         // 복호화 (in-place, 동일 키+IV)
         {
             LEA_Bridge dec;
-            if (dec.Initialize(key, key_len_bytes, iv_16) != LEA_Bridge::SECURE_TRUE) {
+            if (dec.Initialize(key, key_len_bytes, iv_16, 16u) != LEA_Bridge::SECURE_TRUE) {
                 SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
@@ -209,7 +212,9 @@ namespace ProtectedEngine {
 
         // HMAC_Bridge 스트리밍 API: Init(ctx, key, len) → Update(ctx, ...) → Final(ctx, ...)
         HMAC_Context ctx;
-        if (!HMAC_Bridge::Init(ctx, hmac_key, 32)) return false;
+        if (HMAC_Bridge::Init(ctx, hmac_key, 32u) != HMAC_Bridge::SECURE_TRUE) {
+            return false;
+        }
 
         static constexpr size_t CHUNK_SIZE = 256u;
         uint8_t chunk[CHUNK_SIZE] = {};
@@ -230,7 +235,7 @@ namespace ProtectedEngine {
                 return false;
             }
 
-            if (!HMAC_Bridge::Update(ctx, chunk, read_len)) {
+            if (HMAC_Bridge::Update(ctx, chunk, read_len) != HMAC_Bridge::SECURE_TRUE) {
                 SecureMemory::secureWipe(chunk, sizeof(chunk));
                 return false;
             }
@@ -241,7 +246,7 @@ namespace ProtectedEngine {
         SecureMemory::secureWipe(chunk, sizeof(chunk));
 
         uint8_t computed_hmac[32] = {};
-        if (!HMAC_Bridge::Final(ctx, computed_hmac)) {
+        if (HMAC_Bridge::Final(ctx, computed_hmac) != HMAC_Bridge::SECURE_TRUE) {
             SecureMemory::secureWipe(computed_hmac, sizeof(computed_hmac));
             return false;
         }

@@ -26,16 +26,6 @@
 static_assert(sizeof(int32_t) == 4, "int32_t must be 4 bytes");
 
 namespace ProtectedEngine {
-    static constexpr uint8_t LOC_PKT_SLOT_COUNT = 4u;
-    static constexpr uint8_t LOC_PKT_SLOT_MASK = 3u;
-    alignas(uint32_t) static uint8_t g_loc_pkt_pool[LOC_PKT_SLOT_COUNT][HTS_Location_Engine::POS_REPORT_SIZE] = {};
-    static uint8_t g_loc_pkt_slot = 0u;
-
-    static uint8_t* acquire_loc_pkt_slot() noexcept {
-        uint8_t* const pkt = g_loc_pkt_pool[g_loc_pkt_slot];
-        g_loc_pkt_slot = static_cast<uint8_t>((g_loc_pkt_slot + 1u) & LOC_PKT_SLOT_MASK);
-        return pkt;
-    }
 
     // =====================================================================
     //  보안 소거 / PRIMASK
@@ -241,6 +231,19 @@ namespace ProtectedEngine {
         uint8_t      audit_head = 0u;
         uint8_t      audit_count = 0u;
 
+        /// 인스턴스별 위치 보고 패킷 슬롯 (전역 풀 제거 — 다중 인스턴스/레이스 방지)
+        static constexpr uint8_t LOC_PKT_SLOTS = 4u;
+        static constexpr uint8_t LOC_PKT_SLOT_MASK = 3u;
+        alignas(uint32_t) uint8_t loc_pkt_pool[LOC_PKT_SLOTS][HTS_Location_Engine::POS_REPORT_SIZE]{};
+        std::atomic<uint8_t> loc_pkt_slot{ 0u };
+
+        uint8_t* acquire_loc_pkt_buffer() noexcept {
+            const uint8_t idx = static_cast<uint8_t>(
+                loc_pkt_slot.fetch_add(1u, std::memory_order_relaxed)
+                & LOC_PKT_SLOT_MASK);
+            return &loc_pkt_pool[static_cast<size_t>(idx)][0];
+        }
+
         explicit Impl(uint16_t id, LocationMode m, DeviceClass dc) noexcept
             : my_id(id), mode(m), dev_class(dc)
         {
@@ -422,6 +425,10 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  Update_Position — 삼각측량 실행
+    //
+    //  [H-ISR] PRIMASK 분할: 앵커 스냅샷·결과 커밋만 짧게 잠그고,
+    //    ranging 매칭·Cramer/WLS·품질 루프는 IRQ 허용 구간에서 수행
+    //    (UART/DMA 오버런·지터 완화 — Device_Status_Reporter 패턴과 동일 계열)
     // =====================================================================
     void HTS_Location_Engine::Update_Position(
         const HTS_Mesh_Sync& sync) noexcept
@@ -433,6 +440,15 @@ namespace ProtectedEngine {
         PeerRanging ranging[16] = {};
         const size_t peer_count = sync.Get_All_Ranging(ranging, 16u);
 
+        AnchorEntry anchors_snap[MAX_ANCHORS];
+        {
+            const uint32_t pm_snap = loc_critical_enter();
+            for (size_t a = 0u; a < MAX_ANCHORS; ++a) {
+                anchors_snap[a] = p->anchors[static_cast<size_t>(a)];
+            }
+            loc_critical_exit(pm_snap);
+        }
+
         // 앵커-거리 매칭 (데시미터 단위 — 10cm 정밀도)
         struct AnchorDist {
             int32_t x_dm;
@@ -443,37 +459,37 @@ namespace ProtectedEngine {
         AnchorDist matched[MAX_ANCHORS] = {};
         size_t match_count = 0u;
 
-        const uint32_t pm = loc_critical_enter();
-
         int32_t ref_lat = 0;
         int32_t ref_lon = 0;
         bool ref_set = false;
 
         for (size_t a = 0u; a < MAX_ANCHORS; ++a) {
-            if (p->anchors[a].valid == 0u) { continue; }
+            if (anchors_snap[a].valid == 0u) { continue; }
             if (!ref_set) {
-                ref_lat = p->anchors[a].lat_1e4;
-                ref_lon = p->anchors[a].lon_1e4;
+                ref_lat = anchors_snap[a].lat_1e4;
+                ref_lon = anchors_snap[a].lon_1e4;
                 ref_set = true;
             }
 
             for (size_t r = 0u; r < peer_count; ++r) {
-                if (ranging[r].peer_id == p->anchors[a].node_id &&
+                if (ranging[r].peer_id == anchors_snap[a].node_id &&
                     ranging[r].distance_cm > 0u)
                 {
-                    const int32_t dlat = p->anchors[a].lat_1e4 - ref_lat;
-                    const int32_t dlon = p->anchors[a].lon_1e4 - ref_lon;
+                    const int32_t dlat = anchors_snap[a].lat_1e4 - ref_lat;
+                    const int32_t dlon = anchors_snap[a].lon_1e4 - ref_lon;
                     // 1e4 → 데시미터: × MM_PER_UNIT / 100
                     // ⑨ /100 → Q19 역수 곱
                     //  정밀도: |x|≤2B 범위에서 오차 < 0.002%
                     //  int64_t 중간값: |1.6B × 5243| = 8.4T → int64_t 안전
                     static constexpr int32_t Q19_RECIP_100 = 5243;
                     const int32_t x_dm = static_cast<int32_t>(
-                        (static_cast<int64_t>(dlon * LON_MM_PER_UNIT)
-                            * Q19_RECIP_100) >> 19);
+                        (static_cast<int64_t>(dlon)
+                            * static_cast<int64_t>(LON_MM_PER_UNIT)
+                            * static_cast<int64_t>(Q19_RECIP_100)) >> 19);
                     const int32_t y_dm = static_cast<int32_t>(
-                        (static_cast<int64_t>(dlat * LAT_MM_PER_UNIT)
-                            * Q19_RECIP_100) >> 19);
+                        (static_cast<int64_t>(dlat)
+                            * static_cast<int64_t>(LAT_MM_PER_UNIT)
+                            * static_cast<int64_t>(Q19_RECIP_100)) >> 19);
                     // cm → dm
                     // ⑨ /10u → Q16 역수 곱
                     static constexpr uint32_t Q16_RECIP_10 = 6554u;
@@ -495,7 +511,9 @@ namespace ProtectedEngine {
 
         // 최소 3앵커
         if (match_count < 3u || !ref_set) {
+            const uint32_t pm = loc_critical_enter();
             p->position.valid = 0u;
+            p->position.map_10m_cert = 0u;
             p->position.anchor_count = static_cast<uint8_t>(match_count);
             loc_critical_exit(pm);
             return;
@@ -554,7 +572,9 @@ namespace ProtectedEngine {
         }
 
         if (valid_count == 0u) {
+            const uint32_t pm = loc_critical_enter();
             p->position.valid = 0u;
+            p->position.map_10m_cert = 0u;
             loc_critical_exit(pm);
             return;
         }
@@ -575,18 +595,10 @@ namespace ProtectedEngine {
         const int32_t new_lat = ref_lat + dlat_1e4;
         const int32_t new_lon = ref_lon + dlon_1e4;
 
-        // ③ 다중 에폭 링버퍼에 추가 + 평균 산출
-        p->push_epoch(new_lat, new_lon);
-
-        int32_t avg_lat = 0;
-        int32_t avg_lon = 0;
-        p->avg_epoch(avg_lat, avg_lon);
-
-        // 정확도: 앵커 수 + 조합 수 + sync 품질 기반
+        // 정확도 후보·품질: 스냅샷 기준 peer 루프 — IRQ 허용
         uint8_t acc_m = 50u;
         if (valid_count >= 2u) { acc_m = 25u; }   // ② 다중 조합
-        if (valid_count >= 4u) { acc_m = 15u; }
-        if (p->epoch_count >= 4u) { acc_m = static_cast<uint8_t>(acc_m >> 1u); }  // ③ 에폭
+        if (valid_count >= 4u) { acc_m = 12u; }   // 4+ 조합 시 상한 축소 (10m 지도 인증 후보)
 
         uint8_t quality = 0u;
         for (size_t r = 0u; r < peer_count; ++r) {
@@ -596,11 +608,29 @@ namespace ProtectedEngine {
         }
         if (quality >= 80u) { acc_m = static_cast<uint8_t>(acc_m >> 1u); }
 
+        const uint32_t pm = loc_critical_enter();
+        // ③ 다중 에폭 링버퍼에 추가 + 평균 산출 (Impl 일관성)
+        p->push_epoch(new_lat, new_lon);
+
+        int32_t avg_lat = 0;
+        int32_t avg_lon = 0;
+        p->avg_epoch(avg_lat, avg_lon);
+
+        if (p->epoch_count >= 4u) { acc_m = static_cast<uint8_t>(acc_m >> 1u); }  // ③ 에폭
+
+        // 상황실 지도 「10m 이내」 표시: 앵커 4+ · 동기 품질 · 에폭 안정 · 오차 상한 10m 이하
+        uint8_t map_10m_cert = 0u;
+        if (match_count >= 4u && quality >= 80u && p->epoch_count >= 4u
+            && acc_m <= 10u) {
+            map_10m_cert = 1u;
+        }
+
         p->position.lat_1e4 = avg_lat;
         p->position.lon_1e4 = avg_lon;
         p->position.accuracy_m = acc_m;
         p->position.anchor_count = static_cast<uint8_t>(match_count);
         p->position.quality = quality;
+        p->position.map_10m_cert = map_10m_cert;
         p->position.valid = 1u;
 
         loc_critical_exit(pm);
@@ -670,14 +700,14 @@ namespace ProtectedEngine {
         const int32_t dlat = my_lat - token.zone_lat_1e4;
         const int32_t dlon = my_lon - token.zone_lon_1e4;
 
-        // 거리²(m²) ≈ (dlat×11)² + (dlon×9)²
-        // (1e4 → m 근사: lat×11.132, lon×8.88)
-        const int32_t dy = dlat * 11;
-        const int32_t dx = dlon * 9;
-        const int32_t dist_sq = dy * dy + dx * dx;
+        // 거리²(m²) ≈ (dlat×11)² + (dlon×9)² — int32 제곱은 원거리에서 UB → int64
+        const int64_t dy = static_cast<int64_t>(dlat) * 11;
+        const int64_t dx = static_cast<int64_t>(dlon) * 9;
+        const int64_t dist_sq = dy * dy + dx * dx;
 
-        const int32_t radius = static_cast<int32_t>(token.zone_radius_m) * 10;
-        const int32_t radius_sq = radius * radius;
+        const int64_t radius =
+            static_cast<int64_t>(token.zone_radius_m) * 10;
+        const int64_t radius_sq = radius * radius;
 
         return (dist_sq <= radius_sq);
     }
@@ -864,12 +894,13 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Tick — 주기적 위치 보고 패킷 전송
     //
-    //  패킷 (8B):
+    //  패킷 (9B) — 상황실 지도 연동 v2:
     //   [0-1] device_id
     //   [2-3] lat_comp (int16_t)
     //   [4-5] lon_comp (int16_t)
-    //   [6]   accuracy_m
+    //   [6]   accuracy_m  (추정 오차 상한 m; 원 반경 = 이 값)
     //   [7]   flags: [7:6]mode [5:3]anchor_cnt [2:0]quality_3bit
+    //   [8]   map_10m_cert: 1=지도에서 10m 이내 신뢰구역·고정밀 스타일 표시 가능
     // =====================================================================
     void HTS_Location_Engine::Tick(
         uint32_t systick_ms, uint32_t current_sec,
@@ -954,6 +985,7 @@ namespace ProtectedEngine {
         int32_t lon = 0;
         uint8_t acc = 0u;
         uint8_t flags = 0u;
+        uint8_t pkt8_map_cert = 0u;
 
         if (p->mode == LocationMode::ANCHOR) {
             lat = p->my_lat_1e4;
@@ -975,16 +1007,18 @@ namespace ProtectedEngine {
                 (p->position.anchor_count & 0x07u) << 3u);
             flags |= static_cast<uint8_t>(
                 (p->position.quality / 14u) & 0x07u);
+            pkt8_map_cert = p->position.map_10m_cert;
             loc_critical_exit(pm);
         }
 
-        // 패킷 조립 + 전송
-        uint8_t* const pkt = acquire_loc_pkt_slot();
+        // 패킷 조립 + 전송 (인스턴스 로컬 풀)
+        uint8_t* const pkt = p->acquire_loc_pkt_buffer();
         ser_u16(&pkt[0], p->my_id);
         ser_i16(&pkt[2], compress_coord(lat, LAT_OFFSET));
         ser_i16(&pkt[4], compress_coord(lon, LON_OFFSET));
         pkt[6] = acc;
         pkt[7] = flags;
+        pkt[8] = pkt8_map_cert;
 
         p->last_report_ms = systick_ms;
 

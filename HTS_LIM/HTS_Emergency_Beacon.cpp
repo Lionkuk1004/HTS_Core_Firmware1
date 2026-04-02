@@ -111,8 +111,11 @@ namespace ProtectedEngine {
     static uint8_t g_beacon_pkt_slot = 0u;
 
     static uint8_t* acquire_beacon_pkt_slot() noexcept {
+        const uint32_t pm = bcn_critical_enter();
         uint8_t* const pkt = g_beacon_pkt_pool[g_beacon_pkt_slot];
-        g_beacon_pkt_slot = static_cast<uint8_t>((g_beacon_pkt_slot + 1u) & BEACON_PKT_SLOT_MASK);
+        g_beacon_pkt_slot = static_cast<uint8_t>(
+            (g_beacon_pkt_slot + 1u) & BEACON_PKT_SLOT_MASK);
+        bcn_critical_exit(pm);
         return pkt;
     }
 
@@ -275,6 +278,12 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
+        bool should_tx = false;
+        uint16_t snap_device_id = 0u;
+        uint16_t snap_alert_flags = 0u;
+        int32_t  snap_lat_1e4 = 0;
+        int32_t  snap_lon_1e4 = 0;
+
         const uint32_t pm = bcn_critical_enter();
 
         if (!p->active) {
@@ -296,9 +305,12 @@ namespace ProtectedEngine {
             return;
         }
 
-        // 비콘 패킷 조립 (크리티컬 내부 — 플래그/좌표 일관성)
-        uint8_t* const pkt = acquire_beacon_pkt_slot();
-        p->build_packet(pkt);
+        // 패킷 조립용 스냅샷만 보관 (실제 직렬화는 PRIMASK 밖에서 수행)
+        should_tx = true;
+        snap_device_id = p->device_id;
+        snap_alert_flags = p->alert_flags;
+        snap_lat_1e4 = p->lat_1e4;
+        snap_lon_1e4 = p->lon_1e4;
 
         //  p->last_tx_ms = systick_ms
         //    → Tick 호출 지연(인터럽트, 스케줄 지연)이 그대로 누적
@@ -324,6 +336,14 @@ namespace ProtectedEngine {
         }
 
         bcn_critical_exit(pm);
+
+        if (!should_tx) { return; }
+
+        uint8_t* const pkt = acquire_beacon_pkt_slot();
+        ser_u16(&pkt[0], snap_device_id);
+        ser_u16(&pkt[2], snap_alert_flags);
+        ser_i16(&pkt[4], compress_lat(snap_lat_1e4));
+        ser_i16(&pkt[6], compress_lon(snap_lon_1e4));
 
         // 크리티컬 밖에서 인큐 (scheduler 내부에 자체 PRIMASK)
         const EnqueueResult enq = scheduler.Enqueue(

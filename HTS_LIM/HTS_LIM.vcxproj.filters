@@ -78,6 +78,9 @@
     <ClCompile Include="HTS_Physical_Entropy_Engine.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="HTS_Quantum_Decoy_VDF.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
     <ClCompile Include="HTS_Pointer_Auth.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -115,9 +118,6 @@
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_POST_Manager.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="HTS_PUF_Adapter.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="HTS_Secure_Logger.cpp">
@@ -380,6 +380,9 @@
     <ClInclude Include="..\..\CORE\HTS_Physical_Entropy_Engine.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\CORE\HTS_Quantum_Decoy_VDF.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\CORE\HTS_Polymorphic_Shield.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -444,9 +447,6 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_Anti_Glitch.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="HTS_PUF_Adapter.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="HTS_Key_Rotator.h">

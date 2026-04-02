@@ -31,7 +31,7 @@
 //
 //  D-2: 안티포렌식 소거는 SecureMemory::secureWipe 단일화
 //         소멸자: op_busy_ 단일 스핀 획득 후 impl_buf 전량 파쇄(조기 return 없음)
-//  Cortex-M 소멸자: PRIMASK로 스핀·파쇄 구간 ISR 재진입 데드락 차단
+//  Cortex-M 소멸자: op_busy_ 획득 후 PRIMASK(파쇄·~Impl만) — 스핀은 IRQ 허용
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 // ─────────────────────────────────────────────────────────
@@ -182,11 +182,18 @@ namespace ProtectedEngine {
         static constexpr size_t IMPL_BUF_SIZE = 560u;
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
         struct Impl;
+        /// MSVC: 반환형이 멤버 이름보다 앞에 오면 비한정 Impl을 찾지 못함 → 아웃라인 정의에 한정 별칭 사용
+        using ImplPtr = Impl*;
+        using ImplCPtr = const Impl*;
         alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool> impl_valid_{ false };
         mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
-        Impl* get_impl() noexcept;
-        const Impl* get_impl() const noexcept;
+        ImplPtr get_impl() noexcept;
+        ImplCPtr get_impl() const noexcept;
+
+        /// 점진 검증 HMAC 플러시 / 최종 판정 — Impl은 private이므로 TU 내부 static이 아닌 멤버로만 노출
+        static void ota_flush_hmac_if_active(ImplPtr p) noexcept;
+        static void ota_verify_finalize(ImplPtr p) noexcept;
     };
 
 } // namespace ProtectedEngine

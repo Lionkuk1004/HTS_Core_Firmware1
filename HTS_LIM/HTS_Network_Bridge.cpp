@@ -434,6 +434,8 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        // 파괴·소거 전에 공개 API 차단 — ~Impl/버퍼 소거 중 Feed/Fragment UAF 방지
+        initialized_.store(false, std::memory_order_release);
 
         // Secure wipe reassembly slots (may contain plaintext ETH data)
         for (uint32_t i = 0u; i < BRIDGE_REASSEMBLY_SLOTS; ++i) {
@@ -447,7 +449,6 @@ namespace ProtectedEngine {
         impl->ipc = nullptr;
         impl->~Impl();
         IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        initialized_.store(false, std::memory_order_release);
     }
 
     void HTS_Network_Bridge::Register_ETH_Callback(Bridge_ETH_Callback cb) noexcept

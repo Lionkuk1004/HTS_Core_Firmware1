@@ -8,8 +8,8 @@
 // ─────────────────────────────────────────────────────────────────────────
 //
 //  [설계 목적]
-//  PUF 시드 기반 보안 세션 관리 (Open / Close / 인증 / 긴급 정지)
-//  ARM: PUF + AntiDebug + AntiGlitch → 하드웨어 보안 체인
+//  물리 엔트로피 기반 마스터 시드 + 보안 세션 (Open / Close / 인증 / 긴급 정지)
+//  ARM: Physical_Entropy_Engine + AntiDebug + AntiGlitch → 하드웨어 보안 체인
 //
 //  [사용법]
 //   Session_Gateway::Open_Session();
@@ -35,7 +35,7 @@ namespace ProtectedEngine {
     /// @brief 최상위 보안 세션 컨트롤러 (정적 유틸리티)
     class Session_Gateway {
     public:
-        /// @brief PUF 시드 추출 + 하드웨어 보안 락 가동
+        /// @brief 물리 엔트로피 시드 채움 + 하드웨어 보안 락 가동
         static void Open_Session() noexcept;
 
         /// @brief 마스터 키 완전 파기 + 세션 종료

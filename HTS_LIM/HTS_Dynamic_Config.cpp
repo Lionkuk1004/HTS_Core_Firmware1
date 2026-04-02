@@ -54,14 +54,21 @@ namespace ProtectedEngine {
         constexpr uint32_t k_WORKSTATION_CHUNK = 256u;
         constexpr uint32_t k_SERVER_CHUNK = 1024u;
 
+        // Cortex-M4: CLZ → 단일 사이클; GCC/Clang 내장으로 매핑, 그 외는 비트 전파 폴백
         constexpr uint32_t Floor_Power_Of_Two(uint32_t v) noexcept {
-            if (v == 0u) return 0u;
+            if (v == 0u) { return 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+            return 1u
+                << (31u
+                    - static_cast<uint32_t>(__builtin_clz(v)));
+#else
             v |= (v >> 1u);
             v |= (v >> 2u);
             v |= (v >> 4u);
             v |= (v >> 8u);
             v |= (v >> 16u);
             return (v >> 1u) + 1u;
+#endif
         }
 
         // ── C++20 속성 가드 ─────────────────────────────────────
@@ -195,7 +202,7 @@ namespace ProtectedEngine {
         if (calc_nodes_64 > UINT32_MAX) {
             final_nodes = UINT32_MAX;
         }
-        else if (calc_nodes_64 < k_MIN_NODES) {
+        else if (calc_nodes_64 < static_cast<uint64_t>(k_MIN_NODES)) {
             final_nodes = k_MIN_NODES;
         }
         else {

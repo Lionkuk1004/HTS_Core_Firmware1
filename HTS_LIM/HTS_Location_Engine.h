@@ -109,19 +109,23 @@ namespace ProtectedEngine {
         uint8_t  pad[3];
     };
 
+    /// @brief 삼각측량 결과 (상황실 지도·GET API 공통)
+    /// @note map_10m_cert==1 일 때만 지도에서 「10m 이내 신뢰」 표시(원·마커) 권장
     struct PositionResult {
         int32_t  lat_1e4;
         int32_t  lon_1e4;
-        uint8_t  accuracy_m;
+        uint8_t  accuracy_m;       ///< 추정 오차 상한 (m)
         uint8_t  anchor_count;
         uint8_t  quality;
+        uint8_t  map_10m_cert;     ///< 1=10m 이내 표시 정책 충족 (앵커·동기·에폭 조건)
         uint8_t  valid;
     };
 
     class HTS_Location_Engine {
     public:
         static constexpr size_t MAX_ANCHORS = 8u;
-        static constexpr size_t POS_REPORT_SIZE = 8u;
+        /// 위치 보고 바이너리 (Tick → 스케줄러): v2 = 9바이트 ([8]=map_10m_cert)
+        static constexpr size_t POS_REPORT_SIZE = 9u;
         static constexpr size_t MAX_FAMILY_DEVS = 4u;
         static constexpr size_t AUDIT_LOG_SIZE = 8u;
 
@@ -152,6 +156,7 @@ namespace ProtectedEngine {
         [[nodiscard]] bool Register_Anchor(
             uint16_t node_id, int32_t lat_1e4, int32_t lon_1e4) noexcept;
         void Set_My_Position(int32_t lat_1e4, int32_t lon_1e4) noexcept;
+        /// @brief 삼각측량 갱신 (앵커 스냅샷·짧은 커밋 / 무거운 연산은 PRIMASK 밖)
         void Update_Position(const HTS_Mesh_Sync& sync) noexcept;
         [[nodiscard]] PositionResult Get_Position() const noexcept;
 

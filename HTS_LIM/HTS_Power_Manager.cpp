@@ -3,23 +3,39 @@
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
+//
+//  B-CDMA 검수 요약 (본 TU)
+//   ① LTO/TBAA: Pimpl 버퍼는 uint8_t[] + placement Impl; 소거는 SecureMemory::secureWipe 단일화(D-2).
+//   ② ISR: PRIMASK는 HAL disable_irq/enable_irq 쌍으로 캡슐화; 구간 길이는 HAL·on_pre_sleep 구현에 의존 [요검토].
+//      Handle_PVD_Event는 ISR 경로 — 콜백은 최소 유지 권장.
+//   ③ Flash/BOR: 본 모듈은 Flash 프로그램 없음. STOP 복귀·클럭은 HAL. BOR/전원 붕괴는 보드·PVD 정책.
+//   ④ RDP/퓨즈: HTS_Hardware_Init::Initialize_System 부트 검사; 본 파일에서는 미수행.
 
 #include "HTS_Power_Manager.h"
 #include "HTS_Hardware_Init.h"
+#include "HTS_Secure_Memory.h"
 #include <new>
 #include <atomic>
 
 namespace ProtectedEngine {
 
-    static void Power_Secure_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) { return; }
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
-    }
+    // 공개 API / Shutdown 교차 시 UAF 방지 — 스핀락 (ISR은 Handle_PVD_Event에서 별도 논블로킹)
+    struct Power_Busy_Guard {
+        std::atomic_flag& f;
+        explicit Power_Busy_Guard(std::atomic_flag& flag) noexcept
+            : f(flag)
+        {
+            while (f.test_and_set(std::memory_order_acquire)) {
+                // spin — Request_Sleep·Shutdown 교차 시 완료까지 대기
+            }
+        }
+        ~Power_Busy_Guard() noexcept
+        {
+            f.clear(std::memory_order_release);
+        }
+        Power_Busy_Guard(const Power_Busy_Guard&) = delete;
+        Power_Busy_Guard& operator=(const Power_Busy_Guard&) = delete;
+    };
 
     // ============================================================
     //  Impl Structure
@@ -104,7 +120,8 @@ namespace ProtectedEngine {
             }
 
             // Apply clock gating for target mode
-            const PowerPreset& preset = k_power_presets[mi];
+            const PowerPreset& preset =
+                k_power_presets[static_cast<size_t>(mi)];
             if (hal_cb.set_clock_gates != nullptr) {
                 hal_cb.set_clock_gates(preset.clock_gate_mask);
             }
@@ -180,19 +197,16 @@ namespace ProtectedEngine {
 
                     if (!skip_stop) {
                         hal_cb.enter_stop_mode();
-                        // CPU wakes here after STOP exit
+                        // CPU wakes here after STOP exit — PLL/HSE were stopped; restore only in this path
+                        if (hal_cb.restore_clocks_from_stop != nullptr) {
+                            hal_cb.restore_clocks_from_stop();
+                        }
                     }
 
                     if (hal_cb.enable_irq != nullptr) {
                         hal_cb.enable_irq();
                     }
 
-                    // HSE/PLL lost in STOP -- must reconfigure clocks
-                    // (even if skip_stop=true, clocks may have been
-                    //  partially gated by set_clock_gates above)
-                    if (hal_cb.restore_clocks_from_stop != nullptr) {
-                        hal_cb.restore_clocks_from_stop();
-                    }
                     woke_ok = true;
                 }
                 break;
@@ -265,7 +279,8 @@ namespace ProtectedEngine {
                 return false;  // Only RUN/LOW_RUN allowed here
             }
 
-            const PowerPreset& preset = k_power_presets[static_cast<uint8_t>(mode)];
+            const PowerPreset& preset = k_power_presets[static_cast<size_t>(
+                static_cast<uint8_t>(mode))];
 
             if (hal_cb.set_cpu_clock != nullptr) {
                 hal_cb.set_cpu_clock(preset.cpu_freq_mhz);
@@ -286,8 +301,11 @@ namespace ProtectedEngine {
     HTS_Power_Manager::HTS_Power_Manager() noexcept
         : initialized_{ false }
     {
+        // B-CDMA ⑧/M-20: Impl 정의 이후·완전 형식에서만 alignof 적법 (클래스 본문 안 alignof(Impl)는 C2027)
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
             "HTS_Power_Manager::Impl exceeds IMPL_BUF_SIZE");
+        static_assert(alignof(Impl) <= 8u,
+            "HTS_Power_Manager::Impl alignment exceeds alignas(8) impl_buf_ — raise alignas in .h");
 
         for (uint32_t i = 0u; i < IMPL_BUF_SIZE; ++i) {
             impl_buf_[i] = 0u;
@@ -301,6 +319,7 @@ namespace ProtectedEngine {
 
     bool HTS_Power_Manager::Initialize() noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         bool expected = false;
         if (!initialized_.compare_exchange_strong(
             expected, true, std::memory_order_acq_rel))
@@ -345,30 +364,34 @@ namespace ProtectedEngine {
 
     void HTS_Power_Manager::Shutdown() noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->state = PowerState::UNINITIALIZED;
         impl->~Impl();
 
-        Power_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);
     }
 
     void HTS_Power_Manager::Register_HAL_Callbacks(const Power_HAL_Callbacks& cb) noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->hal_cb = cb;
     }
 
     void HTS_Power_Manager::Register_Notify_Callbacks(const Power_Notify_Callbacks& cb) noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->notify_cb = cb;
     }
 
     bool HTS_Power_Manager::Request_Sleep(PowerMode mode, uint32_t wakeup_sec) noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return false; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
@@ -384,6 +407,7 @@ namespace ProtectedEngine {
 
     bool HTS_Power_Manager::Set_Clock_Mode(PowerMode mode) noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return false; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
@@ -404,6 +428,7 @@ namespace ProtectedEngine {
 
     void HTS_Power_Manager::Set_PVD_Level(PVD_Level level) noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->pvd_level = level;
@@ -414,16 +439,23 @@ namespace ProtectedEngine {
 
     void HTS_Power_Manager::Handle_PVD_Event() noexcept
     {
-        // ISR-safe: minimal processing, no CFI transition
+        // ISR: 스핀 금지 — 락이 잡혀 있으면 이번 샘플 생략(논블로킹)
         if (!initialized_.load(std::memory_order_relaxed)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        if (op_busy_.test_and_set(std::memory_order_acquire)) {
+            return;
+        }
+        struct Pvd_Isr_Unlock {
+            std::atomic_flag& fl;
+            ~Pvd_Isr_Unlock() noexcept
+            {
+                fl.clear(std::memory_order_release);
+            }
+        } unlock{op_busy_};
 
-        // Read battery voltage
+        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         if (impl->hal_cb.get_battery_mv != nullptr) {
             impl->last_battery_mv = impl->hal_cb.get_battery_mv();
         }
-
-        // Notify external modules
         if (impl->notify_cb.on_pvd_warning != nullptr) {
             impl->notify_cb.on_pvd_warning(impl->last_battery_mv);
         }
@@ -431,6 +463,7 @@ namespace ProtectedEngine {
 
     void HTS_Power_Manager::Set_Peripheral_Clocks(uint32_t enable_mask) noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
@@ -444,30 +477,35 @@ namespace ProtectedEngine {
 
     PowerState HTS_Power_Manager::Get_State() const noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return PowerState::UNINITIALIZED; }
         return reinterpret_cast<const Impl*>(impl_buf_)->state;
     }
 
     PowerMode HTS_Power_Manager::Get_Current_Mode() const noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return PowerMode::RUN; }
         return reinterpret_cast<const Impl*>(impl_buf_)->current_mode;
     }
 
     uint16_t HTS_Power_Manager::Get_Battery_MV() const noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         return reinterpret_cast<const Impl*>(impl_buf_)->last_battery_mv;
     }
 
     uint16_t HTS_Power_Manager::Get_Last_Wake_Source() const noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         return reinterpret_cast<const Impl*>(impl_buf_)->last_wake_source;
     }
 
     uint32_t HTS_Power_Manager::Get_Sleep_Count() const noexcept
     {
+        Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         return reinterpret_cast<const Impl*>(impl_buf_)->sleep_count;
     }

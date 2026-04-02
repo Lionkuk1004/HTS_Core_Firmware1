@@ -14,6 +14,18 @@ namespace ProtectedEngine {
     static constexpr uint32_t BLE_INIT_BUSY = 1u;
     static constexpr uint32_t BLE_INIT_READY = 2u;
 
+    // LTO/DCE 환경에서 민감 버퍼 소거가 제거되지 않도록 보장.
+    static void BLE_Secure_Wipe_Strict(void* ptr, std::size_t size) noexcept
+    {
+        volatile uint8_t* p = static_cast<volatile uint8_t*>(ptr);
+        while (size--) { *p++ = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" ::: "memory");
+#else
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
+    }
+
     // ============================================================
     //  Endian Helpers (local)
     // ============================================================
@@ -556,17 +568,17 @@ namespace ProtectedEngine {
         for (uint32_t i = 0u; i < BLE_MAX_SESSIONS; ++i) {
             impl->sessions[i].active = 0u;
         }
-        IPC_Secure_Wipe(impl->frame_buf, BLE_MAX_FRAME_SIZE);
-        IPC_Secure_Wipe(impl->at_tx_buf, Impl::AT_TX_BUF_SIZE);  // AT TX 버퍼 소거
-        IPC_Secure_Wipe(impl->uart_line_buf, BLE_UART_RX_BUF_SIZE);
-        IPC_Secure_Wipe(impl->uart_ring, UART_RING_SIZE);
+        BLE_Secure_Wipe_Strict(impl->frame_buf, BLE_MAX_FRAME_SIZE);
+        BLE_Secure_Wipe_Strict(impl->at_tx_buf, Impl::AT_TX_BUF_SIZE);  // AT TX 버퍼 소거
+        BLE_Secure_Wipe_Strict(impl->uart_line_buf, BLE_UART_RX_BUF_SIZE);
+        BLE_Secure_Wipe_Strict(impl->uart_ring, UART_RING_SIZE);
         std::atomic_thread_fence(std::memory_order_release);
 
         impl->state = BLE_GW_State::OFFLINE;
         impl->ipc = nullptr;
         impl->~Impl();
 
-        IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        BLE_Secure_Wipe_Strict(impl_buf_, IMPL_BUF_SIZE);
 
         init_state_.store(BLE_INIT_NONE, std::memory_order_release);
     }

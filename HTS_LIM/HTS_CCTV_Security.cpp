@@ -6,8 +6,9 @@
 
 #include "HTS_CCTV_Security.h"
 #include "HTS_IPC_Protocol.h"
-#include <new>
 #include <atomic>
+#include <cstddef>
+#include <new>
 
 // 양산: -DHTS_CCTV_ENFORCE_RDP_LEVEL2=1 시 STM32F4 계열 OPTCR RDP Level2 미만이면 AIRCR 리셋
 #ifndef HTS_CCTV_ENFORCE_RDP_LEVEL2
@@ -19,13 +20,28 @@
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
     !defined(__aarch64__)
 namespace {
+// D-3: AIRCR → DBGMCU WDT 프리즈 해제 → dsb/isb → for(;;) — HTS_Hardware_Init와 동일 파이프라인
 [[noreturn]] void HTS_CCTV_Rdp_Fault_Halt() noexcept {
-    static constexpr uintptr_t AIRCR_ADDR = 0xE000ED0Cu;
-    static constexpr uint32_t  AIRCR_KEYRST = 0x05FA0000u | 0x04u;
-    *reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR) = AIRCR_KEYRST;
+    static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
+    static constexpr uint32_t  AIRCR_RESET =
+        (0x05FAu << 16) | (1u << 2);
+    volatile uint32_t* const aircr =
+        reinterpret_cast<volatile uint32_t*>(ADDR_AIRCR);
+    *aircr = AIRCR_RESET;
+#if defined(__GNUC__) || defined(__clang__)
+    static constexpr uintptr_t ADDR_DBGMCU_FZ = 0xE0042008u;
+    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+    volatile uint32_t* const dbgmcu_fz =
+        reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
+    *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+    __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
     for (;;) {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("wfi");
+#else
+        __asm__ __volatile__("nop");
 #endif
     }
 }
@@ -34,8 +50,15 @@ void HTS_CCTV_Enforce_Rdp_Level2_If_Configured() noexcept {
     static constexpr uintptr_t FLASH_OPTCR = 0x40023C14u;
     static constexpr uint32_t  RDP_MASK = 0x0000FF00u;
     static constexpr uint32_t  RDP_LEVEL_2 = 0xCCu;
-    const uint32_t optcr = *reinterpret_cast<volatile uint32_t*>(FLASH_OPTCR);
-    const uint32_t rdp = (optcr & RDP_MASK) >> 8u;
+    const uint32_t optcr_a = *reinterpret_cast<volatile uint32_t*>(FLASH_OPTCR);
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("dsb sy" ::: "memory");
+#endif
+    const uint32_t optcr_b = *reinterpret_cast<volatile uint32_t*>(FLASH_OPTCR);
+    if (optcr_a != optcr_b) {
+        HTS_CCTV_Rdp_Fault_Halt();
+    }
+    const uint32_t rdp = (optcr_a & RDP_MASK) >> 8u;
     if (rdp != RDP_LEVEL_2) {
         HTS_CCTV_Rdp_Fault_Halt();
     }
@@ -47,6 +70,18 @@ namespace ProtectedEngine {
     static constexpr uint32_t CCTV_INIT_NONE = 0u;
     static constexpr uint32_t CCTV_INIT_BUSY = 1u;
     static constexpr uint32_t CCTV_INIT_READY = 2u;
+
+    /// Volatile byte wipe + compiler barrier — LTO/DCE가 키 소거를 제거하지 못하게 함.
+    static void CCTV_Impl_Wipe_Memory(void* ptr, std::size_t size) noexcept
+    {
+        volatile uint8_t* p = static_cast<volatile uint8_t*>(ptr);
+        while (size--) { *p++ = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" ::: "memory");
+#else
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
+    }
 
     // ============================================================
     //  Endian Helpers
@@ -127,6 +162,11 @@ namespace ProtectedEngine {
         CCTV_EventLog event_log[CCTV_EVENT_LOG_SIZE];
         uint32_t      log_head;
 
+        // --- Per-type O(1) counts (CCTV_EventType is uint8_t; sparse codes → 256 slots) ---
+        static constexpr uint32_t EVENT_TYPE_SLOT_COUNT = 256u;
+        uint16_t evt_type_count[EVENT_TYPE_SLOT_COUNT];
+        uint32_t evt_type_first_tick[EVENT_TYPE_SLOT_COUNT];
+
         // --- Event Frame Build Buffer ---
         uint8_t evt_buf[CCTV_EVT_MAX_FRAME_SIZE];
 
@@ -156,26 +196,21 @@ namespace ProtectedEngine {
         // ============================================================
         void Log_Event(CCTV_EventType evt, CCTV_Severity sev) noexcept
         {
-            //  동일 타입 최근 count: log_head-1부터 역순 검색
-            uint32_t prev_count = 0u;
-            const uint32_t search_limit =
-                (log_head < CCTV_EVENT_LOG_SIZE) ? log_head : CCTV_EVENT_LOG_SIZE;
-            for (uint32_t k = 0u; k < search_limit; ++k) {
-                const uint32_t idx =
-                    (log_head - 1u - k) & CCTV_EVENT_LOG_MASK;
-                if (static_cast<uint8_t>(event_log[idx].event_type) ==
-                    static_cast<uint8_t>(evt)) {
-                    prev_count = event_log[idx].count;
-                    break;
-                }
+            const uint32_t ei =
+                static_cast<uint32_t>(static_cast<uint8_t>(evt));
+            const uint16_t prev_count = evt_type_count[ei];
+            evt_type_count[ei] = static_cast<uint16_t>(
+                static_cast<uint32_t>(prev_count) + 1u);
+            if (prev_count == 0u) {
+                evt_type_first_tick[ei] = current_tick;
             }
 
             // 새 슬롯에 기록 (무조건 head 전진 → 시간순 보장)
             CCTV_EventLog& slot = event_log[log_head & CCTV_EVENT_LOG_MASK];
             slot.event_type = evt;
             slot.severity = sev;
-            slot.count = static_cast<uint16_t>(prev_count + 1u);
-            slot.first_tick = (prev_count == 0u) ? current_tick : slot.first_tick;
+            slot.count = evt_type_count[ei];
+            slot.first_tick = evt_type_first_tick[ei];
             slot.last_tick = current_tick;
             log_head++;
         }
@@ -289,6 +324,8 @@ namespace ProtectedEngine {
 
         void Check_Stream_HMAC() noexcept
         {
+            // verify_stream_hmac / get_stream_sequence: 반드시 non-blocking 폴링 또는
+            // IRQ/DMA로 갱신된 캐시만 O(1) 반환 — SPI/I2C 블로킹 금지(메인 틱 정지·WDT).
             if (auth_cb.verify_stream_hmac == nullptr) { return; }
             // Placeholder: in production, fetch frame hash from camera SoC
             // and verify HMAC tag with HTS_HMAC_Bridge.
@@ -298,6 +335,7 @@ namespace ProtectedEngine {
                 if (seq <= last_stream_seq && last_stream_seq != 0u) {
                     Send_Event(CCTV_EventType::STREAM_REPLAY_DETECT,
                         CCTV_Severity::CRITICAL, nullptr, 0u);
+                    Transition_State(CCTV_SecState::LOCKDOWN);
                 }
                 last_stream_seq = seq;
             }
@@ -509,16 +547,16 @@ namespace ProtectedEngine {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
-        // Secure wipe HMAC key
-        IPC_Secure_Wipe(impl->hmac_key, HMAC_KEY_MAX_LEN);
-        IPC_Secure_Wipe(impl->evt_buf, CCTV_EVT_MAX_FRAME_SIZE);
+        // Secure wipe (volatile + barrier — LTO가 impl 파괴 후 소거를 DCE하지 못하게)
+        CCTV_Impl_Wipe_Memory(impl->hmac_key, HMAC_KEY_MAX_LEN);
+        CCTV_Impl_Wipe_Memory(impl->evt_buf, CCTV_EVT_MAX_FRAME_SIZE);
         std::atomic_thread_fence(std::memory_order_release);
 
         impl->state.store(CCTV_SecState::OFFLINE, std::memory_order_release);
         impl->ipc = nullptr;
         impl->~Impl();
 
-        IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        CCTV_Impl_Wipe_Memory(impl_buf_, IMPL_BUF_SIZE);
 
         init_state_.store(CCTV_INIT_NONE, std::memory_order_release);
     }
@@ -562,7 +600,7 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         // Wipe old key first
-        IPC_Secure_Wipe(impl->hmac_key, HMAC_KEY_MAX_LEN);
+        CCTV_Impl_Wipe_Memory(impl->hmac_key, HMAC_KEY_MAX_LEN);
 
         for (uint8_t i = 0u; i < key_len; ++i) {
             impl->hmac_key[i] = key[i];

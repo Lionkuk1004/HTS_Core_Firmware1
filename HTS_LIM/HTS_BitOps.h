@@ -41,7 +41,8 @@ namespace ProtectedEngine {
     !defined(__aarch64__) && \
     (__cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L))
         // PC/x86 빌드 전용: HW POPCNT 활용 (단일 사이클)
-        return static_cast<uint32_t>(std::popcount(x));
+        return static_cast<uint32_t>(
+            std::popcount(static_cast<unsigned int>(x)));
 #else
         // ARM (Cortex-M4/A55) + C++17 이하 PC: SWAR 알고리즘
         x = x - ((x >> 1u) & 0x55555555u);

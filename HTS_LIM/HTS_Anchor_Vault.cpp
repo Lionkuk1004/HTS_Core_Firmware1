@@ -37,7 +37,22 @@ namespace ProtectedEngine {
         std::atomic_thread_fence(std::memory_order_release);
     }
 
-
+    namespace {
+        /// 힙 `std::vector` 임시 복사본 — 스코프 종료 시 힙 반환 전 소거
+        struct Wipe_Vector_On_Exit {
+            std::vector<uint8_t>* pv_;
+            explicit Wipe_Vector_On_Exit(std::vector<uint8_t>& v) noexcept
+                : pv_(&v) {}
+            ~Wipe_Vector_On_Exit() noexcept {
+                if (pv_ != nullptr && !pv_->empty()) {
+                    Vault_Secure_Wipe(pv_->data(),
+                        pv_->size() * sizeof(uint8_t));
+                }
+            }
+            Wipe_Vector_On_Exit(const Wipe_Vector_On_Exit&) = delete;
+            Wipe_Vector_On_Exit& operator=(const Wipe_Vector_On_Exit&) = delete;
+        };
+    } // namespace
 
     // =====================================================================
     //  [1] 닻 추출 및 내부 격리
@@ -49,8 +64,6 @@ namespace ProtectedEngine {
         uint64_t block_id,
         const std::vector<uint8_t>& tensor,
         uint8_t ratio_percent) noexcept {
-
-        std::lock_guard<std::mutex> lock(mtx_);
         if (ratio_percent == 0) return;
         if (ratio_percent > 100u) ratio_percent = 100u;
 
@@ -77,6 +90,7 @@ namespace ProtectedEngine {
             }
         }
 
+        std::lock_guard<std::mutex> lock(mtx_);
         // std::vector 대입은 기존 버퍼를 소거 없이 해제 → 메모리 잔존
         auto it = secret_enclave.find(block_id);
         if (it != secret_enclave.end() && !it->second.empty()) {
@@ -94,14 +108,17 @@ namespace ProtectedEngine {
         uint64_t block_id,
         std::vector<uint8_t>& damaged_tensor,
         uint8_t ratio_percent) noexcept {
-
-        std::lock_guard<std::mutex> lock(mtx_);
         if (ratio_percent == 0) return;
         if (ratio_percent > 100u) ratio_percent = 100u;
 
-        auto it = secret_enclave.find(block_id);
-        if (it == secret_enclave.end()) return;
-        const auto& anchors = it->second;
+        std::vector<uint8_t> anchors_copy;
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            auto it = secret_enclave.find(block_id);
+            if (it == secret_enclave.end()) return;
+            anchors_copy = it->second;
+        }
+        const Wipe_Vector_On_Exit wipe_anchors_copy(anchors_copy);
 
         //  동일 ratio_percent + 동일 tensor.size() → 동일 인덱스 선택 보장
         const size_t total = damaged_tensor.size();
@@ -114,11 +131,11 @@ namespace ProtectedEngine {
 
         size_t err = 0u;
         size_t anchor_idx = 0u;
-        for (size_t i = 0u; i < total && anchor_idx < anchors.size(); ++i) {
+        for (size_t i = 0u; i < total && anchor_idx < anchors_copy.size(); ++i) {
             err += target;
             if (err >= total) {
                 err -= total;
-                damaged_tensor[i] = anchors[anchor_idx++];
+                damaged_tensor[i] = anchors_copy[anchor_idx++];
             }
         }
     }
@@ -127,12 +144,15 @@ namespace ProtectedEngine {
     //  [3] 외부 반출
     // =====================================================================
     std::vector<uint8_t> Anchor_Vault::Export_Anchor(uint64_t block_id) noexcept {
-        std::lock_guard<std::mutex> lock(mtx_);
-        auto it = secret_enclave.find(block_id);
-        if (it == secret_enclave.end()) return {};
-        if (it->second.empty()) return {};
-
-        const std::vector<uint8_t>& payload = it->second;
+        std::vector<uint8_t> payload;
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            auto it = secret_enclave.find(block_id);
+            if (it == secret_enclave.end()) return {};
+            if (it->second.empty()) return {};
+            payload = it->second;
+        }
+        const Wipe_Vector_On_Exit wipe_payload(payload);
 
         // [HTS-12] export: payload||HMAC(tag) appended (fail-closed if session/key unavailable)
         uint8_t masterSeed[MAX_SEED_SIZE] = {};
@@ -197,8 +217,6 @@ namespace ProtectedEngine {
     void Anchor_Vault::Import_Anchor(
         uint64_t block_id,
         const std::vector<uint8_t>& external_anchor) noexcept {
-
-        std::lock_guard<std::mutex> lock(mtx_);
         if (external_anchor.empty()) return;
         if (external_anchor.size() <= ANCHOR_HMAC_TAG_SIZE_BYTES) return;
 
@@ -247,6 +265,7 @@ namespace ProtectedEngine {
             return;
         }
 
+        std::lock_guard<std::mutex> lock(mtx_);
         auto it = secret_enclave.find(block_id);
         if (it != secret_enclave.end() && !it->second.empty()) {
             Vault_Secure_Wipe(it->second.data(),

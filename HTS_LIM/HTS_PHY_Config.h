@@ -35,7 +35,7 @@ namespace ProtectedEngine {
         int32_t  kp;                   ///< PLL 비례 계수 (0=PLL 비활성)
         int32_t  ki;                   ///< PLL 적분 계수 (0=PLL 비활성)
         uint32_t jamming_margin;       ///< 재밍 판정 마진
-        int32_t  squelch_threshold;    ///< 스켈치 임계값
+        int32_t  squelch_threshold;    ///< 스쿼치 임계값
         int32_t  cfar_default_mult;    ///< CFAR 기본 배율
     };
 
@@ -46,9 +46,11 @@ namespace ProtectedEngine {
             case HTS_PHY_Tier::TIER_32_IQ:
                 return HTS_PHY_Config{ 32u, 16u, 100u << 16u, 72u, 30, 2, 4000u, 8, 4 };
             case HTS_PHY_Tier::TIER_64_ECCM:
-            default:
                 // → 전자전 환경에서 PLL 추적 루프가 재밍에 의해 오히려 왜곡될 수 있음
                 // → 에너지 검출(비동기) 방식으로 동작하므로 PLL 불필요
+                return HTS_PHY_Config{ 64u, 32u, 100u << 16u, 72u, 0, 0, 4000u, 8, 4 };
+            default:
+                // 손상된 enum 값·미래 확장: ECCM 프로파일로 폴백 (상수 동일)
                 return HTS_PHY_Config{ 64u, 32u, 100u << 16u, 72u, 0, 0, 4000u, 8, 4 };
             }
         }

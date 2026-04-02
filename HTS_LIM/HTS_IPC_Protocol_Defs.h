@@ -33,6 +33,7 @@
 /// @author 임영준 (Lim Young-jun)
 /// @copyright INNOViD 2026. All rights reserved.
 
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 
@@ -308,22 +309,25 @@ namespace ProtectedEngine {
     // ============================================================
 
     /// @brief 완전한 IPC 프레임을 와이어 버퍼에 직렬화
-    /// @param[out] wire_buf    출력 버퍼 (최소 IPC_HEADER_SIZE + payload_len + IPC_CRC_SIZE)
-    /// @param      seq         시퀀스 번호
-    /// @param      cmd         명령 코드
-    /// @param      payload     페이로드 (payload_len == 0이면 nullptr 가능)
-    /// @param      payload_len 페이로드 길이 (바이트)
-    /// @return 총 프레임 크기 (바이트), 에러 시 0
-    inline uint32_t IPC_Serialize_Frame(
-        uint8_t* wire_buf,
+    /// @param[out] wire_buf      출력 버퍼 (최소 IPC_HEADER_SIZE + payload_len + IPC_CRC_SIZE)
+    /// @param      seq           시퀀스 번호
+    /// @param      cmd           명령 코드
+    /// @param      payload       페이로드 (payload_len == 0이면 nullptr 가능)
+    /// @param      payload_len   페이로드 길이 (바이트)
+    /// @param[out] out_frame_len 성공 시 총 프레임 크기 (바이트)
+    /// @return 성공 시 IPC_Error::OK, 그 외 에러 코드
+    inline IPC_Error IPC_Serialize_Frame(
+        uint8_t*        wire_buf,
         uint8_t         seq,
         IPC_Command     cmd,
-        const uint8_t* payload,
-        uint16_t        payload_len) noexcept
+        const uint8_t*  payload,
+        uint16_t        payload_len,
+        uint32_t&       out_frame_len) noexcept
     {
-        if (wire_buf == NULL) { return 0u; }
-        if (payload_len > IPC_MAX_PAYLOAD) { return 0u; }
-        if ((payload == NULL) && (payload_len != 0u)) { return 0u; }
+        out_frame_len = 0u;
+        if (wire_buf == nullptr) { return IPC_Error::BUFFER_OVERFLOW; }
+        if (payload_len > IPC_MAX_PAYLOAD) { return IPC_Error::INVALID_LEN; }
+        if ((payload == nullptr) && (payload_len != 0u)) { return IPC_Error::BUFFER_OVERFLOW; }
 
         IPC_Serialize_U16(&wire_buf[0], IPC_SYNC_WORD);
         wire_buf[2] = seq;
@@ -338,26 +342,30 @@ namespace ProtectedEngine {
         const uint16_t crc = IPC_Compute_CRC16(wire_buf, crc_region);
         IPC_Serialize_U16(&wire_buf[crc_region], crc);
 
-        return crc_region + IPC_CRC_SIZE;
+        out_frame_len = crc_region + IPC_CRC_SIZE;
+        return IPC_Error::OK;
     }
 
-    /// @brief 와이어 포맷 IPC 프레임을 검증 및 파싱
+    /// @brief 와이어 포맷 IPC 프레임을 검증 및 파싱 (페이로드는 wire_buf에서 분리 복사)
     /// @param[in]  wire_buf        입력 버퍼
     /// @param      wire_len        수신된 총 바이트
     /// @param[out] out_seq         추출된 시퀀스 번호
     /// @param[out] out_cmd         추출된 명령
-    /// @param[out] out_payload     wire_buf 내 페이로드 시작 포인터
-    /// @param[out] out_payload_len 페이로드 길이
+    /// @param[out] out_payload_buf 페이로드 복사 대상 (payload_len==0이면 nullptr 가능)
+    /// @param      out_buf_size    out_payload_buf 크기 (바이트)
+    /// @param[out] out_payload_len 성공 시 복사된 페이로드 길이 (와이어 LEN과 동일)
     /// @return 성공 시 IPC_Error::OK, 그 외 에러 코드
     inline IPC_Error IPC_Parse_Frame(
         const uint8_t* wire_buf,
         uint32_t        wire_len,
-        uint8_t& out_seq,
-        IPC_Command& out_cmd,
-        const uint8_t*& out_payload,
-        uint16_t& out_payload_len) noexcept
+        uint8_t&        out_seq,
+        IPC_Command&    out_cmd,
+        uint8_t*        out_payload_buf,
+        uint16_t        out_buf_size,
+        uint16_t&       out_payload_len) noexcept
     {
-        if (wire_buf == NULL) { return IPC_Error::BUFFER_OVERFLOW; }
+        out_payload_len = 0u;
+        if (wire_buf == nullptr) { return IPC_Error::BUFFER_OVERFLOW; }
         if (wire_len < IPC_HEADER_SIZE + IPC_CRC_SIZE) { return IPC_Error::INVALID_LEN; }
 
         const uint16_t sync = IPC_Deserialize_U16(&wire_buf[0]);
@@ -365,20 +373,26 @@ namespace ProtectedEngine {
 
         out_seq = wire_buf[2];
         out_cmd = static_cast<IPC_Command>(wire_buf[3]);
-        out_payload_len = IPC_Deserialize_U16(&wire_buf[4]);
+        const uint16_t plen = IPC_Deserialize_U16(&wire_buf[4]);
 
-        if (out_payload_len > IPC_MAX_PAYLOAD) { return IPC_Error::INVALID_LEN; }
+        if (plen > IPC_MAX_PAYLOAD) { return IPC_Error::INVALID_LEN; }
 
-        const uint32_t expected_len = IPC_HEADER_SIZE + static_cast<uint32_t>(out_payload_len) + IPC_CRC_SIZE;
+        const uint32_t expected_len = IPC_HEADER_SIZE + static_cast<uint32_t>(plen) + IPC_CRC_SIZE;
         if (wire_len < expected_len) { return IPC_Error::INVALID_LEN; }
 
-        const uint32_t crc_region = IPC_HEADER_SIZE + static_cast<uint32_t>(out_payload_len);
+        const uint32_t crc_region = IPC_HEADER_SIZE + static_cast<uint32_t>(plen);
         const uint16_t computed_crc = IPC_Compute_CRC16(wire_buf, crc_region);
         const uint16_t received_crc = IPC_Deserialize_U16(&wire_buf[crc_region]);
         if (computed_crc != received_crc) { return IPC_Error::CRC_MISMATCH; }
 
-        out_payload = (out_payload_len > 0u) ? &wire_buf[IPC_HEADER_SIZE] : NULL;
-
+        if (plen > 0u) {
+            if (out_payload_buf == nullptr) { return IPC_Error::BUFFER_OVERFLOW; }
+            if (plen > out_buf_size) { return IPC_Error::BUFFER_OVERFLOW; }
+            for (uint16_t i = 0u; i < plen; ++i) {
+                out_payload_buf[i] = wire_buf[IPC_HEADER_SIZE + static_cast<uint32_t>(i)];
+            }
+        }
+        out_payload_len = plen;
         return IPC_Error::OK;
     }
 
@@ -386,18 +400,45 @@ namespace ProtectedEngine {
     //  통계 구조체
     // ============================================================
 
-    /// @brief IPC 통신 통계 (ARM 정렬 uint32_t 원자적 안전)
+    /// @brief IPC 통신 통계 (다중 컨텍스트/스레드에서 안전한 카운터)
     struct IPC_Statistics {
-        uint32_t tx_frames;         ///< 총 송신 프레임 수
-        uint32_t rx_frames;         ///< 총 수신 프레임 수
-        uint32_t crc_errors;        ///< CRC 불일치 횟수
-        uint32_t timeout_errors;    ///< 프레임 타임아웃 횟수
-        uint32_t seq_errors;        ///< 시퀀스 불일치 횟수
-        uint32_t queue_overflows;   ///< 링 버퍼 오버플로우 횟수
-        uint32_t hw_faults;         ///< SPI/DMA 하드웨어 결함 횟수
-        uint32_t cfi_violations;    ///< 불법 상태 전이 횟수
+        std::atomic<uint32_t> tx_frames;         ///< 총 송신 프레임 수
+        std::atomic<uint32_t> rx_frames;         ///< 총 수신 프레임 수
+        std::atomic<uint32_t> crc_errors;        ///< CRC 불일치 횟수
+        std::atomic<uint32_t> timeout_errors;    ///< 프레임 타임아웃 횟수
+        std::atomic<uint32_t> seq_errors;        ///< 시퀀스 불일치 횟수
+        std::atomic<uint32_t> queue_overflows;   ///< 링 버퍼 오버플로우 횟수
+        std::atomic<uint32_t> hw_faults;         ///< SPI/DMA 하드웨어 결함 횟수
+        std::atomic<uint32_t> cfi_violations;    ///< 불법 상태 전이 횟수
     };
-    static_assert(sizeof(IPC_Statistics) == 32u, "IPC_Statistics must be 32 bytes");
+    static_assert(sizeof(IPC_Statistics) == 8u * sizeof(std::atomic<uint32_t>),
+        "IPC_Statistics: eight atomic<uint32_t> fields");
+
+    /// @brief 통계 카운터 전부 0으로 (초기화/리셋용; std::atomic은 대입 복사 불가)
+    inline void IPC_Statistics_Reset(IPC_Statistics& s) noexcept
+    {
+        s.tx_frames.store(0u, std::memory_order_relaxed);
+        s.rx_frames.store(0u, std::memory_order_relaxed);
+        s.crc_errors.store(0u, std::memory_order_relaxed);
+        s.timeout_errors.store(0u, std::memory_order_relaxed);
+        s.seq_errors.store(0u, std::memory_order_relaxed);
+        s.queue_overflows.store(0u, std::memory_order_relaxed);
+        s.hw_faults.store(0u, std::memory_order_relaxed);
+        s.cfi_violations.store(0u, std::memory_order_relaxed);
+    }
+
+    /// @brief 원자적 통계 스냅샷 (Get_Statistics 등; load/store만 사용)
+    inline void IPC_Statistics_Copy(const IPC_Statistics& src, IPC_Statistics& dst) noexcept
+    {
+        dst.tx_frames.store(src.tx_frames.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.rx_frames.store(src.rx_frames.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.crc_errors.store(src.crc_errors.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.timeout_errors.store(src.timeout_errors.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.seq_errors.store(src.seq_errors.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.queue_overflows.store(src.queue_overflows.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.hw_faults.store(src.hw_faults.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        dst.cfi_violations.store(src.cfi_violations.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
 
     // ============================================================
     //  설정 구조체

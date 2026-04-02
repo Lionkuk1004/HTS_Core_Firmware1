@@ -39,7 +39,7 @@
 ///   }
 ///   @endcode
 ///
-/// @warning sizeof(HTS_CCTV_Security) ~ 1KB. 전역/정적 배치 권장.
+/// @warning sizeof(HTS_CCTV_Security) ~ 2.6KB(IMPL_BUF 2560B 기준). 전역/정적 배치 권장.
 ///
 /// @author 임영준 (Lim Young-jun)
 /// @copyright INNOViD 2026. All rights reserved.
@@ -55,7 +55,7 @@ namespace ProtectedEngine {
 
     /// @brief HTS CCTV 보안 코프로세서
     ///
-    /// @warning sizeof ~ 1KB. 전역/정적 배치 권장.
+    /// @warning sizeof ~ 2.6KB(IMPL_BUF 2560B 기준). 전역/정적 배치 권장.
     class HTS_CCTV_Security final {
     public:
         HTS_CCTV_Security() noexcept;
@@ -122,7 +122,8 @@ namespace ProtectedEngine {
         HTS_CCTV_Security(HTS_CCTV_Security&&) = delete;
         HTS_CCTV_Security& operator=(HTS_CCTV_Security&&) = delete;
 
-        static constexpr uint32_t IMPL_BUF_SIZE = 1024u;
+        /// Impl에 이벤트 타입별 O(1) 카운터(256×uint16 + 256×uint32) 포함
+        static constexpr uint32_t IMPL_BUF_SIZE = 2560u;
 
     private:
         struct Impl;
@@ -130,7 +131,7 @@ namespace ProtectedEngine {
         std::atomic<uint32_t> init_state_{ 0u };  ///< 0=NONE, 1=BUSY, 2=READY
     };
 
-    static_assert(sizeof(HTS_CCTV_Security) <= 2048u,
-        "HTS_CCTV_Security exceeds 2KB SRAM budget");
+    static_assert(sizeof(HTS_CCTV_Security) <= 4096u,
+        "HTS_CCTV_Security exceeds 4KB SRAM budget");
 
 } // namespace ProtectedEngine

@@ -3,10 +3,38 @@
 // Target: STM32F407VGT6 (Cortex-M4F) / PC
 //
 #include "HTS_FEC_HARQ.hpp"
-#include <cstring>
+#include <array>
 #include <climits>
+#include <cstring>
 
 namespace ProtectedEngine {
+
+    // 컴파일 타임 고정 스택 버퍼 — VLA/alloca 경로 배제 (임베디드 규약)
+    static constexpr std::size_t k_conv_out_sz =
+        static_cast<std::size_t>(FEC_HARQ::CONV_OUT);
+    static constexpr std::size_t k_fwht_buf_sz =
+        static_cast<std::size_t>(FEC_HARQ::C64);
+    static constexpr std::size_t k_llr_buf_sz =
+        static_cast<std::size_t>(FEC_HARQ::BPS64_MAX);
+
+    static_assert(FEC_HARQ::BPS64_MAX >= 1,
+        "BPS64_MAX must be positive");
+    static_assert(FEC_HARQ::BPS64_MAX <= FEC_HARQ::C64,
+        "Bin_To_LLR bps exceeds scratch");
+
+    template <int N>
+    static inline void FWHT_Fixed(int32_t* d) noexcept {
+        for (int len = 1; len < N; len <<= 1) {
+            for (int i = 0; i < N; i += (len << 1)) {
+                for (int j = 0; j < len; ++j) {
+                    const int32_t u = d[i + j];
+                    const int32_t v = d[i + len + j];
+                    d[i + j] = u + v;
+                    d[i + len + j] = u - v;
+                }
+            }
+        }
+    }
 
     // ── CRC-16/CCITT ──
     uint16_t FEC_HARQ::CRC16(const uint8_t* d, int len) noexcept {
@@ -24,13 +52,20 @@ namespace ProtectedEngine {
 
     // ── FWHT (int32_t, 가변 크기: 16 또는 64) ───────────────────
     void FEC_HARQ::FWHT(int32_t* d, int n) noexcept {
-        for (int len = 1; len < n; len <<= 1)
-            for (int i = 0; i < n; i += 2 * len)
+        if (d == nullptr || n <= 1) { return; }
+        if (n == 16) { FWHT_Fixed<16>(d); return; }
+        if (n == 64) { FWHT_Fixed<64>(d); return; }
+
+        for (int len = 1; len < n; len <<= 1) {
+            for (int i = 0; i < n; i += (len << 1)) {
                 for (int j = 0; j < len; ++j) {
-                    int32_t u = d[i + j], v = d[i + len + j];
+                    const int32_t u = d[i + j];
+                    const int32_t v = d[i + len + j];
                     d[i + j] = u + v;
                     d[i + len + j] = u - v;
                 }
+            }
+        }
     }
 
     // ── 7비트 Popcount LUT ──
@@ -189,6 +224,12 @@ namespace ProtectedEngine {
         return s;
     }
 
+    // Lemire fast range reduction: [0, range) 균등 매핑 (mod/div 회피)
+    static inline uint32_t fast_range32(uint32_t x, uint32_t range) noexcept {
+        return static_cast<uint32_t>(
+            (static_cast<uint64_t>(x) * static_cast<uint64_t>(range)) >> 32u);
+    }
+
     // =====================================================================
     //  [항목⑨ 주석] Fisher-Yates 셔플 — 모듈로(%) 불가피 사유
     //
@@ -211,11 +252,12 @@ namespace ProtectedEngine {
 
     void FEC_HARQ::Bit_Interleave(uint8_t* bits, int n, uint32_t seed) noexcept {
         if (!bits || n < 2) return;
+        if (n > TOTAL_CODED) return;
         uint32_t s = (seed == 0u) ? 0xDEADBEEFu : seed;
         for (int i = n - 1; i > 0; --i) {
             s = xs(s);
-            // [항목⑨] % 불가피: 분모 (i+1) 가변 → 시프트 대체 불가
-            int j = static_cast<int>(s % static_cast<uint32_t>(i + 1));
+            const uint32_t range = static_cast<uint32_t>(i + 1);
+            const int j = static_cast<int>(fast_range32(s, range));
             uint8_t t = bits[i]; bits[i] = bits[j]; bits[j] = t;
         }
     }
@@ -223,14 +265,15 @@ namespace ProtectedEngine {
     void FEC_HARQ::Bit_Deinterleave(int32_t* soft, int n, uint32_t seed,
         WorkBuf& wb) noexcept {
         if (!soft || n < 2) return;
+        if (n > TOTAL_CODED) return;
         for (int i = 0; i < n; ++i) {
             wb.perm[i] = static_cast<uint16_t>(i);
         }
         uint32_t s = (seed == 0u) ? 0xDEADBEEFu : seed;
         for (int i = n - 1; i > 0; --i) {
             s = xs(s);
-            // [항목⑨] % 불가피: Fisher-Yates 균등 분포 필수
-            int j = static_cast<int>(s % static_cast<uint32_t>(i + 1));
+            const uint32_t range = static_cast<uint32_t>(i + 1);
+            const int j = static_cast<int>(fast_range32(s, range));
             const uint16_t t = wb.perm[i];
             wb.perm[i] = wb.perm[static_cast<size_t>(j)];
             wb.perm[static_cast<size_t>(j)] = t;
@@ -243,13 +286,13 @@ namespace ProtectedEngine {
     }
 
     void FEC_HARQ::Gen_Perm(uint32_t seed, uint8_t* p, int n) noexcept {
-        if (!p) return;
+        if (!p || n <= 0 || n > C64) return;
         for (int i = 0; i < n; ++i) p[i] = static_cast<uint8_t>(i);
         uint32_t s = (seed == 0u) ? 0xDEADBEEFu : seed;
         for (int i = n - 1; i > 0; --i) {
             s = xs(s);
-            // [항목⑨] % 불가피: 칩 순열 균등 분포 보장
-            int j = static_cast<int>(s % static_cast<uint32_t>(i + 1));
+            const uint32_t range = static_cast<uint32_t>(i + 1);
+            const int j = static_cast<int>(fast_range32(s, range));
             uint8_t t = p[i]; p[i] = p[j]; p[j] = t;
         }
     }
@@ -277,22 +320,26 @@ namespace ProtectedEngine {
         uint32_t il, int bps, int nsym, WorkBuf& wb) noexcept {
         if (!info || !syms || len < 1 || len > MAX_INFO) return 0;
 
-        uint8_t coded[MAX_INFO + 2] = {};
-        for (int i = 0; i < len; ++i) coded[i] = info[i];
-        uint16_t crc = CRC16(coded, MAX_INFO);
-        coded[MAX_INFO] = static_cast<uint8_t>(crc >> 8u);
-        coded[MAX_INFO + 1] = static_cast<uint8_t>(crc & 0xFFu);
+        std::array<uint8_t, static_cast<std::size_t>(MAX_INFO + 2)> coded{};
+        for (int i = 0; i < len; ++i) coded[static_cast<std::size_t>(i)] = info[i];
+        uint16_t crc = CRC16(coded.data(), MAX_INFO);
+        coded[static_cast<std::size_t>(MAX_INFO)] =
+            static_cast<uint8_t>(crc >> 8u);
+        coded[static_cast<std::size_t>(MAX_INFO + 1)] =
+            static_cast<uint8_t>(crc & 0xFFu);
 
-        uint8_t in_bits[CONV_IN] = {};
+        std::array<uint8_t, static_cast<std::size_t>(CONV_IN)> in_bits{};
         for (int i = 0; i < INFO_BITS; ++i)
-            in_bits[i] = (coded[i >> 3] >> (7 - (i & 7))) & 1u;
+            in_bits[static_cast<std::size_t>(i)] = static_cast<uint8_t>(
+                (coded[static_cast<std::size_t>(i >> 3)] >>
+                    (7 - (i & 7))) & 1u);
 
-        uint8_t conv[CONV_OUT];
-        Conv_Encode(in_bits, CONV_IN, conv);
+        std::array<uint8_t, k_conv_out_sz> conv{};
+        Conv_Encode(in_bits.data(), CONV_IN, conv.data());
 
         for (int r = 0; r < REP; ++r)
             for (int i = 0; i < CONV_OUT; ++i)
-                wb.rep[r * CONV_OUT + i] = conv[i];
+                wb.rep[r * CONV_OUT + i] = conv[static_cast<std::size_t>(i)];
 
         Bit_Interleave(wb.rep, TOTAL_CODED, il);
 
@@ -317,27 +364,51 @@ namespace ProtectedEngine {
         uint32_t il, WorkBuf& wb) noexcept {
         if (!accI || !accQ || !out || !olen) return false;
         if (nsym <= 0 || nc <= 0 || bps <= 0) return false;
+        if (bps > BPS64_MAX) {
+            *olen = 0;
+            return false;
+        }
+
+        // Encode 경로는 항상 TOTAL_CODED 비트를 인터리브함(Bit_Interleave(..., TOTAL_CODED)).
+        // 심볼 격자(nsym×bps)가 그보다 작으면 LLR 슬롯이 비어 복호화가 붕괴됨.
+        const int64_t llr_slots =
+            static_cast<int64_t>(nsym) * static_cast<int64_t>(bps);
+        if (llr_slots < static_cast<int64_t>(TOTAL_CODED)) {
+            *olen = 0;
+            return false;
+        }
 
         std::memset(wb.all_llr, 0, sizeof(wb.all_llr));
 
-        for (int sym = 0; sym < nsym; ++sym) {
-            int32_t fI[64] = {}, fQ[64] = {};
-            for (int c = 0; c < nc; ++c) {
-                fI[c] = accI[sym * nc + c];
-                fQ[c] = accQ[sym * nc + c];
-            }
-            FWHT(fI, nc);
-            FWHT(fQ, nc);
+        // FWHT(d, nc) / Bin_To_LLR 는 [0, nc) / [0, bps) 만 사용 — nc·bps 칩 이후 슬롯은 미사용
+        std::array<int32_t, k_fwht_buf_sz> fI;
+        std::array<int32_t, k_fwht_buf_sz> fQ;
+        std::array<int32_t, k_llr_buf_sz> llr{};
 
-            int32_t llr[8];
-            Bin_To_LLR(fI, fQ, nc, bps, llr);
+        for (int sym = 0; sym < nsym; ++sym) {
+            const int base = sym * nc;
+            std::memcpy(
+                fI.data(),
+                accI + base,
+                static_cast<std::size_t>(nc) * sizeof(int32_t));
+            std::memcpy(
+                fQ.data(),
+                accQ + base,
+                static_cast<std::size_t>(nc) * sizeof(int32_t));
+            FWHT(fI.data(), nc);
+            FWHT(fQ.data(), nc);
+
+            Bin_To_LLR(fI.data(), fQ.data(), nc, bps, llr.data());
 
             for (int b = 0; b < bps; ++b) {
-                int bi = sym * bps + b;
-                if (bi < TOTAL_CODED) wb.all_llr[bi] = llr[b];
+                const int bi = sym * bps + b;
+                if (bi < TOTAL_CODED) {
+                    wb.all_llr[bi] = llr[static_cast<std::size_t>(b)];
+                }
             }
         }
 
+        // 역순열 길이는 인코더와 동일하게 TOTAL_CODED(perm/tmp_soft/all_llr 경계와 일치)
         Bit_Deinterleave(wb.all_llr, TOTAL_CODED, il, wb);
 
         std::memset(wb.combined, 0, sizeof(wb.combined));
@@ -345,19 +416,25 @@ namespace ProtectedEngine {
             for (int i = 0; i < CONV_OUT; ++i)
                 wb.combined[i] += wb.all_llr[r * CONV_OUT + i];
 
-        uint8_t dec[CONV_IN] = {};
-        Viterbi_Decode(wb.combined, CONV_OUT, dec, CONV_IN, wb);
+        std::array<uint8_t, static_cast<std::size_t>(CONV_IN)> dec{};
+        Viterbi_Decode(wb.combined, CONV_OUT, dec.data(), CONV_IN, wb);
 
-        uint8_t rx[MAX_INFO + 2] = {};
+        std::array<uint8_t, static_cast<std::size_t>(MAX_INFO + 2)> rx{};
         for (int i = 0; i < INFO_BITS; ++i)
-            if (dec[i]) rx[i >> 3] |= static_cast<uint8_t>(1u << (7 - (i & 7)));
+            if (dec[static_cast<std::size_t>(i)]) {
+                rx[static_cast<std::size_t>(i >> 3)] |=
+                    static_cast<uint8_t>(1u << (7 - (i & 7)));
+            }
 
-        uint16_t calc = CRC16(rx, MAX_INFO);
-        uint16_t stored = (static_cast<uint16_t>(rx[MAX_INFO]) << 8u) |
-            static_cast<uint16_t>(rx[MAX_INFO + 1]);
+        uint16_t calc = CRC16(rx.data(), MAX_INFO);
+        uint16_t stored = (static_cast<uint16_t>(
+            rx[static_cast<std::size_t>(MAX_INFO)]) << 8u) |
+            static_cast<uint16_t>(rx[static_cast<std::size_t>(MAX_INFO + 1)]);
 
         if (calc == stored) {
-            for (int i = 0; i < MAX_INFO; ++i) out[i] = rx[i];
+            for (int i = 0; i < MAX_INFO; ++i) {
+                out[i] = rx[static_cast<std::size_t>(i)];
+            }
             *olen = MAX_INFO;
             return true;
         }
@@ -498,7 +575,8 @@ namespace ProtectedEngine {
         coded[MAX_INFO] = static_cast<uint8_t>(crc >> 8u);
         coded[MAX_INFO + 1] = static_cast<uint8_t>(crc & 0xFFu);
         for (int i = 0; i < INFO_BITS; ++i)
-            syms[i] = (coded[i >> 3] >> (7 - (i & 7))) & 1u;
+            syms[i] = static_cast<uint8_t>(
+                (coded[i >> 3] >> (7 - (i & 7))) & 1u);
         return INFO_BITS;
     }
 

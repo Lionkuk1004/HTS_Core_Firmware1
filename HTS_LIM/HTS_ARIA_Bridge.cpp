@@ -59,18 +59,24 @@ namespace ProtectedEngine {
             ARIA_Bridge::ROUND_KEY_BUF_SIZE);
 
         alignas(4) uint8_t aligned_mk[32] = {};
-        const size_t mk_size = static_cast<size_t>(key_bits / 8);
+        // key_bits ∈ {128,192,256} — /8 대신 >>3 (지침: 하드웨어 나눗셈 회피)
+        const size_t mk_size = static_cast<size_t>(
+            static_cast<unsigned int>(key_bits) >> 3u);
         std::memcpy(aligned_mk, master_key, mk_size);
 
-        int rounds = is_enc
-            ? EncKeySetup(
-                reinterpret_cast<const Byte*>(aligned_mk),
-                reinterpret_cast<Byte*>(round_keys),
-                key_bits)
-            : DecKeySetup(
+        int rounds;
+        if (is_enc) {
+            rounds = EncKeySetup(
                 reinterpret_cast<const Byte*>(aligned_mk),
                 reinterpret_cast<Byte*>(round_keys),
                 key_bits);
+        }
+        else {
+            rounds = DecKeySetup(
+                reinterpret_cast<const Byte*>(aligned_mk),
+                reinterpret_cast<Byte*>(round_keys),
+                key_bits);
+        }
 
         SecureMemory::secureWipe(static_cast<void*>(aligned_mk), sizeof(aligned_mk));
 

@@ -72,10 +72,25 @@ namespace ProtectedEngine {
     static_assert(
         MPU_CTRL_FULL == (1u | 2u | 4u),
         "MPU_CTRL FULL: ENABLE|HFNMIENA|PRIVDEFENA");
+
+    // ── 부트 RDP 검사 (STM32F407 Flash OPTCR, RM0090) ─────────────────
+    //  기본값: OPTCR 읽기 주소·RDP 바이트 마스크·양산 기대값(0xCC = Level2 프로비저닝 가정).
+    //  빌드: HTS_BOOT_ENFORCE_RDP_LEVEL2 (미정의 시 Release+ARM에서 1, Debug 또는 HTS_ALLOW_OPEN_DEBUG 시 0)
+    //        HTS_RDP_EXPECTED_BYTE 재정의로 칩·라인별 옵션 바이트에 맞출 수 있음.
+#ifndef HTS_RDP_EXPECTED_BYTE
+#define HTS_RDP_EXPECTED_BYTE 0xCCu
+#endif
+    inline constexpr uintptr_t HTS_FLASH_OPTCR_ADDR = 0x40023C14u;
+    inline constexpr uint32_t  HTS_RDP_OPTCR_MASK = 0x0000FF00u;
+    inline constexpr uint32_t  HTS_RDP_EXPECTED_BYTE_VAL =
+        static_cast<uint32_t>(HTS_RDP_EXPECTED_BYTE) & 0xFFu;
 #endif
 
     class Hardware_Init_Manager {
     public:
+        /// RDP/보안 검증 실패·강제 정지: ARM은 AIRCR 리셋 경로, PC 시뮬은 abort
+        [[noreturn]] static void Terminal_Fault_Action() noexcept;
+
         // 시스템 초기화 (ARM: WDT + MPU + DWT CYCCNT 활성화 / PC: no-op)
         static void Initialize_System() noexcept;
 

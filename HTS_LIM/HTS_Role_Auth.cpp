@@ -14,23 +14,18 @@
 #include "HTS_Role_Auth.h"
 #include "HTS_HMAC_Bridge.hpp"
 #include "HTS_Secure_Logger.h"
+#include "HTS_Secure_Memory.h"
 
 #include <atomic>
 #include <cstring>
 
 namespace ProtectedEngine {
 
-    // =====================================================================
-    //  보안 소거
-    // =====================================================================
-    static void RA_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) return;
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) q[i] = 0u;
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
+    namespace {
+        /// 프로비저닝 해시 슬롯 상태 (TOCTOU 방지 — [C] compare_exchange 단일 작성자)
+        constexpr uint32_t kProvUninit = 0u;
+        constexpr uint32_t kProvWriting = 1u;
+        constexpr uint32_t kProvDone = 2u;
     }
 
     // =====================================================================
@@ -43,8 +38,8 @@ namespace ProtectedEngine {
     // 양산: OTP 또는 보호 Flash 섹터에 저장
     static uint8_t s_officer_hash[32] = {};
     static uint8_t s_user_hash[32] = {};
-    static std::atomic<bool> s_officer_hash_set{ false };
-    static std::atomic<bool> s_user_hash_set{ false };
+    static std::atomic<uint32_t> s_officer_hash_state{ kProvUninit };
+    static std::atomic<uint32_t> s_user_hash_state{ kProvUninit };
 
     // 고정 Salt (양산 시 디바이스별 고유값으로 교체 권장)
     static constexpr uint8_t FIXED_SALT[16] = {
@@ -52,22 +47,24 @@ namespace ProtectedEngine {
         0x5F,0x41,0x55,0x54, 0x48,0x5F,0x56,0x31   // "_AUTH_V1"
     };
 
-    // 인증 실패 카운터 (연속 5회 실패 → 잠금)
-    static std::atomic<uint8_t> s_fail_count{ 0u };
-    static constexpr uint8_t MAX_FAIL_COUNT = 5u;
+    // 역할별 인증 실패 카운터 (연속 실패 → 잠금; 역할 간 분리 — 브루트포스 우회 차단)
+    static std::atomic<uint32_t> s_officer_fail_count{ 0u };
+    static std::atomic<uint32_t> s_user_fail_count{ 0u };
+    static constexpr uint32_t MAX_FAIL_COUNT = 5u;
 
     // =====================================================================
     //  Compute_Password_Hash — HMAC-SHA256(salt || password)
     // =====================================================================
-    void Role_Auth::Compute_Password_Hash(
+    bool Role_Auth::Compute_Password_Hash(
         const uint8_t* password, size_t len,
         const uint8_t* salt, uint8_t* out_32) noexcept {
 
-        // HMAC(key=salt, message=password) → 32바이트 해시
         if (HMAC_Bridge::Generate(password, len, salt, Role_Auth::SALT_LEN, out_32)
             != HMAC_Bridge::SECURE_TRUE) {
-            RA_Wipe(out_32, 32u);  // 실패 시 부분 기록 방지
+            SecureMemory::secureWipe(out_32, 32u);
+            return false;
         }
+        return true;
     }
 
     // =====================================================================
@@ -79,61 +76,69 @@ namespace ProtectedEngine {
 
         if (password == nullptr || password_len == 0u) return false;
 
-        // 잠금 상태 확인
-        if (s_fail_count.load(std::memory_order_acquire) >= MAX_FAIL_COUNT) {
+        const uint8_t* stored_hash = nullptr;
+        std::atomic<uint32_t>* fail_counter = nullptr;
+
+        if (target_role == Role::CRYPTO_OFFICER) {
+            stored_hash = s_officer_hash;
+            fail_counter = &s_officer_fail_count;
+        }
+        else if (target_role == Role::USER) {
+            stored_hash = s_user_hash;
+            fail_counter = &s_user_fail_count;
+        }
+        else {
+            return false;
+        }
+
+        if (fail_counter->load(std::memory_order_acquire) >= MAX_FAIL_COUNT) {
             SecureLogger::logSecurityEvent(
                 "AUTH_LOCKED",
                 "Authentication locked. Max failures exceeded.");
             return false;
         }
 
-        // 대상 해시 선택
-        const uint8_t* stored_hash = nullptr;
-        bool hash_set = false;
+        const std::atomic<uint32_t>& hash_state =
+            (target_role == Role::CRYPTO_OFFICER)
+            ? s_officer_hash_state
+            : s_user_hash_state;
 
-        if (target_role == Role::CRYPTO_OFFICER) {
-            stored_hash = s_officer_hash;
-            hash_set = s_officer_hash_set.load(std::memory_order_acquire);
-        }
-        else if (target_role == Role::USER) {
-            stored_hash = s_user_hash;
-            hash_set = s_user_hash_set.load(std::memory_order_acquire);
-        }
-        else {
-            return false;  // UNAUTHENTICATED는 인증 불필요
+        if (hash_state.load(std::memory_order_acquire) != kProvDone
+            || stored_hash == nullptr) {
+            return false;
         }
 
-        if (!hash_set || stored_hash == nullptr) {
-            return false;  // 비밀번호 미설정
-        }
-
-        // 입력 비밀번호 해시 계산
         uint8_t computed[32] = {};
-        Compute_Password_Hash(password, password_len, FIXED_SALT, computed);
+        if (!Compute_Password_Hash(password, password_len, FIXED_SALT, computed)) {
+            SecureLogger::logSecurityEvent(
+                "AUTH_HMAC_FAIL",
+                "Password hash computation failed.");
+            (void)fail_counter->fetch_add(1u, std::memory_order_acq_rel);
+            return false;
+        }
 
-        // 상수 시간 비교
         volatile uint8_t diff = 0u;
         for (size_t i = 0u; i < Role_Auth::HASH_LEN; ++i) {
-            diff |= computed[i] ^ stored_hash[i];
+            // C++20: volatile에 대한 |= 복합 대입 deprecate — 명시 대입 + uint8_t 캐스팅 (-Wconversion)
+            diff = static_cast<uint8_t>(
+                diff | static_cast<uint8_t>(
+                    computed[static_cast<size_t>(i)]
+                    ^ stored_hash[static_cast<size_t>(i)]));
         }
 
-        RA_Wipe(computed, sizeof(computed));
+        SecureMemory::secureWipe(computed, sizeof(computed));
 
         if (diff != 0u) {
-            const uint8_t cur = s_fail_count.load(std::memory_order_relaxed);
-            if (cur < MAX_FAIL_COUNT) {
-                s_fail_count.store(static_cast<uint8_t>(cur + 1u), std::memory_order_release);
-            }
+            (void)fail_counter->fetch_add(1u, std::memory_order_acq_rel);
             SecureLogger::logSecurityEvent(
                 "AUTH_FAIL", "Authentication failed.");
             return false;
         }
 
-        // 인증 성공
         s_current_role.store(
             static_cast<uint8_t>(target_role),
             std::memory_order_release);
-        s_fail_count.store(0u, std::memory_order_release);
+        fail_counter->store(0u, std::memory_order_release);
 
         SecureLogger::logSecurityEvent(
             "AUTH_OK",
@@ -152,15 +157,12 @@ namespace ProtectedEngine {
             s_current_role.load(std::memory_order_acquire));
         const auto sv = static_cast<uint8_t>(svc);
 
-        // 미인증: 상태 조회만
-        if (sv <= 1u) return true;  // STATUS_QUERY, MODULE_VERSION
+        if (sv <= 1u) return true;
 
-        // User 이상: 암호 서비스
         if (sv >= 10u && sv <= 15u) {
             return (role == Role::USER || role == Role::CRYPTO_OFFICER);
         }
 
-        // Crypto Officer 전용: 키 관리, 설정, 자가진단
         if (sv >= 20u) {
             return (role == Role::CRYPTO_OFFICER);
         }
@@ -184,23 +186,41 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  비밀번호 해시 설정 (프로비저닝)
+    //  비밀번호 해시 설정 (프로비저닝) — 3상태 CAS (UNINIT→WRITING→DONE)
     // =====================================================================
     bool Role_Auth::Set_Officer_Password_Hash(
         const uint8_t* hash_32) noexcept {
         if (hash_32 == nullptr) return false;
-        if (s_officer_hash_set.load(std::memory_order_acquire)) { return false; }  // 이미 설정됨 → 재설정 금지
-        std::memcpy(s_officer_hash, hash_32, 32);
-        s_officer_hash_set.store(true, std::memory_order_release);
+
+        uint32_t expected = kProvUninit;
+        if (!s_officer_hash_state.compare_exchange_strong(
+            expected,
+            kProvWriting,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+            return false;
+        }
+
+        std::memcpy(s_officer_hash, hash_32, 32u);
+        s_officer_hash_state.store(kProvDone, std::memory_order_release);
         return true;
     }
 
     bool Role_Auth::Set_User_Password_Hash(
         const uint8_t* hash_32) noexcept {
         if (hash_32 == nullptr) return false;
-        if (s_user_hash_set.load(std::memory_order_acquire)) { return false; }
-        std::memcpy(s_user_hash, hash_32, 32);
-        s_user_hash_set.store(true, std::memory_order_release);
+
+        uint32_t expected = kProvUninit;
+        if (!s_user_hash_state.compare_exchange_strong(
+            expected,
+            kProvWriting,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+            return false;
+        }
+
+        std::memcpy(s_user_hash, hash_32, 32u);
+        s_user_hash_state.store(kProvDone, std::memory_order_release);
         return true;
     }
 

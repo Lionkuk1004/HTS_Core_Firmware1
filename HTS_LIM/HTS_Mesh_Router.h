@@ -17,7 +17,7 @@
 //   루프 방지: Split Horizon + Poison Reverse
 //   경로 노화: 60초 미갱신 → 자동 삭제
 //
-//  @warning sizeof ≈ 516B — 전역/정적 배치 권장
+//  @warning sizeof(Impl) ≈ 1.1KiB(패킷 풀 포함) — 전역/정적 배치 권장
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 // ─────────────────────────────────────────────────────────
@@ -145,13 +145,23 @@ namespace ProtectedEngine {
         void Shutdown() noexcept;
 
     private:
-        static constexpr size_t IMPL_BUF_SIZE = 640u;
+        static constexpr size_t IMPL_BUF_SIZE = 1280u;
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
         struct Impl;
         alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool> impl_valid_{ false };
         Impl* get_impl() noexcept;
         const Impl* get_impl() const noexcept;
+
+        /// 메쉬 헤더 부착 + 스케줄러 인큐 (Impl 비공개 — Pimpl 내부 전용)
+        [[nodiscard]]
+        static FwdResult build_and_enqueue(
+            Impl* impl,
+            uint16_t next_hop, uint16_t final_dest,
+            uint8_t ttl, uint8_t src_lo,
+            const uint8_t* payload, size_t pay_len,
+            uint32_t systick_ms,
+            HTS_Priority_Scheduler& scheduler) noexcept;
     };
 
 } // namespace ProtectedEngine

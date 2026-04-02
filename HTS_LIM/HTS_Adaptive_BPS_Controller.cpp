@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Adaptive_BPS_Controller.cpp
 // HTS 적응형 BPS 히스테리시스 컨트롤러 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -24,7 +24,6 @@
 //  재밍 감지 즉시 확정 최솟값으로 떨어뜨리는 것이 가장 안전합니다.
 // =========================================================================
 #include "HTS_Adaptive_BPS_Controller.h"
-#include <atomic>
 
 namespace ProtectedEngine {
 
@@ -39,18 +38,10 @@ namespace ProtectedEngine {
     }
 
     void HTS_Adaptive_BPS_Controller::Update() noexcept {
-        // W-4/실시간 안정성: ISR-메인 동시 진입 등 재진입 시
-        // quiet_count_ 비원자 갱신이 충돌할 수 있으므로 fail-closed 조기 복귀.
-        static std::atomic_flag update_busy = ATOMIC_FLAG_INIT;
-        if (update_busy.test_and_set(std::memory_order_acq_rel)) {
-            return;
-        }
-        struct Update_Busy_Clear {
-            std::atomic_flag* f;
-            ~Update_Busy_Clear() noexcept {
-                f->clear(std::memory_order_release);
-            }
-        } update_busy_clear{ &update_busy };
+        // 단일 코어(Cortex-M): std::atomic_flag try-lock은 사용하지 않음.
+        // 메인이 Set한 뒤 ISR이 동일 Update()를 호출하면 조기 반환으로
+        // BPS/히스테리시스 갱신이 통째로 건너뛰어질 수 있음(실시간 적응 실패).
+        // quiet_count_는 메인 루프 단일 컨텍스트에서만 갱신 — ISR 호출 금지(헤더 계약).
 
         // ── 측정값 읽기 (acquire: 쓰기 모듈의 release와 쌍을 이룸) ──
         const int32_t  snr = metrics_.snr_proxy.load(

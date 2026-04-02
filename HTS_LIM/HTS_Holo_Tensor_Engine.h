@@ -37,20 +37,25 @@ namespace ProtectedEngine {
 
     class Holo_Tensor_Engine {
     public:
+        static constexpr uint32_t SECURE_TRUE = 0x5A5A5A5Au;
+        static constexpr uint32_t SECURE_FALSE = 0xA5A5A5A5u;
+
         /// @brief 주어진 칩 수에서 안전한 최대 입력 절대값
         /// @return floor((2^31 - 1) / (4 * N²))
         [[nodiscard]]
         static int32_t Max_Safe_Amplitude(uint32_t chip_count) noexcept;
 
         /// @brief 송신부: 클램핑 → FWHT → 4D회전 → FWHT
-        /// @param seed 128비트 시드 (4 × uint32_t, 블록별 독립)
+        /// @param seed 128비트 시드 (4 × uint32_t, 블록별 독립). 사용 후 D-2 호출자가 `SecureMemory::secureWipe` 권장.
         static void Encode_Hologram(
             int32_t* tensor,
             uint32_t chip_count,
             const uint32_t seed[4]) noexcept;
 
         /// @brief 수신부: 역FWHT → 역4D회전 → 역FWHT → 정규화
-        static void Decode_Hologram(
+        /// @param seed 128비트 시드 (4 × uint32_t). 사용 후 D-2 호출자가 `SecureMemory::secureWipe` 권장.
+        /// @return 성공 시 SECURE_TRUE; 스케일 초과 등 실패 시 텐서·RNG 소거 후 SECURE_FALSE
+        [[nodiscard]] static uint32_t Decode_Hologram(
             int32_t* tensor,
             uint32_t chip_count,
             const uint32_t seed[4]) noexcept;

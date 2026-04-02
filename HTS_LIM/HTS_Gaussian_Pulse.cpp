@@ -16,10 +16,24 @@
 
 namespace ProtectedEngine {
 
-    // ASR 컴파일 타임 검증 (MISRA Rule 5-0-21)
+    // ASR 컴파일 타임 검증 (기타 경로 — 부호 시프트 사용 시)
     static_assert((-1 >> 1) == -1,
-        "[HTS_FATAL] Compiler does not use arithmetic right shift (ASR). "
-        "IIR DC blocker requires ASR for signed >> 16.");
+        "[HTS_FATAL] Compiler does not use arithmetic right shift (ASR).");
+
+    // 텐서 칩당 심볼 1회 디코딩 캐시 — gather 내부에서 동일 워드 31회 재디코딩 제거
+    // 비재진입: 단일 패킷 처리 전용(동시 호출 시 호출자 직렬화 가정)
+    namespace {
+        constexpr size_t k_max_total_chips = 4096u;
+        alignas(int32_t) static int8_t g_chip_sym[k_max_total_chips];
+        alignas(int32_t) static int8_t g_chip_w1[k_max_total_chips];
+    }
+
+    // Q16 곱 → 정수 환원: (prod + 2^15) >> 16 — CM4에 64비트 / 없음, __aeabi_ldivmod 회피
+    // 부호 >> 는 파일 상단 static_assert 로 ASR(2의 보수) 전제
+    static inline int64_t mul_q16_round_to_int(int64_t q16_coef, int64_t x) noexcept {
+        const int64_t prod = q16_coef * x;
+        return (prod + 0x8000LL) >> 16;
+    }
 
     // =====================================================================
     //  보안 소거 — volatile + asm clobber + release fence
@@ -205,6 +219,7 @@ namespace ProtectedEngine {
         const size_t out_len = total_chips + num_taps - 1;
 
         if (out_len > out_cap) return 0;
+        if (total_chips > k_max_total_chips) return 0;
 
         // [OPT-2] memset 제거 — gather 루프가 output[n]을 = 로 덮어씀
 
@@ -215,6 +230,19 @@ namespace ProtectedEngine {
         const int64_t ALPHA_Q16 = 62259;  // 0.95 × 65536
         int64_t p_in = prev_in;
         int64_t p_out = prev_out;
+
+        // 칩 인덱스당 니블 1회 디코딩 → gather 탭 루프는 MAC만 (텐서 재읽기/시프트 제거)
+        for (size_t c = 0u; c < total_chips; ++c) {
+            const uint32_t block = tensor[c >> 3u];
+            const uint32_t ki = c & 7u;
+            const uint8_t chunk =
+                static_cast<uint8_t>((block >> (ki * 4u)) & 0x0Fu);
+            const uint32_t sign_bit = (chunk >> 3u) & 1u;
+            g_chip_sym[c] = static_cast<int8_t>(
+                static_cast<int32_t>(sign_bit << 1u) - 1);
+            g_chip_w1[c] = static_cast<int8_t>(
+                static_cast<int32_t>(chunk & 0x07u) - 3);
+        }
 
         // ── FIR gather + IIR 융합 1-Pass ──
         //  output[n] = Σ (symbol[c] × h0[n-c] + w1[c] × h1[n-c])
@@ -230,28 +258,16 @@ namespace ProtectedEngine {
             const size_t c_end = (n < total_chips) ? (n + 1u) : total_chips;
 
             for (size_t c = c_start; c < c_end; ++c) {
-                // 칩 → 텐서 워드/니블 추출 (>>,& = 0~1cyc)
-                const uint32_t block = tensor[c >> 3u];
-                const uint32_t ki = c & 7u;
-                const uint8_t chunk =
-                    static_cast<uint8_t>((block >> (ki * 4u)) & 0x0Fu);
-
-                const uint32_t sign_bit = (chunk >> 3u) & 1u;
-                const int32_t symbol =
-                    static_cast<int32_t>(sign_bit << 1u) - 1;
-                const int32_t w1_weight =
-                    static_cast<int32_t>(chunk & 0x07u) - 3;
-
                 const size_t tap = n - c;
-                acc += static_cast<int64_t>(symbol) * coeff_h0[tap]
-                    + static_cast<int64_t>(w1_weight) * coeff_h1[tap];
+                acc += static_cast<int64_t>(g_chip_sym[c]) * coeff_h0[tap]
+                    + static_cast<int64_t>(g_chip_w1[c]) * coeff_h1[tap];
             }
 
             // ── IIR DC 블로커 즉시 융합 (2-Pass 제거) ──
             const int64_t fir_out = acc;
             int64_t iir_out =
                 fir_out - p_in +
-                ((ALPHA_Q16 * p_out + 0x8000LL) >> 16);
+                mul_q16_round_to_int(ALPHA_Q16, p_out);
 
             if (iir_out > INT32_MAX) iir_out = INT32_MAX;
             else if (iir_out < INT32_MIN) iir_out = INT32_MIN;

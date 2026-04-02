@@ -94,6 +94,7 @@ namespace ProtectedEngine {
         void Tick(uint32_t systick_ms) noexcept;
 
         /// @brief 즉시 계측 보고서 전송
+        /// @note  단일 컨텍스트 전용 — 과거 try-lock 시의 `IPC_Error::BUSY`는 반환하지 않음
         IPC_Error Send_Periodic_Report() noexcept;
 
         /// @brief 수신된 DLMS 요청 처리
@@ -118,9 +119,8 @@ namespace ProtectedEngine {
         // [AMI-4] alignas(8) — Pimpl impl_buf_ 정렬
         alignas(8) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool>  initialized_{ false };
-        /// A-5: 공개 API fail-close 배타 (OTA_Busy_Guard 동일 패턴)
-        /// mutable: const 조회 API에서도 일관된 상태 읽기
-        mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
+        /// 단일 컨텍스트(메인 루프 등)에서만 공개 API 호출 — ISR·다중 스레드 동시 호출 미지원.
+        /// (Cortex-M 단일 코어에서 try-lock 조기 반환은 갱신 누락·기아를 유발할 수 있어 미사용)
     };
 
     static_assert(sizeof(HTS_AMI_Protocol) <= 1024u,

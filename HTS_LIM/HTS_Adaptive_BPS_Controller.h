@@ -105,8 +105,9 @@ namespace ProtectedEngine {
         ///
         /// @note  STM32F407 메인 루프에서 매 64칩 처리 후 1회 호출 권장
         /// @note  ISR에서 호출하지 마십시오 (측정값이 아직 최신이 아님)
-        /// @warning 단일 호출자 계약 API.
-        ///          재진입/동시 호출은 내부 fail-closed 가드로 즉시 복귀됩니다.
+        /// @warning 메인 루프(또는 동일 우선순위 단일 컨텍스트) 전용 계약.
+        ///          ISR·다른 스레드와의 동시 호출은 지원하지 않습니다.
+        ///          (단일 코어에서 try-lock은 ISR 선점 시 갱신 누락을 유발할 수 있어 미사용)
         void Update() noexcept;
 
         /// @brief 강제 BPS_MIN 리셋 (통신 단절 / 모드 전환 / 세션 재시작 시)

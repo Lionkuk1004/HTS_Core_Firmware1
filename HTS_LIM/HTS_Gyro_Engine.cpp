@@ -13,6 +13,10 @@
 #include <bit>
 #endif
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 namespace ProtectedEngine {
 
     // =====================================================================
@@ -65,9 +69,9 @@ namespace ProtectedEngine {
     //   정책: HTS_Universal_API.cpp 확립 표준과 통일
     //
     //  [플랫폼 분기]
-    //   GCC/Clang: volatile uint32_t 워드 소거 + asm("r") 경량 이스케이프
-    //   MSVC:      volatile unsigned char 바이트 소거 (DCE 차단 보장)
-    //   공통:      atomic_thread_fence(release) → 캐시 플러시 보장
+    //   GCC/Clang: volatile 바이트 소거 + __asm__("memory") 컴파일러 배리어
+    //   MSVC:      동일 소거 + _ReadWriteBarrier() (인라인 asm 불가)
+    //   공통:      atomic_thread_fence(release)
     // =====================================================================
     template <typename T>
     void Gyro_Engine::Safe_Buffer_Flush(T* buffer, size_t elements) noexcept {
@@ -93,10 +97,11 @@ namespace ProtectedEngine {
         // 경량 이스케이프: 포인터만 클로버 (글로벌 "memory" 배제)
         __asm__ __volatile__("" : : "r"(bp) : "memory");
 #else
-        // MSVC: volatile 포인터 바이트 쓰기 (DCE 차단 보장)
+        // MSVC: volatile 바이트 소거 + 컴파일러 메모리 배리어 (GCC asm 대응)
         volatile unsigned char* vp =
             reinterpret_cast<volatile unsigned char*>(buffer);
-        for (size_t i = 0; i < total_bytes; ++i) vp[i] = 0u;
+        for (size_t i = 0u; i < total_bytes; ++i) { vp[i] = 0u; }
+        _ReadWriteBarrier();
 #endif
 
         std::atomic_thread_fence(std::memory_order_release);

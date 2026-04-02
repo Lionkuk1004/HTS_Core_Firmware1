@@ -14,8 +14,8 @@
 /// @file  HTS_Holo_Tensor_4D.h
 /// @brief HTS 4D 홀로그램 텐서 엔진 — 진정한 홀로그램 확산/역확산 (통신 전용)
 /// @details
-///   물리 홀로그램 필름 원리를 디지털 통신에 적용.
-///   모든 출력 칩이 모든 입력 비트의 위상 간섭 패턴을 담는다.
+///   물리 홀로그램 필름 원리를 디지털 통신에 응용한 Walsh-Mask-Permutation 확산.
+///   모든 출력 칩이 레이어별 Walsh 행·열 순열·마스크로 입력 비트 정보를 혼합한다.
 ///   칩 50% 손실 시에도 전체 데이터 복원 가능 (자가 치유).
 ///
 ///   TX 흐름:
@@ -71,7 +71,8 @@ namespace ProtectedEngine {
         void Rotate_Seed(const uint32_t new_seed[4]) noexcept;
 
         /// @brief 운용 프로파일 동적 전환 (Initialize 후 모드 변경 시)
-        void Set_Profile(const HoloTensor_Profile* profile) noexcept;
+        /// @return 락·초기화·검증 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
+        [[nodiscard]] uint32_t Set_Profile(const HoloTensor_Profile* profile) noexcept;
 
         /// @brief TX: 블록 인코딩 (K비트 → N칩, 진정한 홀로그램 간섭)
         /// @param data_bits    입력 비트 배열 (±1, 길이 K)
@@ -94,13 +95,15 @@ namespace ProtectedEngine {
             int8_t* output_bits, uint16_t K) noexcept;
 
         /// @brief 시간 슬롯 전진 (Dim 2)
-        void Advance_Time_Slot() noexcept;
+        /// @return 락·초기화 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
+        [[nodiscard]] uint32_t Advance_Time_Slot() noexcept;
 
         /// @brief 글로벌 프레임 번호 기반 시간 슬롯 동기화
         /// @param frame_no  MAC 계층 글로벌 프레임 번호
         /// @details TX/RX 노드가 동일 frame_no를 사용하면 PRNG 시드 동기화.
         ///          내부 time_slot을 frame_no로 직접 설정한다.
-        void Set_Time_Slot(uint32_t frame_no) noexcept;
+        /// @return 락·초기화 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
+        [[nodiscard]] uint32_t Set_Time_Slot(uint32_t frame_no) noexcept;
 
         /// @name 상태
         /// @{

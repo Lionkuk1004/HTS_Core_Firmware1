@@ -18,7 +18,7 @@
 // 실제 사용되는 내부 모듈만 include
 #include "HTS_Session_Gateway.hpp"
 
-// HTS_Entropy_Monitor, HTS_Anti_Glitch, HTS_PUF_Adapter,
+// HTS_Entropy_Monitor, HTS_Anti_Glitch,
 // HTS_Key_Rotator, HTS_Secure_Memory, HTS_Anti_Debug,
 // HTS_Secure_Logger, HTS_POST_Manager — 사용처 0건
 

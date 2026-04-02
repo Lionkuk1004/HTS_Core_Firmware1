@@ -14,10 +14,25 @@
 // [제약] float 0, double 0, 나눗셈 0, try-catch 0, 힙 0
 // =========================================================================
 #include "HTS_AntiJam_Engine.h"
-#include <cstring>
 #include <atomic>
+#include <cstddef>
 
 namespace ProtectedEngine {
+
+    namespace {
+        // LTO/DCE에 memset이 제거되지 않도록 volatile 스토어 + 배리어
+        // (jprof_/SubNull: 세션 간 간섭 프로파일 잔존 방지)
+        void AntiJam_Secure_Wipe(void* ptr, size_t size) noexcept {
+            if (ptr == nullptr || size == 0u) { return; }
+            volatile unsigned char* p =
+                static_cast<volatile unsigned char*>(ptr);
+            for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
+#if defined(__GNUC__) || defined(__clang__)
+            __asm__ __volatile__("" : : "r"(ptr) : "memory");
+#endif
+            std::atomic_thread_fence(std::memory_order_release);
+        }
+    } // namespace
 
     // ── Q8 사인파 LUT (cw_cancel_64_()와 동일 — 일관성 유지) ──
     // sin(2π×k/8)×256, k=0..7
@@ -81,8 +96,8 @@ namespace ProtectedEngine {
     }
 
     void AntiJamEngine::Reset(int nc) noexcept {
-        std::memset(jprof_I_, 0, sizeof(jprof_I_));
-        std::memset(jprof_Q_, 0, sizeof(jprof_Q_));
+        AntiJam_Secure_Wipe(jprof_I_, sizeof(jprof_I_));
+        AntiJam_Secure_Wipe(jprof_Q_, sizeof(jprof_Q_));
         mismatch_ema_ = 0u;
         ajc_reliable_ = false;
         update_count_ = 0u;
@@ -90,12 +105,15 @@ namespace ProtectedEngine {
         num_subs_ = (nc <= SUB_NC) ? 1 : (nc >> 4);
         if (num_subs_ > MAX_SUBS) num_subs_ = MAX_SUBS;
         for (int s = 0; s < MAX_SUBS; ++s) {
-            std::memset(&subs_[s], 0, sizeof(SubNull));
+            AntiJam_Secure_Wipe(&subs_[s], sizeof(SubNull));
             for (int i = 0; i < SUB_NC; ++i)
                 subs_[s].eigvec[i] = 1024;
             subs_[s].count = 0;
             subs_[s].active = false;
         }
+        AntiJam_Secure_Wipe(null_cov_, sizeof(null_cov_));
+        AntiJam_Secure_Wipe(null_v_, sizeof(null_v_));
+        AntiJam_Secure_Wipe(null_nv_, sizeof(null_nv_));
     }
 
     // =====================================================================
@@ -223,45 +241,64 @@ namespace ProtectedEngine {
         const int K = (s.count < MAX_ACC) ? s.count : MAX_ACC;
         if (K < MIN_ACC) { s.active = false; return; }
 
-        int32_t cov[SUB_NC][SUB_NC] = {};
+        AntiJam_Secure_Wipe(null_cov_, sizeof(null_cov_));
         for (int k = 0; k < K; ++k)
             for (int i = 0; i < SUB_NC; ++i)
                 for (int j = i; j < SUB_NC; ++j) {
-                    int32_t v = int32_t(s.signs_I[k][i]) * int32_t(s.signs_I[k][j])
+                    const int32_t vv_ij = int32_t(s.signs_I[k][i]) * int32_t(s.signs_I[k][j])
                         + int32_t(s.signs_Q[k][i]) * int32_t(s.signs_Q[k][j]);
-                    cov[i][j] += v;
-                    if (i != j) cov[j][i] += v;
+                    null_cov_[i][j] += vv_ij;
+                    if (i != j) null_cov_[j][i] += vv_ij;
                 }
 
-        int32_t v[SUB_NC] = {};
-        for (int i = 0; i < SUB_NC; ++i) v[i] = s.eigvec[i];
+        for (int i = 0; i < SUB_NC; ++i) {
+            null_v_[i] = s.eigvec[i];
+        }
 
         for (int iter = 0; iter < PWR_ITER; ++iter) {
-            int32_t nv[SUB_NC] = {};
+            for (int i = 0; i < SUB_NC; ++i) {
+                null_nv_[i] = 0;
+            }
             for (int i = 0; i < SUB_NC; ++i)
                 for (int j = 0; j < SUB_NC; ++j)
-                    nv[i] += cov[i][j] * v[j];
+                    null_nv_[i] += null_cov_[i][j] * null_v_[j];
 
             uint32_t ma = 1u;
             for (int i = 0; i < SUB_NC; ++i) {
-                uint32_t a = fast_abs_(nv[i]);
+                uint32_t a = fast_abs_(null_nv_[i]);
                 if (a > ma) ma = a;
             }
             const int sh = (31 - clz32_(ma)) - 10;
-            if (sh > 0) for (int i = 0; i < SUB_NC; ++i) v[i] = nv[i] >> sh;
-            else if (sh < 0) for (int i = 0; i < SUB_NC; ++i) v[i] = nv[i] << -sh;
-            else             for (int i = 0; i < SUB_NC; ++i) v[i] = nv[i];
+            if (sh > 0) {
+                for (int i = 0; i < SUB_NC; ++i) {
+                    null_v_[i] = null_nv_[i] >> sh;
+                }
+            }
+            else if (sh < 0) {
+                for (int i = 0; i < SUB_NC; ++i) {
+                    null_v_[i] = null_nv_[i] << -sh;
+                }
+            }
+            else {
+                for (int i = 0; i < SUB_NC; ++i) {
+                    null_v_[i] = null_nv_[i];
+                }
+            }
         }
 
         int64_t vCv = 0, vv = 0;
         for (int i = 0; i < SUB_NC; ++i) {
             int32_t Cv = 0;
-            for (int j = 0; j < SUB_NC; ++j) Cv += cov[i][j] * v[j];
-            vCv += int64_t(v[i]) * int64_t(Cv);
-            vv += int64_t(v[i]) * int64_t(v[i]);
+            for (int j = 0; j < SUB_NC; ++j) {
+                Cv += null_cov_[i][j] * null_v_[j];
+            }
+            vCv += int64_t(null_v_[i]) * int64_t(Cv);
+            vv += int64_t(null_v_[i]) * int64_t(null_v_[i]);
         }
         s.active = (vv > 0) && (vCv > int64_t(K) * 4 * vv);
-        for (int i = 0; i < SUB_NC; ++i) s.eigvec[i] = v[i];
+        for (int i = 0; i < SUB_NC; ++i) {
+            s.eigvec[i] = null_v_[i];
+        }
     }
 
     void AntiJamEngine::null_apply_sub_(const SubNull& s,

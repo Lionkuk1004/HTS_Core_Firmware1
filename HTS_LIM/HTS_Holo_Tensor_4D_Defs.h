@@ -24,10 +24,11 @@
 ///   - Dim 3: Phase (위상) — Q16 위상 회전, 간섭 패턴 생성 핵심
 ///   - Dim 4: Layer (계층) — 다중 투영 레이어, 복원 여유도
 ///
-///   인코딩 수학:
+///   인코딩 수학(본 구현 — Walsh-Mask-Permutation):
 ///   @code
-///   chip[i] = sign( SUM(k=0..K-1) data[k] * cos_q15(phase(k,i,L,t)) )
+///   chip[pi[i]] = mask[i] * SUM(layer=0..L-1) SUM(k=0..K-1) data[k] * walsh(sigma[k], i)
 ///   @endcode
+///   (Cos_Q15/Sin_Q15·위상 LUT는 확장·보조 API; Encode/Decode 엔진 경로에서는 미사용.)
 ///
 ///   보안:
 ///   - 위상 행렬은 PRNG(Xoshiro128**) 시드에서 파생
@@ -55,10 +56,10 @@ namespace ProtectedEngine {
     /// Q15 진폭: -32767 ~ +32767 (cos/sin 값)
 
     // ============================================================
-    //  Cosine LUT (Q15, 첫 사분면 64항목, constexpr ROM)
+    //  Cosine LUT (Q15, 첫 사분면 256항목, constexpr ROM)
     // ============================================================
 
-    /// @brief Q15 코사인 테이블 (0 ~ 90도, 256항목)
+    /// @brief Q15 코사인 테이블 (0 ~ 90도, 256항목; 1/4주기 샘플)
     /// @note  ASIC: 512바이트 ROM 직접 합성.
     ///        cos_q15(angle) = round(cos(i * pi/2 / 256) * 32767)
     static constexpr int16_t k_cos_q15_lut[256] = {
@@ -136,7 +137,8 @@ namespace ProtectedEngine {
         return (x << r) | (x >> (32u - r));
     }
 
-    /// @brief Xoshiro128** 상태 (16바이트, 32비트 전용)
+    /// @brief Xoshiro128** 알고리즘 상태 (16바이트, 32비트 전용)
+    /// @note  타입명은 Xoshiro128ss — 구현은 Vigna Xoshiro128** (rotl(s1*5,7)*9)와 동일.
     /// @note  ASIC: 32비트 시프트+XOR 조합논리만 사용. 64비트 곱셈 없음.
     ///        *5, *9는 시프트+가산으로 분해: x*5=(x<<2)+x, x*9=(x<<3)+x
     struct Xoshiro128ss {

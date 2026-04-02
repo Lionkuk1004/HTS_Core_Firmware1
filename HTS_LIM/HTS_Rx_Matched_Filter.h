@@ -10,12 +10,17 @@
 //  이 모듈은 B-CDMA 수신단의 교차 상관(Cross-Correlation) 정합 필터입니다.
 //
 //  [정합 필터 원리]
-//   out[i] = Σ(j=0..N-1) rx[i+j] × ref[j] >> 16
+//   out[i] = Σ(j=0..N-1) ((rx[i+j]×ref[j] + Q16_ROUND_BIAS) >> 16)  (탭마다 즉시 Q16 다운스케일 후 누적)
 //
 //  [메모리 요구량]
-//   sizeof(HTS_Rx_Matched_Filter) ≈ IMPL_BUF_SIZE + impl_valid_ + padding
+//   sizeof(HTS_Rx_Matched_Filter) ≈ IMPL_BUF_SIZE + impl_valid_ + op_busy_ + padding
 //   Impl: HTS_Sys_Config(32B) + int32_t[64](256B) + ref_len(4B) ≈ 296B → IMPL_BUF_SIZE = 320B
 //   기준 시퀀스 데이터: int32_t[64] 정적 배열 (256B, 힙 0)
+//
+//  [동시성]
+//   Set_Reference_Sequence / Apply_Filter 는 atomic_flag(op_busy_) 로 상호 배제.
+//   소멸자: op_busy_ 짧은 시도 후 미획득이면 AIRCR 시스템 리셋(강제 파쇄·~Impl 경로 없음, UAF 방지). PC 시뮬은 abort.
+//   ISR 에서 Apply_Filter 호출 시 메인과 스핀 경합 가능 — 호출 컨텍스트 설계 필수.
 //
 //  [보안 설계]
 //   기준 시퀀스: Set 교체 시 기존 소거 + 소멸자 소거
@@ -78,6 +83,8 @@ namespace ProtectedEngine {
 
         alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool> impl_valid_{ false };
+        /// reference_sequence / ref_len 갱신·교차 상관 연산 상호 배제
+        std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
 
         Impl* get_impl() noexcept;
         const Impl* get_impl() const noexcept;

@@ -637,8 +637,15 @@ namespace ProtectedEngine {
                     vs_lo ^ vs_hi ^ (blk * 0xBB67AE85u),
                     (vs_lo + vs_hi) ^ (blk * 0x3C6EF372u)
                 };
-                Holo_Tensor_Engine::Decode_Hologram(
+                const uint32_t holo_dec = Holo_Tensor_Engine::Decode_Hologram(
                     holo_buf, HOLO_CHIP, crypto_seed);
+                if (holo_dec != Holo_Tensor_Engine::SECURE_TRUE) {
+                    SecureMemory::secureWipe(
+                        static_cast<void*>(holo_buf), sizeof(holo_buf));
+                    Universal_API::Absolute_Trace_Erasure(
+                        damaged_tensor, elements * sizeof(T));
+                    return false;
+                }
 
                 for (size_t k = 0u; k < chunk; ++k) {
                     damaged_tensor[base + k] = BB1_I32_To_Holo_Tensor<T>(holo_buf[k]);

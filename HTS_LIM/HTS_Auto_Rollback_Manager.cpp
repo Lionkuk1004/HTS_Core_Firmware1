@@ -7,6 +7,7 @@
 #include "HTS_Secure_Logger.h"
 // [NOTE] HTS_Secure_Memory.h — 직접 호출 없음 (호출자 소거 책임 원칙)
 //  각 보안 모듈이 Execute_Self_Healing 호출 전에 자체 secureWipe 수행
+#include <atomic>
 #include <cstdint>
 
 namespace ProtectedEngine {
@@ -51,6 +52,12 @@ namespace ProtectedEngine {
         SecureLogger::logSecurityEvent(
             "SELF_HEALING", msg_buf);
 
+        // 로그 I/O 완료 후 하드웨어 리셋 경로로만 진행 (LTO 재배치 억제)
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" ::: "memory");
+#endif
+
         // ── Phase 2: 보안 메모리 소거 지침 ──
         //
         //  SecureMemory API: secureWipe(void* ptr, size_t size) — 특정 버퍼 소거
@@ -76,19 +83,38 @@ namespace ProtectedEngine {
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) \
     && !defined(__aarch64__)
-        // STM32: 인터럽트 비활성 + AIRCR 시스템 리셋 직접 타격
+        // STM32: 인터럽트 비활성 → DBGMCU(워치독 프리즈 해제) → AIRCR SYSRESETREQ
+        //  ※ SWD/JTAG 영구 차단은 옵션 바이트 RDP(부팅/키 프로비저닝) 영역.
+        //     여기서는 Anti_Debug와 동일하게 DBGMCU_APB1_FZ만 해제해 리셋 대기 중
+        //     WDT가 멈추지 않도록 함(리셋 창에서의 디버그 정지 완화는 HW 정책).
         static constexpr uintptr_t AIRCR_ADDR = 0xE000ED0Cu;
+        static constexpr uintptr_t DBGMCU_APB1_FZ_ADDR = 0xE0042008u;
+        static constexpr uint32_t  DBGMCU_WWDG_STOP = (1u << 11);
+        static constexpr uint32_t  DBGMCU_IWDG_STOP = (1u << 12);
         static constexpr uint32_t  AIRCR_VECTKEY = 0x05FA0000u;
         static constexpr uint32_t  AIRCR_SYSRST = 0x04u;
 
         __asm__ __volatile__("cpsid i" : : : "memory");
 
-        volatile uint32_t* const aircr =
-            reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR);
-        *aircr = AIRCR_VECTKEY | AIRCR_SYSRST;
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("" ::: "memory");
+#endif
+        {
+            volatile uint32_t* const dbg_fz =
+                reinterpret_cast<volatile uint32_t*>(DBGMCU_APB1_FZ_ADDR);
+            const uint32_t fz = *dbg_fz;
+            *dbg_fz = fz & ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+        }
+        __asm__ __volatile__("dsb sy\n\tisb" ::: "memory");
 
-        __asm__ __volatile__("dsb" : : : "memory");
-        __asm__ __volatile__("isb" : : : "memory");
+        {
+            volatile uint32_t* const aircr =
+                reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR);
+            const uint32_t aircr_val = AIRCR_VECTKEY | AIRCR_SYSRST;
+            *aircr = aircr_val;
+        }
+
+        __asm__ __volatile__("dsb sy\n\tisb" ::: "memory");
 
 #elif defined(__aarch64__)
         //  A55: __builtin_trap() → 즉시 SIGILL (무한 대기·덤프 창 최소화)  

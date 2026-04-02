@@ -100,9 +100,10 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;HTS_ALLOW_HOST_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);$(ProjectDir)..\..\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324;4702;4996</DisableSpecificWarnings>
@@ -118,9 +119,10 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;HTS_ALLOW_HOST_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);$(ProjectDir)..\..\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4334;4242;4244;4018;4101;4324;4702;4996</DisableSpecificWarnings>
@@ -137,7 +139,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);D:\HTS_ARM11_Firmware\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);$(ProjectDir)..\..\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DisableLanguageExtensions>false</DisableLanguageExtensions>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -157,7 +159,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;HTS_ALLOW_HOST_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);D:\HTS_ARM11_Firmware\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\;$(ProjectDir)..\;$(ProjectDir);$(ProjectDir)..\..\CORE;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DisableLanguageExtensions>false</DisableLanguageExtensions>
       <AdditionalOptions>/openmp:experimental %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -238,6 +240,7 @@
     <ClCompile Include="HTS_Orbital_Mapper.cpp" />
     <ClCompile Include="HTS_Pointer_Auth.cpp" />
     <ClCompile Include="HTS_Physical_Entropy_Engine.cpp" />
+    <ClCompile Include="HTS_Quantum_Decoy_VDF.cpp" />
     <ClCompile Include="HTS_Polymorphic_Shield.cpp" />
     <ClCompile Include="HTS_Power_Manager.cpp" />
     <ClCompile Include="HTS_Remote_Attestation.cpp" />
@@ -286,7 +289,6 @@
     <ClCompile Include="HTS_Hardware_Init.cpp" />
     <ClCompile Include="HTS_Key_Rotator.cpp" />
     <ClCompile Include="HTS_POST_Manager.cpp" />
-    <ClCompile Include="HTS_PUF_Adapter.cpp" />
     <ClCompile Include="HTS_Secure_Logger.cpp" />
     <ClCompile Include="HTS_Secure_Memory.cpp" />
     <ClCompile Include="HTS_Security_Pipeline.cpp" />
@@ -383,6 +385,7 @@
     <ClInclude Include="..\..\CORE\HTS_Hardware_Shield.h" />
     <ClInclude Include="..\..\CORE\HTS_Orbital_Mapper.hpp" />
     <ClInclude Include="..\..\CORE\HTS_Physical_Entropy_Engine.h" />
+    <ClInclude Include="..\..\CORE\HTS_Quantum_Decoy_VDF.h" />
     <ClInclude Include="..\..\CORE\HTS_Polymorphic_Shield.h" />
     <ClInclude Include="..\..\CORE\HTS_Sparse_Recovery.h" />
     <ClInclude Include="..\..\CORE\HTS_Storage_Interface.h" />
@@ -428,7 +431,6 @@
     <ClInclude Include="HTS_Hardware_Init.h" />
     <ClInclude Include="HTS_Key_Rotator.h" />
     <ClInclude Include="HTS_POST_Manager.h" />
-    <ClInclude Include="HTS_PUF_Adapter.h" />
     <ClInclude Include="HTS_Secure_Logger.h" />
     <ClInclude Include="HTS_Security_Session.h" />
     <ClInclude Include="HTS_Session_Gateway.hpp" />

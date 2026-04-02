@@ -82,6 +82,7 @@ namespace ProtectedEngine {
             size_t         key_len) noexcept;
 
         // 메시지 청크 누적 (64바이트 정렬 자동 처리)
+        // data_len==0: 빈 청크 허용(RFC 2104). data_len>0이면 data 필수(아니면 SECURE_FALSE).
         [[nodiscard]] static uint32_t Update(
             HMAC_Context& ctx,
             const uint8_t* data,
@@ -99,6 +100,7 @@ namespace ProtectedEngine {
 
         // ── 단일 호출 API (하위 호환) ─────────────────────────────────
         //  내부적으로 Init → Update → Final/Verify_Final 순차 호출
+        //  msg_len==0(빈 페이로드) 합법 — msg_len>0일 때만 message 필수
 
         [[nodiscard]] static uint32_t Generate(
             const uint8_t* message, size_t msg_len,

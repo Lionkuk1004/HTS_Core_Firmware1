@@ -25,7 +25,7 @@
 // ─────────────────────────────────────────────────────────
 
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH) || defined(__ARM_ARCH__)
 #error "[HTS_FATAL] HTS_Types.h(SecureVector)는 PC/서버 전용입니다. ARM 빌드에서 제외하십시오."
 #endif
 

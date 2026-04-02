@@ -217,7 +217,6 @@ Layer 5  — 키 관리 / 보안 부팅
   HTS_Key_Provisioning.h → .cpp
   HTS_Key_Rotator.h → .cpp
   HTS_Dynamic_Key_Rotator.hpp → .cpp
-  HTS_PUF_Adapter.h → .cpp
   HTS_Secure_Boot_Verify.h → .cpp
   HTS_Anchor_Vault.hpp → .cpp
   HTS_Entropy_Arrow.hpp → .cpp
@@ -251,6 +250,7 @@ Layer 8  — DSP/PHY 코어
   TensorCodec.hpp → .cpp
   HTS_Orbital_Mapper.hpp → .cpp
   HTS_Sparse_Recovery.h → .cpp
+  HTS_Quantum_Decoy_VDF.h → .cpp (CORE 헤더 / HTS_LIM 구현 TU)
 
 Layer 9  — 텐서 엔진 [핵심 알고리즘]
   HTS_Holo_Tensor_Engine.h → .cpp

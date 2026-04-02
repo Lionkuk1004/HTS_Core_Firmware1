@@ -5,6 +5,7 @@
 //
 #include "HTS_Hardware_Init.h"
 #include <cstdio>
+#include <cstdlib>
 
 // =========================================================================
 //  플랫폼 감지
@@ -15,29 +16,80 @@
 
 #ifdef HTS_TARGET_ARM_BAREMETAL
 extern uint32_t __stack_bottom__ __attribute__((weak));
+
+// Fault / RDP 실패 공통: AIRCR SYSRESETREQ → 하드웨어 리셋 (wfi만으로 정지 금지)
+[[noreturn]] static inline void HTS_Fault_Reset_Wait() noexcept {
+    static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
+    static constexpr uint32_t  AIRCR_RESET =
+        (0x05FAu << 16) | (1u << 2);
+    volatile uint32_t* const aircr =
+        reinterpret_cast<volatile uint32_t*>(ADDR_AIRCR);
+    *aircr = AIRCR_RESET;
+#if defined(__GNUC__) || defined(__clang__)
+    static constexpr uintptr_t ADDR_DBGMCU_FZ = 0xE0042008u;
+    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+    volatile uint32_t* const dbgmcu_fz =
+        reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
+    *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+    __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
+    for (;;) {
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("wfi");
+#else
+        __asm__ __volatile__("nop");
+#endif
+    }
+}
 #endif
 
-// 양산: 컴파일 정의 HTS_BOOT_ENFORCE_RDP_LEVEL2=1 시 RDP Level2(OPTCR[15:8]==0xCC) 미만이면 정지
+// 양산: RDP Level2(OPTCR[15:8]==0xCC) 미만이면 Terminal_Fault → 리셋
+//  HTS_ALLOW_OPEN_DEBUG 정의 시 개발 보드용으로 강제 비활성화
 #ifndef HTS_BOOT_ENFORCE_RDP_LEVEL2
+#if defined(HTS_TARGET_ARM_BAREMETAL) && defined(NDEBUG) && \
+    !defined(HTS_ALLOW_OPEN_DEBUG)
+#define HTS_BOOT_ENFORCE_RDP_LEVEL2 1
+#else
 #define HTS_BOOT_ENFORCE_RDP_LEVEL2 0
 #endif
+#endif
+
+namespace ProtectedEngine {
+
+#if defined(HTS_TARGET_ARM_BAREMETAL)
+[[noreturn]] void Hardware_Init_Manager::Terminal_Fault_Action() noexcept {
+    HTS_Fault_Reset_Wait();
+}
+#else
+[[noreturn]] void Hardware_Init_Manager::Terminal_Fault_Action() noexcept {
+    std::abort();
+}
+#endif
+
+} // namespace ProtectedEngine
 
 #if HTS_BOOT_ENFORCE_RDP_LEVEL2 && defined(HTS_TARGET_ARM_BAREMETAL)
 namespace {
-[[noreturn]] void Terminal_Fault_Action() noexcept {
-    for (;;) {
-        __asm__ __volatile__("wfi");
-    }
-}
-
 void HTS_Boot_Assert_Rdp_Level2_Or_Halt() noexcept {
-    static constexpr uintptr_t FLASH_OPTCR = 0x40023C14u;
-    static constexpr uint32_t  RDP_MASK = 0x0000FF00u;
-    static constexpr uint32_t  RDP_LEVEL_2 = 0xCCu;
-    const uint32_t optcr = *reinterpret_cast<volatile uint32_t*>(FLASH_OPTCR);
-    const uint32_t rdp = (optcr & RDP_MASK) >> 8u;
-    if (rdp != RDP_LEVEL_2) {
-        Terminal_Fault_Action();
+    using ProtectedEngine::HTS_FLASH_OPTCR_ADDR;
+    using ProtectedEngine::HTS_RDP_EXPECTED_BYTE_VAL;
+    using ProtectedEngine::HTS_RDP_OPTCR_MASK;
+    using ProtectedEngine::Hardware_Init_Manager;
+    // 이중 읽기 + dsb: 글리치/재배치에 대한 OPTCR 일관성 확인 (양산 부트 검증)
+    const uint32_t optcr_a =
+        *reinterpret_cast<volatile uint32_t*>(HTS_FLASH_OPTCR_ADDR);
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("dsb sy" ::: "memory");
+#endif
+    const uint32_t optcr_b =
+        *reinterpret_cast<volatile uint32_t*>(HTS_FLASH_OPTCR_ADDR);
+    if (optcr_a != optcr_b) {
+        Hardware_Init_Manager::Terminal_Fault_Action();
+    }
+    const uint32_t rdp = (optcr_a & HTS_RDP_OPTCR_MASK) >> 8u;
+    if (rdp != HTS_RDP_EXPECTED_BYTE_VAL) {
+        Hardware_Init_Manager::Terminal_Fault_Action();
     }
 }
 } // namespace
@@ -67,29 +119,31 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  Initialize_System — WDT → NVIC(플레이스홀더) → MPU → DWT CYCCNT
+    //  Initialize_System — WDT → (옵션) RDP 검사 → NVIC → MPU → DWT CYCCNT
     //
     //  [호출 시점] main() 진입 직후, POST 이전
     //  [ARM 동작 순서 — H-2]
-    //    1. WDT 활성화: WDT_CTRL_REG에 0x01 쓰기
+    //    1. WDT 활성화: WDT_CTRL_REG에 0x01 쓰기 (RDP 검사보다 선행)
     //       → 이후 주기적으로 Kick_Watchdog() 미호출 시 하드웨어 리셋
-    //    2. NVIC: Tx 스케줄러 IRQ 우선순위 플레이스홀더 (파트너사 IRQ 번호 교체)
-    //    3. MPU: Initialize_MPU() 8리전 (K-1/R-11)
-    //    4. DWT CYCCNT: DEMCR TRCENA → DWT_CTRL CYCCNTENA → 카운터 리셋
+    //    2. HTS_BOOT_ENFORCE_RDP_LEVEL2 시: Flash OPTCR RDP Level2 미만이면 AIRCR 리셋
+    //    3. NVIC: Tx 스케줄러 IRQ 우선순위 플레이스홀더 (파트너사 IRQ 번호 교체)
+    //    4. MPU: Initialize_MPU() 8리전 (K-1/R-11)
+    //    5. DWT CYCCNT: DEMCR TRCENA → DWT_CTRL CYCCNTENA → 카운터 리셋
     //       → Hardware_Bridge::Get_Physical_CPU_Tick() 사용 가능
     //  [PC 동작] no-op (시뮬레이션 환경)
     // =====================================================================
     void Hardware_Init_Manager::Initialize_System() noexcept {
 #ifdef HTS_TARGET_ARM_BAREMETAL
-#if HTS_BOOT_ENFORCE_RDP_LEVEL2
-        HTS_Boot_Assert_Rdp_Level2_Or_Halt();
-#endif
-        // ── WDT 활성화 ──────────────────────────────────────────────
+        // ── WDT 활성화 (RDP 검사 전) ─────────────────────────────────
+        //  RDP 실패 시 Terminal_Fault_Action → AIRCR 리셋 외에도 WDT가 동작하도록 선행
         volatile uint32_t* wdt_ctrl = reinterpret_cast<volatile uint32_t*>(
             static_cast<uintptr_t>(WDT_CTRL_REG));
         HW_BARRIER();
         *wdt_ctrl = 0x01u;
         HW_ISB();
+#if HTS_BOOT_ENFORCE_RDP_LEVEL2
+        HTS_Boot_Assert_Rdp_Level2_Or_Halt();
+#endif
 
         // Tx_Scheduler 타임슬롯 마감 보장 — NVIC 우선순위 일괄 설정
         // 파트너사: TIM_IRQn / DMA_IRQn 번호를 보드 설계에 맞게 교체
@@ -166,7 +220,7 @@ namespace ProtectedEngine {
         volatile uint32_t* DWT_CYCCNT = reinterpret_cast<volatile uint32_t*>(ADDR_DWT_CYCCNT);
 
         *DEMCR |= DEMCR_TRCENA;    // TRCENA 활성화
-        *DWT_CYCCNT = 0;            // 카운터 리셋
+        *DWT_CYCCNT = 0u;           // 카운터 리셋
         *DWT_CTRL |= DWT_CYCCNTENA; // CYCCNTENA 활성화
         HW_ISB();                    // 설정 즉시 반영 보장
 #endif
@@ -199,51 +253,59 @@ namespace ProtectedEngine {
         // Region 0: Flash — RO Both, XN=0, 1MB
         *MPU_RNR = 0u;
         *MPU_RBAR = 0x08000000u;
-        *MPU_RASR = (0u << 28) | (6u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
-            | (19u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (0u << 28) | (6u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
+            | (19u << 1) | (1u));
 
         // Region 1: SRAM1+2 — RW Both, XN=1, 128KB
         *MPU_RNR = 1u;
         *MPU_RBAR = 0x20000000u;
-        *MPU_RASR = (1u << 28) | (3u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
-            | (16u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (3u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
+            | (16u << 1) | (1u));
 
         // Region 2: CCM — RW Both, XN=1, 64KB
         *MPU_RNR = 2u;
         *MPU_RBAR = 0x10000000u;
-        *MPU_RASR = (1u << 28) | (3u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
-            | (15u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (3u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
+            | (15u << 1) | (1u));
 
         // Region 3: APB/AHB — RW Priv only, XN=1, 512MB, device (C=0,B=0)
         *MPU_RNR = 3u;
         *MPU_RBAR = 0x40000000u;
-        *MPU_RASR = (1u << 28) | (1u << 24) | (0u << 19) | (0u << 18) | (0u << 17)
-            | (0u << 16) | (28u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (1u << 24) | (0u << 19) | (0u << 18) | (0u << 17)
+            | (0u << 16) | (28u << 1) | (1u));
 
         // Region 4: 스택 가드 256B — No Access, XN=1, SIZE=7 (예외 진입 32B push 대비)
         const uint32_t guard_base =
             (stack_bottom_addr + 255u) & ~static_cast<uint32_t>(255u);
         *MPU_RNR = 4u;
         *MPU_RBAR = guard_base;
-        *MPU_RASR = (1u << 28) | (0u << 24) | (7u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (0u << 24) | (7u << 1) | (1u));
 
         // Region 5: DMA 버퍼 4KB @ SRAM 선두 — RW Both, XN=1
         //   TEX=0,S=1,C=0,B=0 → Shareable Device (Region 1 Normal WBWA와 속성 분리)
         *MPU_RNR = 5u;
         *MPU_RBAR = 0x20000000u;
-        *MPU_RASR = (1u << 28) | (3u << 24) | (0u << 19) | (1u << 18) | (0u << 17)
-            | (0u << 16) | (11u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (3u << 24) | (0u << 19) | (1u << 18) | (0u << 17)
+            | (0u << 16) | (11u << 1) | (1u));
 
         // Region 6: CoreSight/시스템 — RO Priv, XN=1, 256MB
         *MPU_RNR = 6u;
         *MPU_RBAR = 0xE0000000u;
-        *MPU_RASR = (1u << 28) | (5u << 24) | (0u << 19) | (0u << 17) | (0u << 16)
-            | (27u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (5u << 24) | (0u << 19) | (0u << 17) | (0u << 16)
+            | (27u << 1) | (1u));
 
         // Region 7: 저주소 No Access — SIZE=26(128MB): Flash 시작 미포함
         *MPU_RNR = 7u;
         *MPU_RBAR = 0x00000000u;
-        *MPU_RASR = (1u << 28) | (0u << 24) | (26u << 1) | (1u);
+        *MPU_RASR = static_cast<uint32_t>(
+            (1u << 28) | (0u << 24) | (26u << 1) | (1u));
 
         HW_BARRIER();
         *MPU_CTRL = MPU_CTRL_FULL;
@@ -366,8 +428,8 @@ extern "C" int fputc(int ch, FILE* f) {
     // TX FIFO Full 폴링 + 타임아웃
     static constexpr uint32_t UART_TX_TIMEOUT = 100000u;
     uint32_t timeout = UART_TX_TIMEOUT;
-    while (((*uart_fr) & ProtectedEngine::UART_TXFF) != 0) {
-        if (--timeout == 0) return ch;
+    while (((*uart_fr) & ProtectedEngine::UART_TXFF) != 0u) {
+        if (--timeout == 0u) return ch;
         __asm__ __volatile__("nop");
     }
 
@@ -378,32 +440,6 @@ extern "C" int fputc(int ch, FILE* f) {
 #endif
 
 #ifdef HTS_TARGET_ARM_BAREMETAL
-static inline void HTS_Fault_Reset_Wait() noexcept {
-    static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
-    static constexpr uint32_t  AIRCR_RESET =
-        (0x05FAu << 16) | (1u << 2);
-    volatile uint32_t* const aircr =
-        reinterpret_cast<volatile uint32_t*>(ADDR_AIRCR);
-    *aircr = AIRCR_RESET;
-#if defined(__GNUC__) || defined(__clang__)
-    // DBGMCU_APB1_FZ — 디버거 WDT STOP 시 AIRCR 지연 동안 IWDG 동작 보장 (HTS_Anti_Debug Phase 3 동일)
-    static constexpr uintptr_t ADDR_DBGMCU_FZ = 0xE0042008u;
-    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
-    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
-    volatile uint32_t* const dbgmcu_fz =
-        reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
-    *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
-    __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
-#endif
-    for (;;) { // ⚠ [요검토: ⑰(예외·Fault 핸들러 무한 대기) vs D-3 AIRCR 후 정지 — 감사 시 정책 확정]
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("wfi");
-#else
-        __asm__ __volatile__("nop");
-#endif
-    }
-}
-
 #if defined(__GNUC__) || defined(__clang__)
 extern "C" __attribute__((weak)) void MemManage_Handler(void)
 #else

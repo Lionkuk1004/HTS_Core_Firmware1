@@ -86,6 +86,26 @@ namespace ProtectedEngine {
         return val;
     }
 
+    /// int32_t / (1u << k), k < 32 — C++ 정수 나눗셈(0 방향 절사)과 동일, SDIV/분기 없이 시프트만.
+    /// 부호 있는 >> 는 구현 정의이므로, 절댓값을 uint32_t 로 시프트 후 부호 복원.
+    static inline int32_t Int32_Div_Pow2_Truncate(
+        int32_t x, uint32_t k) noexcept {
+        const int32_t sign = x >> 31;
+        const uint32_t mag =
+            static_cast<uint32_t>(static_cast<uint32_t>(x ^ sign)
+                - static_cast<uint32_t>(sign));
+        const uint32_t qu = mag >> k;
+        const int32_t q = static_cast<int32_t>(qu);
+        return static_cast<int32_t>(
+            (static_cast<uint32_t>(q) ^ static_cast<uint32_t>(sign))
+            - static_cast<uint32_t>(sign));
+    }
+
+    /// 분기 없는 min(x, cap) — EMI/인덱스 클램프 (루프 내 예측 실패 제거)
+    static inline size_t Min_Size_U(size_t x, size_t cap) noexcept {
+        return cap ^ ((x ^ cap) & -static_cast<std::ptrdiff_t>(x < cap));
+    }
+
     // =====================================================================
     //  Pimpl 구현 구조체
     //
@@ -422,6 +442,7 @@ namespace ProtectedEngine {
         // ─────────────────────────────────────────────────────────────
         crypto_stream_cache = 0u;
         uint32_t stream_phase = 0u;
+        static constexpr uint32_t TX_SIGNAL_ATTEN_SHIFT = 4u;  // ÷16, 나눗셈 연산자 금지
 
         for (size_t i = 0u; i < dl_len; ++i) {
             if ((i & 0x3FFu) == 0u &&
@@ -429,18 +450,18 @@ namespace ProtectedEngine {
                 break;
             }
 
-            int32_t normalized_tx = impl.tx_signal[i] >> 4;
+            int32_t normalized_tx = Int32_Div_Pow2_Truncate(
+                impl.tx_signal[i], TX_SIGNAL_ATTEN_SHIFT);
             normalized_tx = Safe_Clamp(normalized_tx, -32768, 32767);
             const uint16_t tx_16bit =
                 static_cast<uint16_t>(normalized_tx & 0xFFFF);
 
-            //  (logical_idx < packed_len*2 → >>1 < packed_len)
-            //  EMI 비트플립 방어: 분기 유지, 모듈로(%) → 클램프 대체
+            //  (logical_idx < total_16bit_words ⇒ sec_buffer_idx < packed_len)
+            //  EMI/경계: 분기 대신 Min_Size_U — LTO 언롤·벡터화 저해 분기 제거
             size_t sec_buffer_idx = logical_idx >> 1u;
-            if (sec_buffer_idx >= packed_len
-                || sec_buffer_idx >= Impl::MAX_SEC_WORDS) {
-                sec_buffer_idx = packed_len - 1u;
-            }
+            sec_buffer_idx = Min_Size_U(sec_buffer_idx, packed_len - 1u);
+            sec_buffer_idx = Min_Size_U(
+                sec_buffer_idx, Impl::MAX_SEC_WORDS - 1u);
             const bool is_high_part = ((logical_idx & 1u) == 0u);
             const uint32_t encrypted_32bit =
                 impl.temp_sec[sec_buffer_idx];
@@ -459,6 +480,8 @@ namespace ProtectedEngine {
                 crypto_state_A = RotL64(s0, 49u) ^ s1 ^ (s1 << 21u);
                 crypto_state_B = RotL64(s1, 28u);
             }
+            // LTO/O3: 상태·캐시 갱신이 키스트림 XOR보다 뒤로 재배치되지 않도록
+            std::atomic_signal_fence(std::memory_order_acq_rel);
 
             // [계약 §2] MSB-first 16비트 추출: 48→32→16→0
             const uint32_t shift = (3u - stream_phase) << 4u;
@@ -470,7 +493,8 @@ namespace ProtectedEngine {
             stream_phase = (stream_phase + 1u) & 3u;
 
             impl.dual_lane_buffer[i] =
-                (static_cast<uint32_t>(tx_16bit) << 16u) | stealth_sec;
+                (static_cast<uint32_t>(tx_16bit) << 16u)
+                | static_cast<uint32_t>(stealth_sec);
 
             logical_idx += logical_step;
             if (logical_idx >= total_16bit_words) {

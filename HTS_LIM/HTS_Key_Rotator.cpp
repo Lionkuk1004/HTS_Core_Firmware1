@@ -34,18 +34,23 @@
 namespace ProtectedEngine {
 namespace {
 
-#if HTS_KEY_ROTATOR_PRIMASK_CRIT && (defined(__GNUC__) || defined(__clang__))
+#if HTS_KEY_ROTATOR_PRIMASK_CRIT
+    // HTS_Dynamic_Key_Rotator.cpp 와 동일 PRIMASK 패턴 — GCC/Clang/IAR ARM 등 공통
+    static inline uint32_t kr_primask_enter() noexcept {
+        uint32_t primask = 0u;
+        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
+            : "=r"(primask) :: "memory");
+        return primask;
+    }
+    static inline void kr_primask_exit(uint32_t pm) noexcept {
+        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
+    }
+
     /// RAII: 저장된 PRIMASK 복원 — 임계구역 내 조기 return에도 IRQ 상태 복구 보장
     struct KeyRotator_Primask_Guard {
         uint32_t saved_;
-        KeyRotator_Primask_Guard() noexcept {
-            __asm__ __volatile__("mrs %0, primask\n\t"
-                "cpsid i"
-                : "=r"(saved_) :: "memory");
-        }
-        ~KeyRotator_Primask_Guard() noexcept {
-            __asm__ __volatile__("msr primask, %0" :: "r"(saved_) : "memory");
-        }
+        KeyRotator_Primask_Guard() noexcept : saved_(kr_primask_enter()) {}
+        ~KeyRotator_Primask_Guard() noexcept { kr_primask_exit(saved_); }
         KeyRotator_Primask_Guard(const KeyRotator_Primask_Guard&) = delete;
         KeyRotator_Primask_Guard& operator=(const KeyRotator_Primask_Guard&) = delete;
     };
@@ -76,12 +81,11 @@ namespace {
         KeyRotator_Spinlock_Guard& operator=(const KeyRotator_Spinlock_Guard&) = delete;
     };
 
-} // namespace
+} // anonymous namespace
+
     static void Key_Rotator_Secure_Wipe(void* p, size_t n) noexcept {
         SecureMemory::secureWipe(p, n);
     }
-
-
 
     // =====================================================================
     //  Murmur3-32 해시 (시드 파생 전용)
@@ -105,14 +109,19 @@ namespace {
         const size_t nblocks = len >> 2u;
 
         for (size_t i = 0u; i < nblocks; ++i) {
-            uint32_t k = 0u;
-            std::memcpy(&k, data + i * 4u, 4u);
+            const size_t base = i * 4u;
+            const uint32_t k =
+                static_cast<uint32_t>(data[base])
+                | (static_cast<uint32_t>(data[base + 1u]) << 8u)
+                | (static_cast<uint32_t>(data[base + 2u]) << 16u)
+                | (static_cast<uint32_t>(data[base + 3u]) << 24u);
 
-            k *= 0xCC9E2D51u;
-            k = RotL32(k, 15u);
-            k *= 0x1B873593u;
+            uint32_t kx = k;
+            kx *= 0xCC9E2D51u;
+            kx = RotL32(kx, 15u);
+            kx *= 0x1B873593u;
 
-            h ^= k;
+            h ^= kx;
             h = RotL32(h, 13u);
             h = h * 5u + 0xE6546B64u;
         }
@@ -253,15 +262,18 @@ namespace {
     //  반환: 호출자 버퍼에 복사 (Raw API)
     //  vector 반환 API는 헤더에서 유지 (호출자 마이그레이션 후 제거)
     // =====================================================================
-    // =====================================================================
-    // =====================================================================
     bool DynamicKeyRotator::deriveNextSeed(
         uint32_t blockIndex,
-        uint8_t* out_buf, size_t out_len) noexcept {
+        uint8_t* out_buf, size_t out_buf_size, size_t& out_len) noexcept {
 
+        out_len = 0u;
         Impl* p = get_impl();
         if (p == nullptr || p->seed_len == 0u ||
-            out_buf == nullptr || out_len == 0u) {
+            out_buf == nullptr || out_buf_size == 0u) {
+            return false;
+        }
+        const size_t seed_len = p->seed_len;
+        if (out_buf_size < seed_len) {
             return false;
         }
 
@@ -274,8 +286,8 @@ namespace {
         //  Cortex-M: PRIMASK (HTS_KEY_ROTATOR_PRIMASK_CRIT)
         //  PC/A55: atomic_flag (멀티스레드)
         // ─────────────────────────────────────────────────────────────
-#if HTS_KEY_ROTATOR_PRIMASK_CRIT && (defined(__GNUC__) || defined(__clang__))
-        [[maybe_unused]] const KeyRotator_Primask_Guard kr_irq_guard{};
+#if HTS_KEY_ROTATOR_PRIMASK_CRIT
+        const KeyRotator_Primask_Guard kr_irq_guard{};
 #else
         KeyRotator_Spinlock_Guard kr_spin_guard(&p->spin_lock);
         if (!kr_spin_guard.held()) {
@@ -284,7 +296,6 @@ namespace {
 #endif
 
         uint8_t* seed = p->currentSeed;
-        const size_t seed_len = p->seed_len;
 
         // 1단계: blockIndex 혼합 (선두 4바이트)
         for (size_t i = 0u; i < 4u && i < seed_len; ++i) {
@@ -319,9 +330,9 @@ namespace {
             std::atomic_thread_fence(std::memory_order_release);
         }
 
-        // 3단계: 출력 — 임계 구역 내부에서 복사 완료 후 해제
-        const size_t copy_len = (out_len < seed_len) ? out_len : seed_len;
-        std::memcpy(out_buf, seed, copy_len);
+        // 3단계: 출력 — 임계 구역 내부에서 복사 완료 후 해제 (경계는 진입 시 검증됨)
+        std::memcpy(out_buf, seed, seed_len);
+        out_len = seed_len;
 
         // 범위 탈출 시 kr_irq_guard / kr_spin_guard 소멸자가 PRIMASK 복원 또는 spin_lock 해제
         return true;
@@ -333,10 +344,11 @@ namespace {
     std::vector<uint8_t> DynamicKeyRotator::deriveNextSeed(
         uint32_t blockIndex) noexcept {
         uint8_t buf[Impl::SEED_LEN];
-        if (!deriveNextSeed(blockIndex, buf, sizeof(buf))) {
+        size_t nout = 0u;
+        if (!deriveNextSeed(blockIndex, buf, sizeof(buf), nout)) {
             return std::vector<uint8_t>();
         }
-        return std::vector<uint8_t>(buf, buf + Impl::SEED_LEN);
+        return std::vector<uint8_t>(buf, buf + nout);
     }
 #endif
 

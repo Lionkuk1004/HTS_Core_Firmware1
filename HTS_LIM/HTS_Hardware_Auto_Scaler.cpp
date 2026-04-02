@@ -5,6 +5,11 @@
 //
 #include "HTS_Hardware_Auto_Scaler.h"
 #include <algorithm>
+#include <cstdint>
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 // =========================================================================
 //  3단 플랫폼 분기 — RAM 감지 헤더
@@ -41,22 +46,49 @@ namespace ProtectedEngine {
     // =====================================================================
     //  2의 제곱수 내림 — DMA 버스트/모듈러 연산 최적화
     //
-    //  비재귀 비트 조작: 최상위 비트만 남기는 패턴
-    //  16384 → 16384 (이미 2^14)
-    //  16000 → 8192  (2^13)
-    //  입력 0 → 0
+    //  GCC/Clang: CLZ + 시프트 (CM4 CLZ 1cyc) / MSVC: _BitScanReverse
+    //  기타: 비트 스미어 + MSB만 남김(n - (n>>1)) 폴백
+    //  16384 → 16384, 16000 → 8192, 0 → 0
     // =====================================================================
     static size_t Floor_Power_Of_Two(size_t n) noexcept {
         if (n == 0) return 0;
-        n |= (n >> 1);
-        n |= (n >> 2);
-        n |= (n >> 4);
-        n |= (n >> 8);
-        n |= (n >> 16);
+
+#if defined(__GNUC__) || defined(__clang__)
 #if SIZE_MAX > 0xFFFFFFFFu
-        n |= (n >> 32);
+        const uint64_t v = static_cast<uint64_t>(n);
+        return static_cast<size_t>(
+            1ull << (63u
+                - static_cast<unsigned>(__builtin_clzll(v))));
+#else
+        const uint32_t v = static_cast<uint32_t>(n);
+        return static_cast<size_t>(
+            1u << (31u
+                - static_cast<unsigned>(__builtin_clz(v))));
 #endif
-        return n - (n >> 1);
+#elif defined(_MSC_VER)
+#if SIZE_MAX > 0xFFFFFFFFu
+        unsigned long idx = 0;
+        const unsigned char ok = _BitScanReverse64(
+            &idx, static_cast<unsigned __int64>(n));
+        return ok ? (static_cast<size_t>(1ull) << idx) : 0;
+#else
+        unsigned long idx = 0;
+        const unsigned char ok = _BitScanReverse(
+            &idx, static_cast<unsigned long>(n));
+        return ok ? (static_cast<size_t>(1ul) << idx) : 0;
+#endif
+#else
+        size_t x = n;
+        x |= (x >> 1);
+        x |= (x >> 2);
+        x |= (x >> 4);
+        x |= (x >> 8);
+        x |= (x >> 16);
+#if SIZE_MAX > 0xFFFFFFFFu
+        x |= (x >> 32);
+#endif
+        return x - (x >> 1);
+#endif
     }
 
     // =====================================================================

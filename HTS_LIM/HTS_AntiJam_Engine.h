@@ -101,6 +101,11 @@ namespace ProtectedEngine {
         SubNull subs_[MAX_SUBS];
         int     num_subs_;
 
+        /// Spatial null 공분산·파워법 벡터 — 스택 1KB+ 대신 객체 내 고정 버퍼
+        int32_t null_cov_[SUB_NC][SUB_NC];
+        int32_t null_v_[SUB_NC];
+        int32_t null_nv_[SUB_NC];
+
         void ajc_apply_(int16_t* I, int16_t* Q, int nc) noexcept;
         void adaptive_punch_(int16_t* I, int16_t* Q, int nc) noexcept;
         void null_accumulate_sub_(SubNull& s,

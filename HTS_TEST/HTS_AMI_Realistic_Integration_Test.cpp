@@ -143,7 +143,7 @@ static void scenario_neighbor_mesh() {
     HTS_Priority_Scheduler sched;
     HTS_Neighbor_Discovery nd(0x0001u);
 
-    nd.Set_Mode(DiscoveryMode::REALTIME);
+    nd.Set_Mode(DiscoveryMode::REALTIME, 0u);
     CHECK("REALTIME 모드", nd.Get_Mode() == DiscoveryMode::REALTIME);
 
     uint8_t pkt[8];

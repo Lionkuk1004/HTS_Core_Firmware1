@@ -25,11 +25,15 @@
 //   복사/이동: = delete (키 상태 복제 원천 차단)
 //   키 파생: LCG(은닉 상태) → Murmur3 ^ state (Davies-Meyer 유사)
 //
+//  [ISR 금지] Get_Current_Key_And_Rotate 는 메인 루프(또는 동일 우선순위 컨텍스트) 전용.
+//   ISR에서 호출 시 스핀/대기 패턴과 결합하면 메인과 교착(Deadlock) 가능.
+//   IRQ 맥락에서 키가 필요하면 사전에 복사한 스냅샷을 사용하십시오.
+//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
 namespace ProtectedEngine {
 
@@ -51,7 +55,8 @@ namespace ProtectedEngine {
 
         /// @brief 현재 키 반환 + 자동 회전 검사
         /// @return 현재 세션 키 (64비트)
-        /// @note  호출마다 operation_count 증가, interval 도달 시 키 파생
+        /// @note  호출마다 operation_count 증가, interval 도달 시 키 파생.
+        ///        ISR에서 호출하지 말 것(교착·위상 불일치). SMP 시 PRIMASK만으로는 부족.
         [[nodiscard]]
         uint64_t Get_Current_Key_And_Rotate() noexcept;
 

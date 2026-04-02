@@ -13,6 +13,12 @@
 #define HTS_PLATFORM_ARM_BAREMETAL
 #endif
 
+#if defined(HTS_PLATFORM_ARM_BAREMETAL) && (defined(__GNUC__) || defined(__clang__))
+#define HTS_ENTROPY_ARM_GNUC 1
+#else
+#define HTS_ENTROPY_ARM_GNUC 0
+#endif
+
 namespace ProtectedEngine {
 
     // =====================================================================
@@ -45,6 +51,14 @@ namespace ProtectedEngine {
     //  타임아웃/에러 시 DWT 폴백 (TRNG 고장 대비)
     // =====================================================================
     static uint32_t Read_STM32_RNG() noexcept {
+        // ISR/예외 컨텍스트: RCC/RNG 장시간 폴링·클럭 토글 금지 → DWT만 (기아 방지)
+#if HTS_ENTROPY_ARM_GNUC
+        uint32_t ipsr_val = 0u;
+        __asm__ volatile ("mrs %0, ipsr" : "=r"(ipsr_val) : : "memory");
+        if (ipsr_val != 0u) {
+            return Read_DWT_CYCCNT();
+        }
+#endif
         // J-3: RNG/RCC 레지스터 constexpr
         static constexpr uintptr_t ADDR_RNG_CR = 0x50060800u;  ///< RNG Control
         static constexpr uintptr_t ADDR_RNG_SR = 0x50060804u;  ///< RNG Status
@@ -63,7 +77,15 @@ namespace ProtectedEngine {
             reinterpret_cast<volatile uint32_t*>(ADDR_RCC_AHB2ENR);
 
         *RCC_AHB2ENR |= RCC_RNG_EN;
+        // AHB 매트릭스 클럭 안정화: 쓰기 직후 RNG 버스 접근 시 Bus Fault 방지 (RM read-back + DSB)
+        (void)*RCC_AHB2ENR;
+#if HTS_ENTROPY_ARM_GNUC
+        __asm__ volatile ("dsb sy" ::: "memory");
+#endif
         *RNG_CR |= RNG_CR_RNGEN;
+#if HTS_ENTROPY_ARM_GNUC
+        __asm__ volatile ("dsb sy" ::: "memory");
+#endif
 
         uint32_t timeout = 1000;
         while (((*RNG_SR) & 1u) == 0 && timeout > 0) {
@@ -103,12 +125,30 @@ namespace ProtectedEngine {
         uint32_t dynamic_entropy = 0u;
 
 #if defined(HTS_PLATFORM_ARM_BAREMETAL)
+        static constexpr uint32_t TRNG_BOOT_WAIT_MAX = 200000u;
+
         uint32_t expected = 0u;
         if (hw_trng_seeded.compare_exchange_strong(
             expected, 1u, std::memory_order_acq_rel)) {
             uint32_t hw_seed = Read_STM32_RNG();
             ctr_nonce_state.fetch_xor(hw_seed, std::memory_order_release);
             hw_trng_seeded.store(2u, std::memory_order_release);
+        }
+        else {
+            const uint32_t seed_state =
+                hw_trng_seeded.load(std::memory_order_acquire);
+            if (seed_state == 1u) {
+                // 승자가 Read_STM32_RNG 중 — XOR·상태 2 전에 진행하면 시드 혼합 순서 깨짐
+                uint32_t spin = 0u;
+                while (hw_trng_seeded.load(std::memory_order_acquire) == 1u
+                    && spin < TRNG_BOOT_WAIT_MAX) {
+                    ++spin;
+                }
+                // 선발 스레드 정지·TRNG 고착 시 무한 스핀 방지 — 후속 진입 차단용 bust
+                if (hw_trng_seeded.load(std::memory_order_acquire) == 1u) {
+                    hw_trng_seeded.store(2u, std::memory_order_release);
+                }
+            }
         }
 
         dynamic_entropy = Read_DWT_CYCCNT();

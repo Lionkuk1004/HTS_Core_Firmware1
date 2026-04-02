@@ -6,6 +6,9 @@
 
 #include "HTS_Modbus_Gateway.h"
 #include "HTS_IPC_Protocol.h"
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <new>
 #include <atomic>
 #include <cstring>  // memset
@@ -46,7 +49,9 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
+        __asm__ __volatile__("" : : "r"(q) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -126,19 +131,19 @@ namespace ProtectedEngine {
             if (data_len > MODBUS_MAX_PDU_DATA) { return 0u; }
 
             uint16_t pos = 0u;
-            tx_buf[pos++] = slave_addr;
-            tx_buf[pos++] = func_code;
+            tx_buf[static_cast<size_t>(pos++)] = slave_addr;
+            tx_buf[static_cast<size_t>(pos++)] = func_code;
             if (data != nullptr) {
                 for (uint8_t i = 0u; i < data_len; ++i) {
-                    tx_buf[pos++] = data[i];
+                    tx_buf[static_cast<size_t>(pos++)] = data[i];
                 }
             }
 
             // Modbus RTU CRC-16 (polynomial 0xA001, NOT CCITT)
             const uint16_t crc = Modbus_CRC16(tx_buf, pos);
             // Modbus CRC is little-endian on wire (low byte first!)
-            tx_buf[pos++] = static_cast<uint8_t>(crc & 0xFFu);
-            tx_buf[pos++] = static_cast<uint8_t>(crc >> 8u);
+            tx_buf[static_cast<size_t>(pos++)] = static_cast<uint8_t>(crc & 0xFFu);
+            tx_buf[static_cast<size_t>(pos++)] = static_cast<uint8_t>(crc >> 8u);
 
             return pos;
         }
@@ -220,15 +225,63 @@ namespace ProtectedEngine {
                 }
             }
 
-            if (rsp_len < 4u) {  // Min: ADDR(1)+FC(1)+DATA(0)+CRC(2)
+            // ── Modbus TCP: PDU에 RTU CRC 없음(TCP 계층 무결성). MBAP+ADU 또는 순수 PDU.
+            if (phy_val == static_cast<uint8_t>(Modbus_PHY::TCP)) {
+                const uint8_t* pdu_src = nullptr;
+                uint16_t pdu_len = 0u;
+
+                if (rsp_len >= 7u) {
+                    const uint16_t proto = MB_Read_U16(&rx_buf[2]);
+                    const uint16_t follow = MB_Read_U16(&rx_buf[4]);
+                    if (proto == 0u && follow >= 1u &&
+                        6u + static_cast<uint32_t>(follow) <= static_cast<uint32_t>(rsp_len) &&
+                        follow <= static_cast<uint16_t>(MODBUS_GW_MAX_FRAME - 6u))
+                    {
+                        pdu_src = &rx_buf[6];
+                        pdu_len = follow;
+                    }
+                }
+                if (pdu_src == nullptr) {
+                    pdu_src = rx_buf;
+                    pdu_len = rsp_len;
+                }
+                // 예외 응답 최소: Unit(1)+FC|0x80(1)+EXC(1) — CRC 없음
+                if (pdu_len < 3u) {
+                    error_count++;
+                    return 0u;
+                }
+                if (pdu_len > MODBUS_GW_MAX_FRAME) {
+                    error_count++;
+                    return 0u;
+                }
+
+                if ((pdu_src[1] & ModbusFC::EXCEPTION_FLAG) != 0u) {
+                    error_count++;
+                }
+
+                const uint16_t copy_len = (pdu_len <= rsp_buf_size)
+                    ? pdu_len : rsp_buf_size;
+                if (rsp_buf_out != nullptr) {
+                    for (uint16_t i = 0u; i < copy_len; ++i) {
+                        rsp_buf_out[i] = pdu_src[i];
+                    }
+                }
+                return copy_len;
+            }
+
+            // ── Modbus RTU: 마지막 2바이트 CRC-16. 예외 최소 5바이트(3+CRC2).
+            if (rsp_len < 5u) {
                 error_count++;
                 return 0u;
             }
 
-            // Validate Modbus RTU CRC
             const uint16_t rsp_data_len = static_cast<uint16_t>(rsp_len - 2u);
+            if (rsp_data_len > MODBUS_GW_MAX_FRAME) {
+                error_count++;
+                return 0u;
+            }
+
             const uint16_t computed_crc = Modbus_CRC16(rx_buf, rsp_data_len);
-            // Modbus CRC is little-endian
             const uint16_t received_crc = static_cast<uint16_t>(
                 static_cast<uint16_t>(rx_buf[rsp_data_len])
                 | (static_cast<uint16_t>(rx_buf[rsp_data_len + 1u]) << 8u));
@@ -238,12 +291,10 @@ namespace ProtectedEngine {
                 return 0u;
             }
 
-            // Check for exception response
             if ((rx_buf[1] & ModbusFC::EXCEPTION_FLAG) != 0u) {
                 error_count++;
             }
 
-            // Copy response (excluding CRC) to output
             const uint16_t copy_len = (rsp_data_len <= rsp_buf_size)
                 ? rsp_data_len : rsp_buf_size;
             if (rsp_buf_out != nullptr) {
@@ -389,14 +440,15 @@ namespace ProtectedEngine {
         void Execute_Polls() noexcept
         {
             for (uint32_t i = 0u; i < MODBUS_MAX_POLL_ITEMS; ++i) {
-                if (poll_items[i].active == 0u) { continue; }
-                if (poll_items[i].interval_sec == 0u) { continue; }
+                const size_t is = static_cast<size_t>(i);
+                if (poll_items[is].active == 0u) { continue; }
+                if (poll_items[is].interval_sec == 0u) { continue; }
 
                 // Pacing: interval_sec * 1000 (ms)
                 // Use shift: sec * 1024 ~ sec * 1000 (2.4% error, acceptable)
                 const uint32_t interval_ms = static_cast<uint32_t>(
-                    poll_items[i].interval_sec) << 10u;
-                const uint32_t elapsed = current_tick - poll_items[i].last_poll_tick;
+                    poll_items[is].interval_sec) << 10u;
+                const uint32_t elapsed = current_tick - poll_items[is].last_poll_tick;
                 if (elapsed < interval_ms) { continue; }
 
                 // CFI: IDLE -> POLLING (idempotent)
@@ -406,18 +458,18 @@ namespace ProtectedEngine {
 
                 // Build read request: start_reg(2) + count(2)
                 uint8_t req_data[4];
-                MB_Write_U16(&req_data[0], poll_items[i].start_reg);
-                MB_Write_U16(&req_data[2], poll_items[i].reg_count);
+                MB_Write_U16(&req_data[0], poll_items[is].start_reg);
+                MB_Write_U16(&req_data[2], poll_items[is].reg_count);
 
                 const uint16_t rsp_len = Execute_Request(
-                    static_cast<Modbus_PHY>(poll_items[i].phy_type),
-                    poll_items[i].slave_addr,
-                    poll_items[i].func_code,
+                    static_cast<Modbus_PHY>(poll_items[is].phy_type),
+                    poll_items[is].slave_addr,
+                    poll_items[is].func_code,
                     req_data, 4u,
                     gw_rsp_buf, MODBUS_GW_MAX_FRAME);
 
                 // Drift-free pacing
-                poll_items[i].last_poll_tick += interval_ms;
+                poll_items[is].last_poll_tick += interval_ms;
 
                 // Report to B-CDMA
                 if (rsp_len > 0u && ipc != nullptr) {
@@ -428,7 +480,7 @@ namespace ProtectedEngine {
 
                     uint8_t report[MODBUS_GW_MAX_FRAME];
                     report[0] = static_cast<uint8_t>(GW_Command::POLL_REPORT);
-                    report[1] = poll_items[i].phy_type;
+                    report[1] = poll_items[is].phy_type;
                     for (uint16_t j = 0u; j < safe_rsp_len; ++j) {
                         report[GW_HDR_OVERHEAD + j] = gw_rsp_buf[j];
                     }
@@ -449,9 +501,10 @@ namespace ProtectedEngine {
         uint8_t Add_Poll_Item_Internal(const Modbus_PollItem& item) noexcept
         {
             for (uint32_t i = 0u; i < MODBUS_MAX_POLL_ITEMS; ++i) {
-                if (poll_items[i].active == 0u) {
-                    poll_items[i] = item;
-                    poll_items[i].last_poll_tick = current_tick;
+                const size_t is = static_cast<size_t>(i);
+                if (poll_items[is].active == 0u) {
+                    poll_items[is] = item;
+                    poll_items[is].last_poll_tick = current_tick;
                     return static_cast<uint8_t>(i);
                 }
             }
@@ -522,7 +575,15 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
+        // ⑮ op_busy 무한 대기 금지: 단일 코어에서 busy 보유 시 무한 스핀 → 교착.
+        // 타임아웃 시 busy 미획득 — Impl 파ꇴ·소거 생략(호출부에서 GW 정지 후 재시도).
+        static constexpr uint32_t OP_BUSY_SPIN_MAX = 1000000u;
+        uint32_t spin = OP_BUSY_SPIN_MAX;
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {
+            if (--spin == 0u) {
+                return;
+            }
+        }
 
 #if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
         uint32_t primask_saved;
@@ -540,6 +601,8 @@ namespace ProtectedEngine {
         }
 
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        // 파괴 시작 전에 공개 API 차단 — ~Impl/소거 중 Get_State 등 UAF 방지
+        initialized_.store(false, std::memory_order_release);
         impl->state = Modbus_State::OFFLINE;
         impl->ipc = nullptr;
         impl->~Impl();
@@ -549,7 +612,6 @@ namespace ProtectedEngine {
         //  → 메모리 덤프 공격 시 산업 제어 명령 노출
         Modbus_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
-        initialized_.store(false, std::memory_order_release);
         op_busy_.clear(std::memory_order_release);
 
 #if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
@@ -603,7 +665,8 @@ namespace ProtectedEngine {
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
         if (slot_idx >= MODBUS_MAX_POLL_ITEMS) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->poll_items[slot_idx].active = 0u;
+        reinterpret_cast<Impl*>(impl_buf_)->poll_items[static_cast<size_t>(slot_idx)]
+            .active = 0u;
     }
 
     void HTS_Modbus_Gateway::Tick(uint32_t systick_ms) noexcept

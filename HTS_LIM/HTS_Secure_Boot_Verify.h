@@ -31,6 +31,11 @@
 //
 //  @warning sizeof ≈ 520B — 전역/정적 배치 권장
 //
+//  [동시성 / 부팅]
+//   HTS_Secure_Boot_Check는 CRT 이전 startup에서 호출될 수 있어 락 미사용. 이후 C++ API는 g_sb_op_busy로 상호 배제.
+//   검증 성공 시 g_boot_verified에는 단일 비트가 아닌 다중 비트 매직(구현부 detail::kBootVerifiedMagic)이 기록됨.
+//   Verify_Firmware: 부트에서 이미 검증된 경우(p->verified) do_verify_once 생략(Fast-path).
+//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
@@ -71,7 +76,8 @@ namespace ProtectedEngine {
 
     class HTS_Secure_Boot_Verify {
     public:
-        /// @brief Flash 검증 영역 크기 (512KB)
+        /// @brief 검증에 포함되는 Flash 연속 영역(바이트). 링커 스크립트 ROM 길이와 일치해야 함.
+        ///        STM32F407VG는 최대 1MB이나, 본 상수는 512KB 이미지 가정(전 구간 해시 시 값·OTP 연동 갱신).
         static constexpr uint32_t FIRMWARE_SIZE = 512u * 1024u;
 
         /// @brief LSH-256 해시 크기 (32바이트)

@@ -11,6 +11,9 @@
 // =========================================================================
 #include "HTS_Mesh_Sync.h"
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +34,8 @@ namespace ProtectedEngine {
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(p) : "memory");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -61,12 +66,29 @@ namespace ProtectedEngine {
     static constexpr uint8_t LOCK_CONFIRM = 3u;
     static constexpr uint8_t IIR_SHIFT = 3u;       // alpha=1/8
 
-    // 광속 cm/μs = 300m/μs = 30000cm/μs
-    static constexpr uint32_t LIGHT_CM_PER_US = 30000u;
+    // 진공 광속: c = 299792458 m/s → cm/μs = 29979245800/10^6 = 299792458/10000
+    static constexpr uint64_t LIGHT_CM_PER_US_NUM = 299792458ULL;
+    static constexpr uint64_t LIGHT_CM_PER_US_DEN = 10000ULL;
 
     static int32_t fast_abs(int32_t x) noexcept {
+        if (x == INT32_MIN) {
+            return INT32_MAX;  // (-INT32_MIN) is UB — clip (CWE-190)
+        }
         const int32_t mask = x >> 31;
         return (x ^ mask) - mask;
+    }
+
+    // ToA 거리(cm) — PRIMASK 밖에서도 동일 수식 사용 (Get_All_Ranging 스냅샷 후 호출)
+    static uint32_t mesh_distance_cm_from_offset_q16(int32_t ofs_q16) noexcept {
+        const uint32_t abs_ofs = static_cast<uint32_t>(fast_abs(ofs_q16));
+        const uint64_t num =
+            static_cast<uint64_t>(abs_ofs) * LIGHT_CM_PER_US_NUM;
+        const uint64_t den = (65536ULL * LIGHT_CM_PER_US_DEN);
+        const uint64_t q = (num + (den / 2ULL)) / den;
+        if (q > static_cast<uint64_t>(UINT32_MAX)) {
+            return UINT32_MAX;
+        }
+        return static_cast<uint32_t>(q);
     }
 
     // =====================================================================
@@ -122,18 +144,9 @@ namespace ProtectedEngine {
             return -1;
         }
 
-        // ToA → 거리(cm) 변환
-        // distance = |offset_us| × 광속(cm/μs)
-        // Q16 → μs: offset_q16 / 65536
-        // 정수화: |offset_q16| × 30000 / 65536
-        //       = |offset_q16| × 30000 >> 16
+        // ToA → 거리(cm): 공통 헬퍼 (64비트 + half-up)
         uint32_t offset_to_distance_cm(int32_t ofs_q16) const noexcept {
-            const uint32_t abs_ofs = static_cast<uint32_t>(fast_abs(ofs_q16));
-            // 오버플로 방지: abs_ofs 최대 ~10^6 × 30000 = 3×10^10 > uint32
-            // 분할: (abs_ofs >> 8) × 30000 >> 8 (정밀도 유지)
-            const uint32_t hi = abs_ofs >> 8u;
-            const uint32_t dist = (hi * LIGHT_CM_PER_US) >> 8u;
-            return dist;
+            return mesh_distance_cm_from_offset_q16(ofs_q16);
         }
 
         // 동기 품질 재평가 + 다중 홉 계층 갱신
@@ -249,18 +262,22 @@ namespace ProtectedEngine {
     static int32_t parabolic_interp_q16(
         int32_t prev, int32_t peak, int32_t next) noexcept
     {
-        // 분모 = 2 × (prev - 2×peak + next)
-        const int32_t denom = 2 * (prev - 2 * peak + next);
-        if (denom == 0) { return 0; }  // 대칭 → 보정 불필요
+        const int64_t p = static_cast<int64_t>(prev);
+        const int64_t pk = static_cast<int64_t>(peak);
+        const int64_t n = static_cast<int64_t>(next);
+        const int64_t denom = 2LL * (p - 2LL * pk + n);
+        if (denom == 0LL) { return 0; }
 
-        // 분자 = (prev - next)
-        const int32_t numer = prev - next;
-
-        // delta_q16 = (numer / denom) × SAMPLE_PERIOD_Q16
-        // 정밀도: numer/denom을 Q16으로 변환
-        // = (numer × SAMPLE_PERIOD_Q16) / denom
-        const int32_t correction = (numer * SAMPLE_PERIOD_Q16) / denom;
-        return correction;
+        const int64_t numer = p - n;
+        const int64_t sp = static_cast<int64_t>(SAMPLE_PERIOD_Q16);
+        const int64_t correction = (numer * sp) / denom;
+        if (correction > static_cast<int64_t>(INT32_MAX)) {
+            return INT32_MAX;
+        }
+        if (correction < static_cast<int64_t>(INT32_MIN)) {
+            return INT32_MIN;
+        }
+        return static_cast<int32_t>(correction);
     }
 
     // =====================================================================
@@ -281,13 +298,29 @@ namespace ProtectedEngine {
         if (peer_id == p->my_id) { return; }
         if (p->state == SyncState::SUSPENDED) { return; }
 
-        // 원시 오프셋 (정수 μs)
-        int32_t raw_offset =
-            static_cast<int32_t>(rx_capture_us) -
-            static_cast<int32_t>(expected_us);
+        // 원시 오프셋(μs): uint32 차분 후 부호 해석 — 타이머 래핑에 안전
+        int32_t raw_offset = static_cast<int32_t>(
+            rx_capture_us - expected_us);
+        if (raw_offset > 32767) {
+            raw_offset = 32767;
+        }
+        else if (raw_offset < -32768) {
+            raw_offset = -32768;
+        }
 
-        // Q16 변환
-        int32_t raw_q16 = raw_offset * Q16_ONE;
+        // Q16 스케일: int64로 곱해 int32 범위로 클램프 (signed mul UB 방지)
+        const int64_t raw_q16_64 =
+            static_cast<int64_t>(raw_offset) * static_cast<int64_t>(Q16_ONE);
+        int32_t raw_q16;
+        if (raw_q16_64 > static_cast<int64_t>(INT32_MAX)) {
+            raw_q16 = INT32_MAX;
+        }
+        else if (raw_q16_64 < static_cast<int64_t>(INT32_MIN)) {
+            raw_q16 = INT32_MIN;
+        }
+        else {
+            raw_q16 = static_cast<int32_t>(raw_q16_64);
+        }
 
         // ① 포물선 보간 적용 (상관 샘플이 유효할 때만)
         if (corr_peak > 0 && (corr_prev > 0 || corr_next > 0)) {
@@ -296,41 +329,45 @@ namespace ProtectedEngine {
             raw_q16 += interp;  // Sub-sample 보정
         }
 
-        const uint32_t pm = sync_critical_enter();
+        { // 피어 슬롯 갱신만 짧게 잠금 — evaluate_state는 별도 구간
+            const uint32_t pm = sync_critical_enter();
 
-        int32_t slot = p->find_peer(peer_id);
+            int32_t slot = p->find_peer(peer_id);
 
-        if (slot >= 0) {
-            PeerSync& ps = p->peers[static_cast<size_t>(slot)];
-            const int32_t diff = raw_q16 - ps.offset_q16;
-            ps.offset_q16 += (diff >> IIR_SHIFT);
-            ps.last_update_ms = systick_ms;
-            ps.peer_hop = peer_hop;
-            if (ps.sample_count < 255u) { ps.sample_count++; }
-
-            if (fast_abs(ps.offset_q16) < LOCK_TH_Q16) {
-                if (ps.lock_streak < 255u) { ps.lock_streak++; }
-            }
-            else {
-                ps.lock_streak = 0u;
-            }
-        }
-        else {
-            slot = p->find_free();
             if (slot >= 0) {
                 PeerSync& ps = p->peers[static_cast<size_t>(slot)];
-                ps.peer_id = peer_id;
-                ps.offset_q16 = raw_q16;
+                const int32_t diff = raw_q16 - ps.offset_q16;
+                ps.offset_q16 += (diff >> IIR_SHIFT);
                 ps.last_update_ms = systick_ms;
-                ps.sample_count = 1u;
-                ps.lock_streak = 0u;
                 ps.peer_hop = peer_hop;
-                ps.valid = 1u;
+                if (ps.sample_count < 255u) { ps.sample_count++; }
+
+                if (fast_abs(ps.offset_q16) < LOCK_TH_Q16) {
+                    if (ps.lock_streak < 255u) { ps.lock_streak++; }
+                }
+                else {
+                    ps.lock_streak = 0u;
+                }
             }
+            else {
+                slot = p->find_free();
+                if (slot >= 0) {
+                    PeerSync& ps = p->peers[static_cast<size_t>(slot)];
+                    ps.peer_id = peer_id;
+                    ps.offset_q16 = raw_q16;
+                    ps.last_update_ms = systick_ms;
+                    ps.sample_count = 1u;
+                    ps.lock_streak = 0u;
+                    ps.peer_hop = peer_hop;
+                    ps.valid = 1u;
+                }
+            }
+            sync_critical_exit(pm);
         }
 
+        // 동기 품질 재평가: O(N) 순회는 PRIMASK 밖에서 (N-10, ISR 기아 방지).
+        // 단일 컨텍스트에서 On_Beacon_Timing만 peers를 갱신한다는 전제(재진입 시 잠금 범위 재검토).
         p->evaluate_state();
-        sync_critical_exit(pm);
     }
 
     // =====================================================================
@@ -396,29 +433,49 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr || out == nullptr || cap == 0u) { return 0u; }
 
-        const uint32_t pm = sync_critical_enter();
+        struct Snap {
+            uint16_t peer_id;
+            int32_t offset_q16;
+            uint8_t sample_count;
+            uint8_t lock_streak;
+            uint8_t peer_hop;
+            uint8_t pad;
+        };
+        Snap snap[MAX_PEERS];
         size_t count = 0u;
 
-        for (size_t i = 0u; i < MAX_PEERS && count < cap; ++i) {
-            const PeerSync& ps = p->peers[i];
-            if (ps.valid == 0u) { continue; }
-
-            PeerRanging& r = out[count];
-            r.peer_id = ps.peer_id;
-            r.offset_q16 = ps.offset_q16;
-            r.distance_cm = (ps.sample_count >= 3u)
-                ? p->offset_to_distance_cm(ps.offset_q16) : 0u;
-            r.sync_quality = (ps.lock_streak >= LOCK_CONFIRM) ? 100u :
-                static_cast<uint8_t>(
-                    (static_cast<uint32_t>(ps.lock_streak) * 100u) /
-                    static_cast<uint32_t>(LOCK_CONFIRM));
-            r.hop_level = ps.peer_hop;
-            r.valid = 1u;
-            r.pad = 0u;
-            ++count;
+        {
+            const uint32_t pm = sync_critical_enter();
+            for (size_t i = 0u; i < MAX_PEERS && count < cap; ++i) {
+                const PeerSync& ps = p->peers[i];
+                if (ps.valid == 0u) { continue; }
+                Snap& s = snap[count];
+                s.peer_id = ps.peer_id;
+                s.offset_q16 = ps.offset_q16;
+                s.sample_count = ps.sample_count;
+                s.lock_streak = ps.lock_streak;
+                s.peer_hop = ps.peer_hop;
+                s.pad = 0u;
+                ++count;
+            }
+            sync_critical_exit(pm);
         }
 
-        sync_critical_exit(pm);
+        for (size_t i = 0u; i < count; ++i) {
+            const Snap& s = snap[i];
+            PeerRanging& r = out[i];
+            r.peer_id = s.peer_id;
+            r.offset_q16 = s.offset_q16;
+            r.distance_cm = (s.sample_count >= 3u)
+                ? mesh_distance_cm_from_offset_q16(s.offset_q16) : 0u;
+            r.sync_quality = (s.lock_streak >= LOCK_CONFIRM) ? 100u :
+                static_cast<uint8_t>(
+                    (static_cast<uint32_t>(s.lock_streak) * 100u) /
+                    static_cast<uint32_t>(LOCK_CONFIRM));
+            r.hop_level = s.peer_hop;
+            r.valid = 1u;
+            r.pad = 0u;
+        }
         return count;
     }
 

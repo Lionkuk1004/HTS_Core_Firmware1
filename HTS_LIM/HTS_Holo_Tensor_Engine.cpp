@@ -3,18 +3,11 @@
 // Target: STM32F407 (Cortex-M4) — 순수 정수 연산
 //
 #include "HTS_Holo_Tensor_Engine.h"
+#include "HTS_Secure_Memory.h"
 #include <cstring>
-#include <atomic>
 
 namespace ProtectedEngine {
     namespace {
-        static inline int32_t holo_sat_neg_i32(int32_t x) noexcept {
-            if (x == static_cast<int32_t>(0x80000000u)) {
-                return static_cast<int32_t>(0x7FFFFFFFu);
-            }
-            return static_cast<int32_t>(-x);
-        }
-
         // 분기 없는 조건부 부호 반전 (bit=1 -> negate, bit=0 -> keep)
         static inline int32_t holo_cond_sat_neg_ct(int32_t x, uint32_t bit) noexcept {
             const uint32_t ux = static_cast<uint32_t>(x);
@@ -40,7 +33,9 @@ namespace ProtectedEngine {
         uint32_t s[4];
 
         static uint32_t rotl(uint32_t x, int k) noexcept {
-            return (x << k) | (x >> (32 - k));
+            const uint32_t kk = static_cast<uint32_t>(k) & 31u;
+            if (kk == 0u) { return x; }
+            return (x << kk) | (x >> (32u - kk));
         }
         uint32_t next() noexcept {
             const uint32_t result = rotl(s[1] * 5u, 7u) * 9u;
@@ -94,26 +89,32 @@ namespace ProtectedEngine {
     //           safe=true:  uint32_t 모듈로 (Decode — 악성 패킷 방어)
     // =====================================================================
     static void fwht_signed(int32_t* tensor, uint32_t n) noexcept {
-        for (uint32_t len = 1; len < n; len <<= 1) {
-            for (uint32_t i = 0; i < n; i += 2 * len) {
-                for (uint32_t j = 0; j < len; ++j) {
-                    int32_t u = tensor[i + j];
-                    int32_t v = tensor[i + len + j];
-                    tensor[i + j] = u + v;
-                    tensor[i + len + j] = u - v;
+        const size_t n_sz = static_cast<size_t>(n);
+        for (size_t len = 1u; len < n_sz; len <<= 1u) {
+            for (size_t i = 0u; i < n_sz; i += 2u * len) {
+                for (size_t j = 0u; j < len; ++j) {
+                    const size_t ia = i + j;
+                    const size_t ib = i + len + j;
+                    int32_t u = tensor[ia];
+                    int32_t v = tensor[ib];
+                    tensor[ia] = u + v;
+                    tensor[ib] = u - v;
                 }
             }
         }
     }
 
     static void fwht_safe(int32_t* tensor, uint32_t n) noexcept {
-        for (uint32_t len = 1; len < n; len <<= 1) {
-            for (uint32_t i = 0; i < n; i += 2 * len) {
-                for (uint32_t j = 0; j < len; ++j) {
-                    uint32_t u = static_cast<uint32_t>(tensor[i + j]);
-                    uint32_t v = static_cast<uint32_t>(tensor[i + len + j]);
-                    tensor[i + j] = static_cast<int32_t>(u + v);
-                    tensor[i + len + j] = static_cast<int32_t>(u - v);
+        const size_t n_sz = static_cast<size_t>(n);
+        for (size_t len = 1u; len < n_sz; len <<= 1u) {
+            for (size_t i = 0u; i < n_sz; i += 2u * len) {
+                for (size_t j = 0u; j < len; ++j) {
+                    const size_t ia = i + j;
+                    const size_t ib = i + len + j;
+                    uint32_t u = static_cast<uint32_t>(tensor[ia]);
+                    uint32_t v = static_cast<uint32_t>(tensor[ib]);
+                    tensor[ia] = static_cast<int32_t>(u + v);
+                    tensor[ib] = static_cast<int32_t>(u - v);
                 }
             }
         }
@@ -144,9 +145,14 @@ namespace ProtectedEngine {
         v[3] = holo_cond_sat_neg_ct(v[3], (gyro_seed >> 3u) & 1u);
 
         uint8_t pi = static_cast<uint8_t>((gyro_seed >> 4u) & 0x1Fu);
-        if (pi >= 24u) pi -= 24u;
-        const uint8_t* p = PERM_TABLE[pi];
-        int32_t pv[4] = { v[p[0]], v[p[1]], v[p[2]], v[p[3]] };
+        if (pi >= 24u) { pi = static_cast<uint8_t>(pi - 24u); }
+        const uint8_t* const p = PERM_TABLE[static_cast<size_t>(pi)];
+        int32_t pv[4] = {
+            v[static_cast<size_t>(p[static_cast<size_t>(0)])],
+            v[static_cast<size_t>(p[static_cast<size_t>(1)])],
+            v[static_cast<size_t>(p[static_cast<size_t>(2)])],
+            v[static_cast<size_t>(p[static_cast<size_t>(3)])]
+        };
 
         block4[0] = pv[0] + pv[1] + pv[2] + pv[3];
         block4[1] = pv[0] - pv[1] + pv[2] - pv[3];
@@ -170,9 +176,14 @@ namespace ProtectedEngine {
         };
 
         uint8_t pi = static_cast<uint8_t>((gyro_seed >> 4u) & 0x1Fu);
-        if (pi >= 24u) pi -= 24u;
-        const uint8_t* ip = INV_PERM_TABLE[pi];
-        int32_t rv[4] = { iv[ip[0]], iv[ip[1]], iv[ip[2]], iv[ip[3]] };
+        if (pi >= 24u) { pi = static_cast<uint8_t>(pi - 24u); }
+        const uint8_t* const ip = INV_PERM_TABLE[static_cast<size_t>(pi)];
+        int32_t rv[4] = {
+            iv[static_cast<size_t>(ip[static_cast<size_t>(0)])],
+            iv[static_cast<size_t>(ip[static_cast<size_t>(1)])],
+            iv[static_cast<size_t>(ip[static_cast<size_t>(2)])],
+            iv[static_cast<size_t>(ip[static_cast<size_t>(3)])]
+        };
 
         rv[0] = holo_cond_sat_neg_ct(rv[0], (gyro_seed >> 0u) & 1u);
         rv[1] = holo_cond_sat_neg_ct(rv[1], (gyro_seed >> 1u) & 1u);
@@ -196,81 +207,111 @@ namespace ProtectedEngine {
             return;
 
         const int32_t clamp_max = Max_Safe_Amplitude(chip_count);
-        const int32_t clamp_min = -clamp_max;
-        for (uint32_t i = 0; i < chip_count; ++i) {
-            tensor[i] = holo_clamp_i32_ct(tensor[i], clamp_min, clamp_max);
+        const int32_t clamp_min = static_cast<int32_t>(0) - clamp_max;
+        for (uint32_t i = 0u; i < chip_count; ++i) {
+            tensor[static_cast<size_t>(i)] = holo_clamp_i32_ct(
+                tensor[static_cast<size_t>(i)], clamp_min, clamp_max);
         }
 
         fwht_signed(tensor, chip_count);
 
         Holo_Xoshiro128 rng = expand_seed(seed);
-        for (uint32_t i = 0; i < chip_count; i += 4) {
+        for (uint32_t i = 0u; i < chip_count; i += 4u) {
             const uint32_t blk_seed = rng.next();
-            rotate_4d_signed(&tensor[i], blk_seed);
+            rotate_4d_signed(&tensor[static_cast<size_t>(i)], blk_seed);
         }
 
         fwht_signed(tensor, chip_count);
+        SecureMemory::secureWipe(static_cast<void*>(&rng), sizeof(rng));
     }
 
     // =====================================================================
     //  Decode_Hologram — 수신부
     // =====================================================================
-    void Holo_Tensor_Engine::Decode_Hologram(
+    uint32_t Holo_Tensor_Engine::Decode_Hologram(
         int32_t* tensor,
         uint32_t chip_count,
         const uint32_t seed[4]) noexcept {
         if (!tensor || !seed || chip_count < 4 ||
             (chip_count & 3u) != 0 ||
-            (chip_count & (chip_count - 1)) != 0)
-            return;
+            (chip_count & (chip_count - 1)) != 0) {
+            return SECURE_FALSE;
+        }
 
         fwht_safe(tensor, chip_count);
 
         Holo_Xoshiro128 rng = expand_seed(seed);
-        for (uint32_t i = 0; i < chip_count; i += 4) {
+        for (uint32_t i = 0u; i < chip_count; i += 4u) {
             const uint32_t blk_seed = rng.next();
-            inverse_rotate_4d_safe(&tensor[i], blk_seed);
+            inverse_rotate_4d_safe(&tensor[static_cast<size_t>(i)], blk_seed);
         }
 
         fwht_safe(tensor, chip_count);
 
-        //  ARM Cortex-M4: 즉치(Immediate) ASR = 1사이클 확정
         //  chip_count = 2의 거듭제곱 (가드 통과)
         //  shift = 2 + 2×log2(N): N=4→4, N=8→8, N=16→10,
         //                          N=32→12, N=64→14, N=128→16
-        uint32_t shift_amt;
-        int32_t scale;
+        uint32_t shift_amt = 0u;
+        int32_t scale = 0;
+        bool skip_decode_tail = false;
         switch (chip_count) {
-        case 4:   shift_amt = 4u;  scale = (1 << 4);  break;
-        case 8:   shift_amt = 8u;  scale = (1 << 8);  break;
-        case 16:  shift_amt = 10u; scale = (1 << 10); break;
-        case 32:  shift_amt = 12u; scale = (1 << 12); break;
-        case 64:  shift_amt = 14u; scale = (1 << 14); break;
-        case 128: shift_amt = 16u; scale = (1 << 16); break;
-        case 256: shift_amt = 18u; scale = (1 << 18); break;
+        case 4u:   shift_amt = 4u;  scale = static_cast<int32_t>(1u << 4u);  break;
+        case 8u:   shift_amt = 8u;  scale = static_cast<int32_t>(1u << 8u);  break;
+        case 16u:  shift_amt = 10u; scale = static_cast<int32_t>(1u << 10u); break;
+        case 32u:  shift_amt = 12u; scale = static_cast<int32_t>(1u << 12u); break;
+        case 64u:  shift_amt = 14u; scale = static_cast<int32_t>(1u << 14u); break;
+        case 128u: shift_amt = 16u; scale = static_cast<int32_t>(1u << 16u); break;
+        case 256u: shift_amt = 18u; scale = static_cast<int32_t>(1u << 18u); break;
         default: {
-            const uint32_t log2_n = log2_pow2(chip_count);
-            shift_amt = 2u * log2_n + 2u;
-            if (shift_amt >= 31u) { return; }  // UB 방지: 1u << shift_amt
-            scale = static_cast<int32_t>(1u << shift_amt);
+            const uint32_t chip_count_log2 = log2_pow2(chip_count);
+            shift_amt = 2u * chip_count_log2 + 2u;
+            if (shift_amt >= 31u) {
+                skip_decode_tail = true;
+            } else {
+                scale = static_cast<int32_t>(1u << shift_amt);
+            }
             break;
         }
         }
 
-        // 정규화 전 클램핑 복원 (악성 패킷 안전)
-        const int32_t decode_clamp = Max_Safe_Amplitude(chip_count) *
-            static_cast<int32_t>(static_cast<uint32_t>(scale));
-        for (uint32_t i = 0; i < chip_count; ++i) {
-            tensor[i] = holo_clamp_i32_ct(tensor[i], -decode_clamp, decode_clamp);
+        if (skip_decode_tail) {
+            SecureMemory::secureWipe(static_cast<void*>(tensor), static_cast<size_t>(chip_count) * sizeof(int32_t));
+            SecureMemory::secureWipe(static_cast<void*>(&rng), sizeof(rng));
+            return SECURE_FALSE;
         }
 
-        // 산술 시프트 (음수 0방향 반올림 보존, branchless)
-        const int32_t round_bias = scale - 1;
-        for (uint32_t i = 0; i < chip_count; ++i) {
-            const int32_t x = tensor[i];
-            tensor[i] = (x + ((x >> 31) & round_bias))
-                >> static_cast<int>(shift_amt);
+        {
+            // 정규화 전 클램핑 복원 (악성 패킷 안전)
+            const int32_t decode_clamp = Max_Safe_Amplitude(chip_count) *
+                static_cast<int32_t>(static_cast<uint32_t>(scale));
+            for (uint32_t i = 0u; i < chip_count; ++i) {
+                tensor[static_cast<size_t>(i)] = holo_clamp_i32_ct(
+                    tensor[static_cast<size_t>(i)],
+                    static_cast<int32_t>(0) - decode_clamp,
+                    decode_clamp);
+            }
+
+            // 정규화: 부호 비트는 uint32_t로 추출; 산술 시프트는 uint32_t 경로만 사용
+            const int32_t round_bias = scale - 1;
+            for (uint32_t i = 0u; i < chip_count; ++i) {
+                const int32_t x = tensor[static_cast<size_t>(i)];
+                const uint32_t is_neg = static_cast<uint32_t>(x) >> 31u;
+                const int32_t adj = static_cast<int32_t>(
+                    static_cast<uint32_t>(is_neg) * static_cast<uint32_t>(round_bias));
+                const int32_t val = x + adj;
+                int32_t normalized;
+                if (val >= 0) {
+                    normalized = static_cast<int32_t>(
+                        static_cast<uint32_t>(val) >> shift_amt);
+                } else {
+                    const uint32_t mag = 0u - static_cast<uint32_t>(val);
+                    normalized = -static_cast<int32_t>(mag >> shift_amt);
+                }
+                tensor[static_cast<size_t>(i)] = normalized;
+            }
         }
+        SecureMemory::secureWipe(static_cast<void*>(&rng), sizeof(rng));
+        return SECURE_TRUE;
     }
 
 } // namespace ProtectedEngine

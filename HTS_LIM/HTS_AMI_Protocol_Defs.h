@@ -112,14 +112,21 @@ namespace ProtectedEngine {
 
     /// @brief OBIS 딕셔너리 엔트리 (ROM 상주)
     /// @note  DLMS_DataType은 위에서 이미 정의됨 — 선언 순서 보장
+    /// @note  Win32(4B fn ptr) vs x64(8B fn ptr)에서 동일 24B — pack(1)+reserved 가변
+#pragma pack(push, 1)
     struct OBIS_DictEntry {
         OBIS_Code           obis;       ///< OBIS 코드 (6B)
         DLMS_DataType       data_type;  ///< DLMS 타입 태그
         uint8_t             value_size; ///< 값 바이트 크기 (2 또는 4)
         MeterValueCallback  callback;   ///< 계측값 콜백
         bool                is_u16;     ///< true=get_u16, false=get_u32
-        uint8_t             reserved[7];///< 4바이트 정렬 + 미래 확장
+#if UINTPTR_MAX == 0xFFFFFFFFu
+        uint8_t             reserved[11]; ///< 32-bit: 총 24B
+#else
+        uint8_t             reserved[7];  ///< 64-bit: 총 24B
+#endif
     };
+#pragma pack(pop)
     static_assert(sizeof(OBIS_DictEntry) == 24u, "OBIS_DictEntry must be 24 bytes");
 
     struct OBIS_Dictionary {

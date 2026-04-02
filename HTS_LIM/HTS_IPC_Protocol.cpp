@@ -16,8 +16,25 @@
 #include <cstring>    // memset (secure wipe uses volatile loop instead)
 #include <atomic>
 #include <new>        // placement new
+#include <cstddef>
 
 namespace ProtectedEngine {
+
+    namespace {
+        /// 스택 프레임/임시 버퍼 종료 시 IPC_Secure_Wipe (Send/Receive/핸들러 공통)
+        struct Scoped_IPC_Frame_Wipe final {
+            uint8_t* buf;
+            uint32_t len;
+            explicit Scoped_IPC_Frame_Wipe(uint8_t* b, uint32_t l) noexcept
+                : buf(b)
+                , len(l)
+            {
+            }
+            ~Scoped_IPC_Frame_Wipe() noexcept { IPC_Secure_Wipe(buf, len); }
+            Scoped_IPC_Frame_Wipe(const Scoped_IPC_Frame_Wipe&) = delete;
+            Scoped_IPC_Frame_Wipe& operator=(const Scoped_IPC_Frame_Wipe&) = delete;
+        };
+    } // namespace
 
     // ============================================================
     //  STM32F407 Register Definitions (constexpr, no magic numbers)
@@ -196,7 +213,7 @@ namespace ProtectedEngine {
         bool Transition_State(IPC_State target) noexcept
         {
             if (!IPC_Is_Legal_Transition(state, target)) {
-                stats.cfi_violations++;
+                stats.cfi_violations.fetch_add(1u, std::memory_order_relaxed);
                 state = IPC_State::ERROR_RECOVERY;
                 return false;
             }
@@ -589,15 +606,17 @@ namespace ProtectedEngine {
             const uint32_t tt = tx_tail.load(std::memory_order_relaxed);
             if (th != tt) {
                 // Copy next TX frame to SPI buffer (data written FIRST)
-                const IPC_Ring_Entry& entry = tx_ring[tt & IPC_RING_MASK];
+                const IPC_Ring_Entry& entry =
+                    tx_ring[static_cast<size_t>(tt & IPC_RING_MASK)];
                 for (uint32_t i = 0u; i < entry.length; ++i) {
-                    spi_tx_buf[i] = entry.data[i];
+                    const size_t ii = static_cast<size_t>(i);
+                    spi_tx_buf[ii] = entry.data[ii];
                 }
                 for (uint32_t i = entry.length; i < IPC_SPI_DMA_BUF_SIZE; ++i) {
-                    spi_tx_buf[i] = 0x00u;
+                    spi_tx_buf[static_cast<size_t>(i)] = 0x00u;
                 }
                 tx_tail.store(tt + 1u, std::memory_order_release);
-                stats.tx_frames++;
+                stats.tx_frames.fetch_add(1u, std::memory_order_relaxed);
 
                 // Point DMA to spi_tx_buf (valid data), THEN enable
                 HW_REG(dma_stream_tx_base + DMA_SxM0AR_OFF) = PTR_TO_U32(spi_tx_buf);
@@ -622,20 +641,22 @@ namespace ProtectedEngine {
         //  Ring Buffer Helpers
         // ============================================================
 
-        /// @brief Push received frame into RX ring (ISR context)
+        /// @brief Push received frame into RX ring (main loop: Tick → Process_RX_Frame)
         /// @return true on success, false if ring full
         bool Ring_RX_Push(const uint8_t* data, uint16_t len) noexcept
         {
             const uint32_t head = rx_head.load(std::memory_order_relaxed);
             const uint32_t tail = rx_tail.load(std::memory_order_acquire);
             if ((head - tail) >= IPC_RING_DEPTH) {
-                stats.queue_overflows++;
+                stats.queue_overflows.fetch_add(1u, std::memory_order_relaxed);
                 return false;
             }
-            IPC_Ring_Entry& entry = rx_ring[head & IPC_RING_MASK];
+            IPC_Ring_Entry& entry =
+                rx_ring[static_cast<size_t>(head & IPC_RING_MASK)];
             const uint32_t copy_len = (len <= IPC_MAX_FRAME_SIZE) ? len : IPC_MAX_FRAME_SIZE;
             for (uint32_t i = 0u; i < copy_len; ++i) {
-                entry.data[i] = data[i];
+                const size_t ii = static_cast<size_t>(i);
+                entry.data[ii] = data[ii];
             }
             entry.length = static_cast<uint16_t>(copy_len);
             rx_head.store(head + 1u, std::memory_order_release);
@@ -652,11 +673,13 @@ namespace ProtectedEngine {
                 out_len = 0u;
                 return false;
             }
-            const IPC_Ring_Entry& entry = rx_ring[tail & IPC_RING_MASK];
+            const IPC_Ring_Entry& entry =
+                rx_ring[static_cast<size_t>(tail & IPC_RING_MASK)];
             const uint16_t copy_len = (entry.length <= buf_size) ? entry.length : buf_size;
             if (data != nullptr) {
                 for (uint16_t i = 0u; i < copy_len; ++i) {
-                    data[i] = entry.data[i];
+                    const size_t ii = static_cast<size_t>(i);
+                    data[ii] = entry.data[ii];
                 }
             }
             out_len = copy_len;
@@ -674,13 +697,15 @@ namespace ProtectedEngine {
             const uint32_t head = tx_head.load(std::memory_order_relaxed);
             const uint32_t tail = tx_tail.load(std::memory_order_acquire);
             if ((head - tail) >= IPC_RING_DEPTH) {
-                stats.queue_overflows++;
+                stats.queue_overflows.fetch_add(1u, std::memory_order_relaxed);
                 return false;
             }
-            IPC_Ring_Entry& entry = tx_ring[head & IPC_RING_MASK];
+            IPC_Ring_Entry& entry =
+                tx_ring[static_cast<size_t>(head & IPC_RING_MASK)];
             const uint32_t copy_len = (len <= IPC_MAX_FRAME_SIZE) ? len : IPC_MAX_FRAME_SIZE;
             for (uint32_t i = 0u; i < copy_len; ++i) {
-                entry.data[i] = data[i];
+                const size_t ii = static_cast<size_t>(i);
+                entry.data[ii] = data[ii];
             }
             entry.length = static_cast<uint16_t>(copy_len);
             tx_head.store(head + 1u, std::memory_order_release);
@@ -706,32 +731,36 @@ namespace ProtectedEngine {
         // ============================================================
         void Process_RX_Frame() noexcept
         {
+            uint8_t         payload_scratch[IPC_MAX_PAYLOAD];
             uint8_t         seq = 0u;
             IPC_Command     cmd = IPC_Command::PING;
-            const uint8_t* payload = nullptr;
             uint16_t        payload_len = 0u;
 
-            // Parse and validate
+            // Parse and validate (payload copied into scratch, isolated from DMA wire buffer)
             const IPC_Error err = IPC_Parse_Frame(
-                spi_rx_buf, IPC_SPI_DMA_BUF_SIZE, seq, cmd, payload, payload_len);
+                spi_rx_buf, IPC_SPI_DMA_BUF_SIZE, seq, cmd,
+                payload_scratch, static_cast<uint16_t>(sizeof(payload_scratch)), payload_len);
 
             if (err != IPC_Error::OK) {
+                IPC_Secure_Wipe(payload_scratch, sizeof(payload_scratch));
                 // Check if it's just an idle/padding frame (all zeros)
-                if (spi_rx_buf[0] == 0u && spi_rx_buf[1] == 0u) {
+                if (spi_rx_buf[static_cast<size_t>(0u)] == 0u
+                    && spi_rx_buf[static_cast<size_t>(1u)] == 0u) {
                     // Idle frame from master, ignore silently
                     return;
                 }
                 if (err == IPC_Error::CRC_MISMATCH) {
-                    stats.crc_errors++;
+                    stats.crc_errors.fetch_add(1u, std::memory_order_relaxed);
                 }
                 // Send NACK if frame had valid sync but bad CRC/length
-                if (IPC_Deserialize_U16(&spi_rx_buf[0]) == IPC_SYNC_WORD) {
+                if (IPC_Deserialize_U16(&spi_rx_buf[static_cast<size_t>(0u)])
+                    == IPC_SYNC_WORD) {
                     Queue_NACK(static_cast<uint8_t>(err));
                 }
                 return;
             }
 
-            stats.rx_frames++;
+            stats.rx_frames.fetch_add(1u, std::memory_order_relaxed);
 
             // Command dispatch
             switch (cmd) {
@@ -764,15 +793,18 @@ namespace ProtectedEngine {
                 break;
 
             case IPC_Command::KILL_SWITCH:
+                IPC_Secure_Wipe(payload_scratch, sizeof(payload_scratch));
                 // Emergency: immediate handling, no ring buffer
                 Handle_Kill_Switch();
                 break;
 
             default:
-                stats.crc_errors++;  // Reuse counter for invalid commands
+                stats.crc_errors.fetch_add(1u, std::memory_order_relaxed);  // Reuse counter for invalid commands
                 Queue_NACK(static_cast<uint8_t>(IPC_Error::INVALID_CMD));
                 break;
             }
+
+            IPC_Secure_Wipe(payload_scratch, sizeof(payload_scratch));
         }
 
         // ============================================================
@@ -783,9 +815,12 @@ namespace ProtectedEngine {
         {
             // Respond with PONG (same seq)
             uint8_t frame_buf[IPC_HEADER_SIZE + IPC_CRC_SIZE];
-            const uint32_t flen = IPC_Serialize_Frame(
-                frame_buf, seq, IPC_Command::PONG, nullptr, 0u);
-            if (flen > 0u) {
+            const Scoped_IPC_Frame_Wipe wipe_frame(
+                frame_buf, static_cast<uint32_t>(sizeof(frame_buf)));
+            uint32_t flen = 0u;
+            if (IPC_Serialize_Frame(
+                    frame_buf, seq, IPC_Command::PONG, nullptr, 0u, flen) == IPC_Error::OK
+                && flen > 0u) {
                 Ring_TX_Push(frame_buf, static_cast<uint16_t>(flen));
             }
         }
@@ -799,9 +834,12 @@ namespace ProtectedEngine {
         void Queue_ACK(uint8_t seq) noexcept
         {
             uint8_t frame_buf[IPC_HEADER_SIZE + IPC_CRC_SIZE];
-            const uint32_t flen = IPC_Serialize_Frame(
-                frame_buf, seq, IPC_Command::ACK, nullptr, 0u);
-            if (flen > 0u) {
+            const Scoped_IPC_Frame_Wipe wipe_frame(
+                frame_buf, static_cast<uint32_t>(sizeof(frame_buf)));
+            uint32_t flen = 0u;
+            if (IPC_Serialize_Frame(
+                    frame_buf, seq, IPC_Command::ACK, nullptr, 0u, flen) == IPC_Error::OK
+                && flen > 0u) {
                 Ring_TX_Push(frame_buf, static_cast<uint16_t>(flen));
             }
         }
@@ -809,9 +847,13 @@ namespace ProtectedEngine {
         void Queue_NACK(uint8_t error_code) noexcept
         {
             uint8_t frame_buf[IPC_HEADER_SIZE + 1u + IPC_CRC_SIZE];
-            const uint32_t flen = IPC_Serialize_Frame(
-                frame_buf, tx_seq.fetch_add(1u, std::memory_order_relaxed), IPC_Command::NACK, &error_code, 1u);
-            if (flen > 0u) {
+            const Scoped_IPC_Frame_Wipe wipe_frame(
+                frame_buf, static_cast<uint32_t>(sizeof(frame_buf)));
+            uint32_t flen = 0u;
+            if (IPC_Serialize_Frame(
+                    frame_buf, tx_seq.fetch_add(1u, std::memory_order_relaxed),
+                    IPC_Command::NACK, &error_code, 1u, flen) == IPC_Error::OK
+                && flen > 0u) {
                 Ring_TX_Push(frame_buf, static_cast<uint16_t>(flen));
             }
         }
@@ -861,9 +903,13 @@ namespace ProtectedEngine {
             const uint32_t elapsed = now_ms - last_ping_sent_tick;
             if (elapsed >= config.ping_interval_ms) {
                 uint8_t frame_buf[IPC_HEADER_SIZE + IPC_CRC_SIZE];
-                const uint32_t flen = IPC_Serialize_Frame(
-                    frame_buf, tx_seq.fetch_add(1u, std::memory_order_relaxed), IPC_Command::PING, nullptr, 0u);
-                if (flen > 0u) {
+                const Scoped_IPC_Frame_Wipe wipe_frame(
+                    frame_buf, static_cast<uint32_t>(sizeof(frame_buf)));
+                uint32_t flen = 0u;
+                if (IPC_Serialize_Frame(
+                        frame_buf, tx_seq.fetch_add(1u, std::memory_order_relaxed),
+                        IPC_Command::PING, nullptr, 0u, flen) == IPC_Error::OK
+                    && flen > 0u) {
                     Ring_TX_Push(frame_buf, static_cast<uint16_t>(flen));
                 }
                 last_ping_sent_tick = now_ms;
@@ -924,15 +970,17 @@ namespace ProtectedEngine {
             HW_REG(spi + SPI_CR1_OFF) &= ~SPI_CR1_SPE;
 
             // 3) Write frame data into spi_tx_buf (SPI off, no prefetch possible)
-            const IPC_Ring_Entry& entry = tx_ring[tt & IPC_RING_MASK];
+            const IPC_Ring_Entry& entry =
+                tx_ring[static_cast<size_t>(tt & IPC_RING_MASK)];
             for (uint32_t i = 0u; i < entry.length; ++i) {
-                spi_tx_buf[i] = entry.data[i];
+                const size_t ii = static_cast<size_t>(i);
+                spi_tx_buf[ii] = entry.data[ii];
             }
             for (uint32_t i = entry.length; i < IPC_SPI_DMA_BUF_SIZE; ++i) {
-                spi_tx_buf[i] = 0x00u;
+                spi_tx_buf[static_cast<size_t>(i)] = 0x00u;
             }
             tx_tail.store(tt + 1u, std::memory_order_release);
-            stats.tx_frames++;
+            stats.tx_frames.fetch_add(1u, std::memory_order_relaxed);
 
             // 4) Re-arm TX DMA -> spi_tx_buf (valid data already in place)
             HW_REG(dma_stream_tx_base + DMA_SxM0AR_OFF) = PTR_TO_U32(spi_tx_buf);
@@ -1033,7 +1081,7 @@ namespace ProtectedEngine {
         impl->last_pong_recv_tick = 0u;
 
         // Zero statistics
-        impl->stats = IPC_Statistics{};
+        IPC_Statistics_Reset(impl->stats);
 
         // Compute cached HW addresses
         impl->dma_stream_rx_base = Impl::Compute_Stream_Base(config.dma_base_addr, config.dma_stream_rx);
@@ -1143,7 +1191,7 @@ namespace ProtectedEngine {
         // --- Handle SPI Error ---
         if (impl->spi_error_flag.load(std::memory_order_acquire)) {
             impl->spi_error_flag.store(false, std::memory_order_relaxed);
-            impl->stats.hw_faults++;
+            impl->stats.hw_faults.fetch_add(1u, std::memory_order_relaxed);
 
             // Clear SPI overrun: read SR then DR
             volatile uint32_t dummy = HW_REG(impl->config.spi_base_addr + SPI_SR_OFF);
@@ -1200,11 +1248,15 @@ namespace ProtectedEngine {
 
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
-        // Serialize frame into temp buffer (BSS, not stack -- avoids 264B stack pressure)
-        // NOTE: static buffer makes this function non-reentrant -- main loop only, no ISR
-        static uint8_t s_frame_buf[IPC_MAX_FRAME_SIZE];
-        const uint32_t flen = IPC_Serialize_Frame(
-            s_frame_buf, impl->tx_seq.fetch_add(1u, std::memory_order_relaxed), cmd, payload, payload_len);
+        uint8_t s_frame_buf[IPC_MAX_FRAME_SIZE];
+        const Scoped_IPC_Frame_Wipe wipe_frame(
+            s_frame_buf, static_cast<uint32_t>(sizeof(s_frame_buf)));
+        uint32_t flen = 0u;
+        const IPC_Error ser = IPC_Serialize_Frame(
+            s_frame_buf, impl->tx_seq.fetch_add(1u, std::memory_order_relaxed), cmd, payload, payload_len, flen);
+        if (ser != IPC_Error::OK) {
+            return ser;
+        }
         if (flen == 0u) {
             return IPC_Error::BUFFER_OVERFLOW;
         }
@@ -1229,34 +1281,24 @@ namespace ProtectedEngine {
 
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
-        // Pop from RX ring (BSS buffer -- non-reentrant, main loop only)
-        static uint8_t s_raw_buf[IPC_MAX_FRAME_SIZE];
+        uint8_t s_raw_buf[IPC_MAX_FRAME_SIZE];
+        const Scoped_IPC_Frame_Wipe wipe_raw(
+            s_raw_buf, static_cast<uint32_t>(sizeof(s_raw_buf)));
         uint16_t raw_len = 0u;
         if (!impl->Ring_RX_Pop(s_raw_buf, IPC_MAX_FRAME_SIZE, raw_len)) {
             out_payload_len = 0u;
             return IPC_Error::QUEUE_FULL;  // Ring empty
         }
 
-        // Parse the raw frame
-        uint8_t         seq = 0u;
-        const uint8_t* payload_ptr = nullptr;
-        uint16_t        payload_len = 0u;
+        // Parse the raw frame (payload copied into caller buffer by parser)
+        uint8_t seq = 0u;
         const IPC_Error err = IPC_Parse_Frame(
-            s_raw_buf, raw_len, seq, out_cmd, payload_ptr, payload_len);
+            s_raw_buf, raw_len, seq, out_cmd, out_payload, out_buf_size, out_payload_len);
 
         if (err != IPC_Error::OK) {
             out_payload_len = 0u;
             return err;
         }
-
-        // Copy payload to caller buffer
-        const uint16_t copy_len = (payload_len <= out_buf_size) ? payload_len : out_buf_size;
-        if ((out_payload != nullptr) && (payload_ptr != nullptr) && (copy_len > 0u)) {
-            for (uint16_t i = 0u; i < copy_len; ++i) {
-                out_payload[i] = payload_ptr[i];
-            }
-        }
-        out_payload_len = copy_len;
 
         return IPC_Error::OK;
     }
@@ -1273,11 +1315,11 @@ namespace ProtectedEngine {
     void HTS_IPC_Protocol::Get_Statistics(IPC_Statistics& out_stats) const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) {
-            out_stats = IPC_Statistics{};
+            IPC_Statistics_Reset(out_stats);
             return;
         }
         const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
-        out_stats = impl->stats;
+        IPC_Statistics_Copy(impl->stats, out_stats);
     }
 
     uint32_t HTS_IPC_Protocol::Is_Link_Alive() const noexcept

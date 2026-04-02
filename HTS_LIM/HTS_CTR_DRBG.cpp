@@ -179,26 +179,38 @@ namespace ProtectedEngine {
     // =====================================================================
     uint32_t HTS_CTR_DRBG::Update(const uint8_t* provided_data) noexcept {
 
-        const uint32_t pm = drbg_critical_enter();
         alignas(uint32_t) uint8_t temp[SEED_LEN] = {};  // 48B 스택
         size_t offset = 0u;
 
         // SEED_LEN / BLOCK_LEN = 48 / 16 = 3 블록
         static constexpr size_t NUM_BLOCKS = SEED_LEN / BLOCK_LEN;
 
+        // Generate()와 동일: PRIMASK 안에서는 스냅샷만 — Block_Encrypt(키확장)는 IRQ 허용 구간
         for (size_t i = 0u; i < NUM_BLOCKS; ++i) {
-            Increment_V(V);
             alignas(uint32_t) uint8_t block_out[BLOCK_LEN] = {};
-            if (Block_Encrypt(key, V, block_out) != SECURE_TRUE) {
-                // fail-closed: 부분 temp 상태를 폐기하고 즉시 실패 반환
+            alignas(uint32_t) uint8_t key_snapshot[KEY_LEN] = {};
+            alignas(uint32_t) uint8_t v_snapshot[BLOCK_LEN] = {};
+
+            {
+                const uint32_t pm = drbg_critical_enter();
+                Increment_V(V);
+                std::memcpy(key_snapshot, key, KEY_LEN);
+                std::memcpy(v_snapshot, V, BLOCK_LEN);
+                drbg_critical_exit(pm);
+            }
+
+            if (Block_Encrypt(key_snapshot, v_snapshot, block_out) != SECURE_TRUE) {
                 DRBG_Wipe(temp, sizeof(temp));
                 DRBG_Wipe(block_out, sizeof(block_out));
-                drbg_critical_exit(pm);
+                DRBG_Wipe(key_snapshot, sizeof(key_snapshot));
+                DRBG_Wipe(v_snapshot, sizeof(v_snapshot));
                 return SECURE_FALSE;
             }
             std::memcpy(temp + offset, block_out, BLOCK_LEN);
             offset += BLOCK_LEN;
             DRBG_Wipe(block_out, sizeof(block_out));
+            DRBG_Wipe(key_snapshot, sizeof(key_snapshot));
+            DRBG_Wipe(v_snapshot, sizeof(v_snapshot));
         }
 
         // XOR with provided_data
@@ -208,10 +220,10 @@ namespace ProtectedEngine {
             }
         }
 
-        // 새 Key, V 설정
+        // 새 Key, V 설정 (원자적 갱신)
+        const uint32_t pm = drbg_critical_enter();
         std::memcpy(key, temp, KEY_LEN);
         std::memcpy(V, temp + KEY_LEN, BLOCK_LEN);
-
         DRBG_Wipe(temp, sizeof(temp));
         drbg_critical_exit(pm);
         return SECURE_TRUE;
@@ -284,7 +296,7 @@ namespace ProtectedEngine {
         }
 
         const DRBG_Status st = Instantiate(
-            entropy, sizeof(entropy), nonce, sizeof(nonce), nullptr, 0);
+            entropy, sizeof(entropy), nonce, sizeof(nonce), nullptr, 0u);
 
         DRBG_Wipe(entropy, sizeof(entropy));
         DRBG_Wipe(nonce, sizeof(nonce));
@@ -347,7 +359,10 @@ namespace ProtectedEngine {
             if (prev_valid_snapshot) {
                 volatile uint8_t diff = 0u;
                 for (size_t j = 0u; j < BLOCK_LEN; ++j) {
-                    diff |= block_out[j] ^ prev_snapshot[j];
+                    diff = static_cast<uint8_t>(
+                        static_cast<uint8_t>(diff)
+                        | (static_cast<uint8_t>(block_out[j])
+                            ^ static_cast<uint8_t>(prev_snapshot[j])));
                 }
                 // DRBG 출력 반복 → 치명적 고장
                 // 즉시 리턴하지 않고 플래그 누적 후 고정 흐름으로 종료 지점에서 fail-closed.
@@ -415,7 +430,7 @@ namespace ProtectedEngine {
 
         alignas(uint32_t) uint8_t seed[SEED_LEN] = {};
         Build_Seed_Material(seed, entropy, entropy_len,
-            additional, add_len, nullptr, 0);
+            additional, add_len, nullptr, 0u);
 
         if (Update(seed) != SECURE_TRUE) {
             DRBG_Wipe(seed, sizeof(seed));
@@ -449,7 +464,7 @@ namespace ProtectedEngine {
             entropy[i + 3] = static_cast<uint8_t>(raw & 0xFFu);
         }
 
-        const DRBG_Status st = Reseed(entropy, sizeof(entropy), nullptr, 0);
+        const DRBG_Status st = Reseed(entropy, sizeof(entropy), nullptr, 0u);
         DRBG_Wipe(entropy, sizeof(entropy));
         return st;
     }

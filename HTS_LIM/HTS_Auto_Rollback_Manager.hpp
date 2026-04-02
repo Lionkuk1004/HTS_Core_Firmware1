@@ -24,7 +24,8 @@
 //  [보안 설계]
 //   1. integrity_fail 검사에 FI 방어 적용 (비트 OR 누적)
 //   2. void 반환 — bool 반환 시 FI Boolean Coercion 취약
-//   3. ARM: SecureLogger + 키 소거, PC: cerr 진단 출력
+//   3. ARM: SecureLogger 후 시퀀스 펜스 → cpsid i → DBGMCU_APB1_FZ(워치독 프리즈 해제)
+//      → AIRCR.SYSRESETREQ. 영구 SWD/JTAG 잠금은 옵션 바이트 RDP(부팅 경로) 책임.
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once

@@ -31,7 +31,7 @@ typedef struct _blk {
 } blk;
 
 #define LROT(x,c) (((x) << (c)) | ((x) >> (32 - (c))))
-#define ROTR(x,c) (((x) >> (c)) ^ ((x) << (32 - (c))))
+#define ROTR(x,c) (((x) >> (c)) | ((x) << (32 - (c))))
 #define SHR(x,c)  ((x) >> (c))
 #define LROT64(x, c) (((u64)(x) << (c)) | ((u64)(x) >> (64 - (c))))
 #define RROT64(x, c) LROT64((u64)(x), 64 - (c))

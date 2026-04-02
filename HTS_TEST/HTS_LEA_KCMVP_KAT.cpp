@@ -362,7 +362,7 @@ static bool KAT_Phase() {
 
             const uint32_t klen = static_cast<uint32_t>(kbytes);
 
-            if (lea_ok(bridge.Initialize(v.key, klen, v.iv))) {
+            if (lea_ok(bridge.Initialize(v.key, klen, v.iv, 16u))) {
 
                 enc_ok = lea_ok(bridge.Encrypt_Payload(work, 4));
 
@@ -424,7 +424,7 @@ static bool KAT_Phase() {
 
                 if (lea_ok(bridge.Initialize(
 
-                    v.key, static_cast<uint32_t>(kbytes), v.iv))) {
+                    v.key, static_cast<uint32_t>(kbytes), v.iv, 16u))) {
 
                     const bool d = lea_ok(bridge.Decrypt_Payload(dec, 4));
 

@@ -7,6 +7,7 @@
 
 // 내부 전용 includes (헤더에 미노출)
 #include "HTS_Dynamic_Config.h"
+#include "HTS_Secure_Memory.h"
 
 // ── Self-Contained 표준 헤더 (<atomic>, <cstdint> 등) ────────────────
 #include <atomic>
@@ -14,23 +15,62 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>   // memcpy
+#include <cstdlib>   // std::abort (비-ARM 시뮬)
 #include <new>
+
+namespace {
+/// 소멸자: 짧은 스핀 후 미획득 시 AIRCR 시스템 리셋(강제 파쇄·UAF 경로 없음). PC는 abort.
+constexpr uint32_t kDestructorSpinTries = 8u;
+
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || \
+    defined(__ARM_ARCH)
+// HTS_Hardware_Init::Terminal_Fault_Action 과 동일 순서 (기준서 AIRCR → DBGMCU → dsb/isb → 대기)
+[[noreturn]] static void HTS_Rx_MF_Destructor_Lock_Contention_Fault() noexcept {
+    static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
+    static constexpr uint32_t  AIRCR_RESET =
+        (0x05FAu << 16) | (1u << 2);
+    volatile uint32_t* const aircr =
+        reinterpret_cast<volatile uint32_t*>(ADDR_AIRCR);
+    *aircr = AIRCR_RESET;
+#if defined(__GNUC__) || defined(__clang__)
+    static constexpr uintptr_t ADDR_DBGMCU_FZ = 0xE0042008u;
+    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+    volatile uint32_t* const dbgmcu_fz =
+        reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
+    *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+    __asm__ __volatile__("dsb sy\n\tisb\n\t" ::: "memory");
+#endif
+    for (;;) {
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("wfi");
+#else
+        __asm__ __volatile__("nop");
+#endif
+    }
+}
+#endif
+} // namespace
 
 namespace ProtectedEngine {
 
-    // =====================================================================
-    //  보안 메모리 소거 (volatile void* + asm clobber + seq_cst)
-    // =====================================================================
-    static void Secure_Wipe_MF(volatile void* ptr, size_t size) noexcept {
-        if (ptr == nullptr || size == 0u) { return; }
-        volatile unsigned char* p =
-            static_cast<volatile unsigned char*>(ptr);
-        for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
-    }
+    namespace {
+
+        /// Set_Reference_Sequence / Apply_Filter 상호 배제 (N-1, A-3)
+        struct OpBusyGuard final {
+            std::atomic_flag* f_;
+            explicit OpBusyGuard(std::atomic_flag& fl) noexcept : f_(&fl) {
+                while (f_->test_and_set(std::memory_order_acquire)) {
+                }
+            }
+            ~OpBusyGuard() noexcept { f_->clear(std::memory_order_release); }
+            OpBusyGuard(const OpBusyGuard&) = delete;
+            OpBusyGuard& operator=(const OpBusyGuard&) = delete;
+        };
+
+        constexpr int64_t kClampMaxI32 = static_cast<int64_t>(INT32_MAX);
+        constexpr int64_t kClampMinI32 = static_cast<int64_t>(INT32_MIN);
+    } // namespace
 
     // =====================================================================
     //  Pimpl 구현 구조체
@@ -51,7 +91,8 @@ namespace ProtectedEngine {
         }
 
         ~Impl() noexcept {
-            Secure_Wipe_MF(reference_sequence,
+            SecureMemory::secureWipe(
+                static_cast<void*>(reference_sequence),
                 MAX_REF_SEQ * sizeof(int32_t));
             ref_len = 0u;
         }
@@ -78,7 +119,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  std::make_unique<Impl>(tier) + try-catch
     //  impl_buf_ SecWipe → ::new Impl(tier) → impl_valid_ = true
     //  Impl(tier) 생성자는 noexcept → 예외 없이 안전
     // =====================================================================
@@ -86,7 +126,7 @@ namespace ProtectedEngine {
         HTS_Sys_Tier tier) noexcept
         : impl_valid_(false)
     {
-        Secure_Wipe_MF(impl_buf_, sizeof(impl_buf_));
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl(tier);
         impl_valid_.store(true, std::memory_order_release);
     }
@@ -94,20 +134,33 @@ namespace ProtectedEngine {
     // =====================================================================
     // =====================================================================
     HTS_Rx_Matched_Filter::~HTS_Rx_Matched_Filter() noexcept {
+        uint32_t spins = 0;
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {
+            if (++spins >= kDestructorSpinTries) {
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || \
+    defined(__ARM_ARCH)
+                HTS_Rx_MF_Destructor_Lock_Contention_Fault();
+#else
+                std::abort();
+#endif
+            }
+        }
         Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
         const bool was_valid = impl_valid_.exchange(false, std::memory_order_acq_rel);
         if (was_valid) { p->~Impl(); }
-        Secure_Wipe_MF(impl_buf_, sizeof(impl_buf_));
+        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
+        op_busy_.clear(std::memory_order_release);
     }
 
     // =====================================================================
     //  Set_Reference_Sequence — Copy-and-Swap (alias-safe)
-    //  Wipe → assign → aliasing 시 원본 증발
-    //  임시 벡터에 먼저 복사 → 성공 시 기존 소거 → swap
     // =====================================================================
     bool HTS_Rx_Matched_Filter::Set_Reference_Sequence(
         const int32_t* seq_data, size_t size) noexcept
     {
+        // 락 선행: get_impl() 전에 획득 — 소멸자와의 TOCTOU/UAF 차단
+        OpBusyGuard guard(op_busy_);
+
         Impl* p = get_impl();
         if (p == nullptr || seq_data == nullptr || size == 0u) {
             return false;
@@ -115,31 +168,24 @@ namespace ProtectedEngine {
 
         if (size > Impl::MAX_REF_SEQ) { return false; }
 
-        // Alias-safe 복사: 입력이 내부 버퍼를 가리켜도 데이터 붕괴 방지
         int32_t shadow[Impl::MAX_REF_SEQ] = {};
         std::memcpy(shadow, seq_data, size * sizeof(int32_t));
 
-        // 데이터 보안 소거
-        Secure_Wipe_MF(p->reference_sequence,
+        SecureMemory::secureWipe(
+            static_cast<void*>(p->reference_sequence),
             Impl::MAX_REF_SEQ * sizeof(int32_t));
 
-        // 복사 (zero-heap)
         std::memcpy(p->reference_sequence, shadow,
             size * sizeof(int32_t));
-        Secure_Wipe_MF(shadow, sizeof(shadow));
+        SecureMemory::secureWipe(static_cast<void*>(shadow), sizeof(shadow));
         p->ref_len = size;
         return true;
     }
 
     // =====================================================================
-    //  Apply_Filter — Q16 교차 상관
+    //  Apply_Filter — Q16 교차 상관 (탭마다 곱 → 라운딩 → >>16 후 누적)
     //
-    //
-    //  오버플로 안전성 검증:
-    //    ref = PN코드 → |ref| ≤ 65536 (Q16 1.0)
-    //    rx = 최악 INT32_MAX = 2^31
-    //    |rx × ref| ≤ 2^47
-    //    4096회 누적: 2^47 × 2^12 = 2^59 << 2^63 (INT64_MAX) → 안전
+    //  오버플로: 탭당 (rx*ref + bias)>>16 을 int64에 누적, ref_len ≤ 64 → int64 안전
     // =====================================================================
     static_assert((-1 >> 1) == -1,
         "[HTS_FATAL] Compiler does not use arithmetic right shift (ASR) "
@@ -149,6 +195,9 @@ namespace ProtectedEngine {
         const int32_t* __restrict rx_q16_data, size_t rx_size,
         int32_t* __restrict out_correlation) noexcept
     {
+        // 락 선행: get_impl() 전에 획득 — 소멸자와의 TOCTOU/UAF 차단
+        OpBusyGuard guard(op_busy_);
+
         Impl* p = get_impl();
         if (p == nullptr || rx_q16_data == nullptr
             || out_correlation == nullptr || rx_size == 0u) {
@@ -160,29 +209,29 @@ namespace ProtectedEngine {
         const size_t seq_len = p->ref_len;
         if (rx_size < seq_len) { return false; }
 
-        const size_t num_outputs = rx_size - seq_len + 1u;
+        const size_t num_outputs = rx_size - seq_len + static_cast<size_t>(1u);
         const int32_t* __restrict ref = p->reference_sequence;
 
         static constexpr int64_t Q16_ROUND_BIAS = 0x8000LL;
 
         for (size_t i = 0u; i < num_outputs; ++i) {
-            int64_t acc = 0;
+            int64_t acc = 0LL;
 
-            // 순수 MAC 루프 → Cortex-M4 SMLAL 자동 생성
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC ivdep
 #endif
             for (size_t j = 0u; j < seq_len; ++j) {
-                acc += static_cast<int64_t>(rx_q16_data[i + j]) * ref[j];
+                const int64_t rxv = static_cast<int64_t>(
+                    rx_q16_data[static_cast<size_t>(i + j)]);
+                const int64_t rf = static_cast<int64_t>(
+                    ref[static_cast<size_t>(j)]);
+                const int64_t prod = rxv * rf;
+                acc += (prod + Q16_ROUND_BIAS) >> 16;
             }
 
-            // 루프 후 1회 >>16 + 반올림 바이어스 (항별 누산 → 정확도 최대)
-            acc = (acc + Q16_ROUND_BIAS) >> 16;
-
-            // int64 → int32 포화 클램핑
-            if (acc > INT32_MAX) { acc = INT32_MAX; }
-            else if (acc < INT32_MIN) { acc = INT32_MIN; }
-            out_correlation[i] = static_cast<int32_t>(acc);
+            if (acc > kClampMaxI32) { acc = kClampMaxI32; }
+            else if (acc < kClampMinI32) { acc = kClampMinI32; }
+            out_correlation[static_cast<size_t>(i)] = static_cast<int32_t>(acc);
         }
 
         return true;

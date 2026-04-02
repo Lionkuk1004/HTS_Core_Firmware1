@@ -172,9 +172,12 @@ namespace ProtectedEngine {
         /// @param frame_hash  카메라 SoC가 전달한 프레임 해시 (32B)
         /// @param hmac_tag    카메라 SoC가 생성한 HMAC 태그 (4B 절단)
         /// @return HMAC 검증 성공 시 true
+        /// @note  메인 Tick()에서 호출 — 버스(SPI/I2C) 블로킹·무한 대기 금지.
+        ///        캐시된 검증 결과만 반환하거나, DMA/IRQ 백그라운드 갱신값을 폴링할 것.
         bool (*verify_stream_hmac)(const uint8_t* frame_hash, const uint8_t* hmac_tag);
 
         /// @brief 스트림 시퀀스 번호 조회 (replay 감지)
+        /// @note  non-blocking O(1) — ISR/DMA가 갱신한 시퀀스 레지스터만 읽을 것.
         uint32_t(*get_stream_sequence)(void);
     };
 

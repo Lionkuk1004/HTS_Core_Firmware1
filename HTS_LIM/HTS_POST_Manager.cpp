@@ -5,6 +5,15 @@
 //
 // [Constraints] try-catch 0, float/double 0, heap 0 (KAT functions)
 //  POST → Crypto_KAT::Run_All_Crypto_KAT (KCMVP/FIPS 프리셋)
+//
+//  B-CDMA 검수 요약 (본 TU)
+//   ① LTO/TBAA: TBAA 위반형 reinterpret 없음. 키 버퍼 소거는 SecureMemory::secureWipe
+//      (Force_Secure_Wipe: noinline + volatile 소거 + fence, HTS_Secure_Memory.cpp D-2).
+//   ② ISR: PRIMASK/cpsid 없음. POST는 부팅 직후·메인 컨텍스트 가정; 장시간 KAT는
+//      통합 측에서 IRQ 우선순위·WDT·UART 오버런과 함께 설계 [요검토: 스케줄].
+//   ③ Flash/BOR: 본 파일은 Flash 프로그램 없음. 실패 시 Auto_Rollback_Manager::
+//      Execute_Self_Healing → AIRCR 리셋(플래시 섹터 쓰기 없음). BOR·RDP는 HW_Init.
+//   ④ 퓨즈/RDP: RDP Level·JTAG 차단 검증은 HTS_Hardware_Init 등 부팅 계층 책임 [요검토].
 // =========================================================================
 #include "HTS_POST_Manager.h"
 #include "HTS_Crypto_KAT.h"     // 암호 KAT POST 체인
@@ -23,6 +32,11 @@ namespace ProtectedEngine {
         constexpr uint32_t HEAL_POST_BLOCK = 0x0000A1E0u;
         constexpr uint32_t HEAL_CRYPTO_KAT = 0x0000A114u;
         constexpr size_t   KAT_PACKET_SIZE = 40u;
+        constexpr size_t KAT_TEST_DATA_BYTES = KAT_PACKET_SIZE * sizeof(uint32_t);
+        // B-CDMA 통합 기준서 ⑥: 스택 로컬 배열 512B 초과 금지 (KAT 버퍼 사전 검증)
+        static_assert(
+            KAT_TEST_DATA_BYTES <= 512u,
+            "POST KAT buffer must stay <= 512B per B-CDMA ⑥");
     }
 
     static std::atomic<bool> g_isOperational{ false };
@@ -32,30 +46,30 @@ namespace ProtectedEngine {
     // =====================================================================
     bool POST_Manager::KAT_Parity_Recovery_Engine() noexcept {
         uint32_t test_data[KAT_PACKET_SIZE];
-        for (size_t i = 0; i < KAT_PACKET_SIZE; ++i) {
-            test_data[i] = 100 + static_cast<uint32_t>(i);
+        for (size_t i = 0u; i < KAT_PACKET_SIZE; ++i) {
+            test_data[i] = 100u + static_cast<uint32_t>(i);
         }
 
-        uint64_t dummy_session = 0x1122334455667788ULL;
-        uint32_t anchor_interval = 20;
+        constexpr uint64_t DUMMY_SESSION = 0x1122334455667788ULL;
+        constexpr uint32_t ANCHOR_INTERVAL = 20u;
 
         Sparse_Recovery_Engine::Generate_Interference_Pattern(
-            test_data, KAT_PACKET_SIZE, dummy_session, anchor_interval, true);
+            test_data, KAT_PACKET_SIZE, DUMMY_SESSION, ANCHOR_INTERVAL, true);
 
         // 1 element corrupted
-        test_data[5] = 0xFFFFFFFFu;
+        test_data[static_cast<size_t>(5)] = 0xFFFFFFFFu;
 
         RecoveryStats stats;
         bool result = Sparse_Recovery_Engine::Execute_L1_Reconstruction(
-            test_data, KAT_PACKET_SIZE, dummy_session,
-            anchor_interval, true, false, stats);
+            test_data, KAT_PACKET_SIZE, DUMMY_SESSION,
+            ANCHOR_INTERVAL, true, false, stats);
 
-        if (result && stats.recovered_by_parity == 1 &&
-            stats.recovered_by_gravity == 0 && stats.destroyed_count == 1) {
-            SecureMemory::secureWipe(test_data, sizeof(test_data));
+        if (result && stats.recovered_by_parity == size_t{1} &&
+            stats.recovered_by_gravity == size_t{0} && stats.destroyed_count == size_t{1}) {
+            SecureMemory::secureWipe(test_data, KAT_TEST_DATA_BYTES);
             return true;
         }
-        SecureMemory::secureWipe(test_data, sizeof(test_data));
+        SecureMemory::secureWipe(test_data, KAT_TEST_DATA_BYTES);
         return false;
     }
 
@@ -64,32 +78,32 @@ namespace ProtectedEngine {
     // =====================================================================
     bool POST_Manager::KAT_Gravity_Interpolation_Engine() noexcept {
         uint32_t test_data[KAT_PACKET_SIZE];
-        for (size_t i = 0; i < KAT_PACKET_SIZE; ++i) {
-            test_data[i] = 200 + static_cast<uint32_t>(i);
+        for (size_t i = 0u; i < KAT_PACKET_SIZE; ++i) {
+            test_data[i] = 200u + static_cast<uint32_t>(i);
         }
 
-        uint64_t dummy_session = 0xAABBCCDDEEFF1122ULL;
-        uint32_t anchor_interval = 20;
+        constexpr uint64_t DUMMY_SESSION = 0xAABBCCDDEEFF1122ULL;
+        constexpr uint32_t ANCHOR_INTERVAL = 20u;
 
         Sparse_Recovery_Engine::Generate_Interference_Pattern(
-            test_data, KAT_PACKET_SIZE, dummy_session, anchor_interval, true);
+            test_data, KAT_PACKET_SIZE, DUMMY_SESSION, ANCHOR_INTERVAL, true);
 
         // 3 consecutive corrupted
-        test_data[25] = 0xFFFFFFFFu;
-        test_data[26] = 0xFFFFFFFFu;
-        test_data[27] = 0xFFFFFFFFu;
+        test_data[static_cast<size_t>(25)] = 0xFFFFFFFFu;
+        test_data[static_cast<size_t>(26)] = 0xFFFFFFFFu;
+        test_data[static_cast<size_t>(27)] = 0xFFFFFFFFu;
 
         RecoveryStats stats;
         bool result = Sparse_Recovery_Engine::Execute_L1_Reconstruction(
-            test_data, KAT_PACKET_SIZE, dummy_session,
-            anchor_interval, true, false, stats);
+            test_data, KAT_PACKET_SIZE, DUMMY_SESSION,
+            ANCHOR_INTERVAL, true, false, stats);
 
-        if (result && stats.recovered_by_gravity == 3 &&
-            stats.recovered_by_parity == 0) {
-            SecureMemory::secureWipe(test_data, sizeof(test_data));
+        if (result && stats.recovered_by_gravity == size_t{3} &&
+            stats.recovered_by_parity == size_t{0}) {
+            SecureMemory::secureWipe(test_data, KAT_TEST_DATA_BYTES);
             return true;
         }
-        SecureMemory::secureWipe(test_data, sizeof(test_data));
+        SecureMemory::secureWipe(test_data, KAT_TEST_DATA_BYTES);
         return false;
     }
 

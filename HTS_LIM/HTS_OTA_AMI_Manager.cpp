@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <new>
 
 // Cortex-M 임베디드: atomic_flag 스핀 중 ISR 재진입 시 데드락 → PRIMASK (Key_Rotator 동일 판별)
@@ -158,19 +159,71 @@ namespace ProtectedEngine {
         ~Impl() noexcept = default;
     };
 
-    HTS_OTA_AMI_Manager::Impl*
-        HTS_OTA_AMI_Manager::get_impl() noexcept
+    HTS_OTA_AMI_Manager::ImplPtr HTS_OTA_AMI_Manager::get_impl() noexcept
     {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Impl 초과");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN, "정렬 초과");
         return impl_valid_.load(std::memory_order_acquire)
             ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
     }
-    const HTS_OTA_AMI_Manager::Impl*
-        HTS_OTA_AMI_Manager::get_impl() const noexcept
+    HTS_OTA_AMI_Manager::ImplCPtr HTS_OTA_AMI_Manager::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
             ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+    }
+
+    // 점진 검증 종료: CRC 불일치 등으로 return 전 HMAC 컨텍스트 소비(플러시)
+    void HTS_OTA_AMI_Manager::ota_flush_hmac_if_active(
+        HTS_OTA_AMI_Manager::ImplPtr p) noexcept {
+        if (p == nullptr) { return; }
+        if (!p->verify_hmac_started || p->crypto.hmac_final == nullptr) {
+            return;
+        }
+        uint8_t junk[OTA_HMAC_SIZE] = {};
+        p->crypto.hmac_final(junk);
+        SecureMemory::secureWipe(junk, sizeof(junk));
+        p->verify_hmac_started = false;
+    }
+
+    // VERIFYING: verify_remaining==0 일 때 CRC+HMAC 최종 판정
+    void HTS_OTA_AMI_Manager::ota_verify_finalize(
+        HTS_OTA_AMI_Manager::ImplPtr p) noexcept {
+        if (p == nullptr) { return; }
+        const uint32_t final_crc = p->verify_crc ^ 0xFFFFFFFFu;
+
+        if (final_crc != p->expected_crc32) {
+            p->reject = AMI_OtaReject::CRC_FAIL;
+            p->state = AMI_OtaState::FAILED;
+            ota_flush_hmac_if_active(p);
+            return;
+        }
+
+        if (p->verify_hmac_started &&
+            p->crypto.hmac_final != nullptr)
+        {
+            uint8_t computed[OTA_HMAC_SIZE] = {};
+            p->crypto.hmac_final(computed);
+
+            const bool hmac_ok = ConstantTimeUtil::compare(
+                computed, p->expected_hmac, OTA_HMAC_SIZE);
+            SecureMemory::secureWipe(computed, sizeof(computed));
+
+            if (!hmac_ok) {
+                p->reject = AMI_OtaReject::HMAC_FAIL;
+                p->state = AMI_OtaState::FAILED;
+                p->verify_hmac_started = false;
+                return;
+            }
+            p->verify_hmac_started = false;
+        }
+        else if (p->verify_hmac_started) {
+            p->reject = AMI_OtaReject::HMAC_FAIL;
+            p->state = AMI_OtaState::FAILED;
+            p->verify_hmac_started = false;
+            return;
+        }
+
+        p->state = AMI_OtaState::READY;
     }
 
     HTS_OTA_AMI_Manager::HTS_OTA_AMI_Manager(
@@ -178,26 +231,28 @@ namespace ProtectedEngine {
         : impl_valid_(false)
     {
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
-        ::new (static_cast<void*>(impl_buf_)) Impl(my_id, current_version);
+        ::new (static_cast<void*>(impl_buf_)) Impl(
+            my_id, current_version);
         impl_valid_.store(true, std::memory_order_release);
     }
 
     HTS_OTA_AMI_Manager::~HTS_OTA_AMI_Manager() noexcept {
-        //          타임아웃으로 조기 return 하면 다른 컨텍스트가 Impl 사용 중인데
-        //          버퍼를 지울 수 있음(H-2/H-3). 단일 스핀으로 배타 획득 후 파쇄.
-        //          멀티스레드 시 소멸 전 Shutdown() 또는 외부 동기화 필수.
-        //          인터럽트 차단 후 획득·파쇄·해제까지 동일 임계구역 유지.
+        static constexpr uint32_t OP_BUSY_SPIN_MAX = 1000000u;
+        uint32_t spin = OP_BUSY_SPIN_MAX;
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {
+            if (--spin == 0u) {
+                return;
+            }
+        }
+        impl_valid_.store(false, std::memory_order_release);
 #if HTS_OTA_AMI_PRIMASK_DESTRUCTOR && (defined(__GNUC__) || defined(__clang__))
         uint32_t primask_saved;
         __asm__ __volatile__("mrs %0, primask\n\t"
             "cpsid i"
             : "=r"(primask_saved) :: "memory");
 #endif
-        while (op_busy_.test_and_set(std::memory_order_acquire)) {
-            // Busy-wait — RTOS에서는 이 루프에 yield 훅 삽입 권장
-        }
-        Impl* p = reinterpret_cast<Impl*>(impl_buf_);
-        impl_valid_.store(false, std::memory_order_release);
+        Impl* p =
+            reinterpret_cast<Impl*>(impl_buf_);
         if (p != nullptr) { p->~Impl(); }
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
         op_busy_.clear(std::memory_order_release);
@@ -335,9 +390,7 @@ namespace ProtectedEngine {
             static alignas(8) uint8_t mac_input[2u + CHUNK_SIZE];
             mac_input[0] = static_cast<uint8_t>(chunk_idx >> 8u);
             mac_input[1] = static_cast<uint8_t>(chunk_idx & 0xFFu);
-            for (size_t i = 0u; i < data_len; ++i) {
-                mac_input[2u + i] = data[i];
-            }
+            std::memcpy(&mac_input[2u], data, data_len);
 
             uint8_t full_mac[OTA_HMAC_SIZE] = {};
             if (!p->crypto.hmac_lsh256(
@@ -640,80 +693,44 @@ namespace ProtectedEngine {
             return;
         }
 
-        // VERIFYING: 점진적 CRC + HMAC
+        // VERIFYING: 점진적 CRC + HMAC — 마지막 청크 처리 직후 동일 Tick에서 최종 판정
         if (p->state == AMI_OtaState::VERIFYING) {
-            if (p->verify_remaining == 0u) {
-                // ── 검증 완료: CRC + HMAC 최종 비교 ──
-                const uint32_t final_crc = p->verify_crc ^ 0xFFFFFFFFu;
-
-                // CRC 검증
-                if (final_crc != p->expected_crc32) {
-                    p->reject = AMI_OtaReject::CRC_FAIL;
-                    p->state = AMI_OtaState::FAILED;
-                    return;
-                }
-
-                // HMAC 검증 (Constant-Time)
-                if (p->verify_hmac_started &&
-                    p->crypto.hmac_final != nullptr)
+            if (p->verify_remaining > 0u) {
+                static constexpr uint32_t CHUNKS_PER_TICK = 16u;
+                static alignas(8) uint8_t verify_buf[CHUNK_SIZE];
+                for (uint32_t c = 0u;
+                    c < CHUNKS_PER_TICK && p->verify_remaining > 0u; ++c)
                 {
-                    uint8_t computed[OTA_HMAC_SIZE] = {};
-                    p->crypto.hmac_final(computed);
+                    const uint32_t chunk =
+                        (p->verify_remaining < CHUNK_SIZE)
+                        ? p->verify_remaining : CHUNK_SIZE;
 
-                    const bool hmac_ok = ConstantTimeUtil::compare(
-                        computed, p->expected_hmac, OTA_HMAC_SIZE);
-                    SecureMemory::secureWipe(computed, sizeof(computed));
-
-                    if (!hmac_ok) {
-                        p->reject = AMI_OtaReject::HMAC_FAIL;
+                    if (!flash_read(p->verify_offset, verify_buf,
+                        static_cast<size_t>(chunk)))
+                    {
+                        p->reject = AMI_OtaReject::FLASH_FAIL;
                         p->state = AMI_OtaState::FAILED;
+                        SecureMemory::secureWipe(verify_buf, sizeof(verify_buf));
+                        ota_flush_hmac_if_active(p);
                         return;
                     }
-                }
-                else if (p->verify_hmac_started) {
-                    p->reject = AMI_OtaReject::HMAC_FAIL;
-                    p->state = AMI_OtaState::FAILED;
-                    return;
-                }
 
-                p->state = AMI_OtaState::READY;
-                return;
-            }
+                    p->verify_crc = sw_crc32_block(
+                        verify_buf, static_cast<size_t>(chunk), p->verify_crc);
 
-            // Tick당 16청크 (4KB) 처리
-            static constexpr uint32_t CHUNKS_PER_TICK = 16u;
-            // B-3: 검증 스크래치 — op_busy_ 보유 중 정적 단일 버퍼(재진입 불가 전제)
-            static alignas(8) uint8_t verify_buf[CHUNK_SIZE];
-            for (uint32_t c = 0u;
-                c < CHUNKS_PER_TICK && p->verify_remaining > 0u; ++c)
-            {
-                const uint32_t chunk =
-                    (p->verify_remaining < CHUNK_SIZE)
-                    ? p->verify_remaining : CHUNK_SIZE;
+                    if (p->verify_hmac_started &&
+                        p->crypto.hmac_update != nullptr)
+                    {
+                        p->crypto.hmac_update(verify_buf, static_cast<size_t>(chunk));
+                    }
 
-                if (!flash_read(p->verify_offset, verify_buf,
-                    static_cast<size_t>(chunk)))
-                {
-                    p->reject = AMI_OtaReject::FLASH_FAIL;
-                    p->state = AMI_OtaState::FAILED;
+                    p->verify_offset += chunk;
+                    p->verify_remaining -= chunk;
                     SecureMemory::secureWipe(verify_buf, sizeof(verify_buf));
-                    return;
                 }
-
-                // CRC 누적
-                p->verify_crc = sw_crc32_block(
-                    verify_buf, static_cast<size_t>(chunk), p->verify_crc);
-
-                // HMAC 누적
-                if (p->verify_hmac_started &&
-                    p->crypto.hmac_update != nullptr)
-                {
-                    p->crypto.hmac_update(verify_buf, static_cast<size_t>(chunk));
-                }
-
-                p->verify_offset += chunk;
-                p->verify_remaining -= chunk;
-                SecureMemory::secureWipe(verify_buf, sizeof(verify_buf));
+            }
+            if (p->verify_remaining == 0u) {
+                ota_verify_finalize(p);
             }
         }
     }

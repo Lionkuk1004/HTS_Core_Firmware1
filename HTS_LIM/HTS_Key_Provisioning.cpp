@@ -4,6 +4,7 @@
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
 #include "HTS_Key_Provisioning.h"
+#include "HTS_AES_Bridge.h"
 #include "HTS_ConstantTimeUtil.h"
 
 #include <atomic>
@@ -26,9 +27,41 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
+    }
+
+    // ── 양산: PWR에서 PVD가 설정된 경우에만 HTS_KEYPROV_ENFORCE_PVD=1 권장 (RM0090 PVDO)
+#ifndef HTS_KEYPROV_ENFORCE_PVD
+#define HTS_KEYPROV_ENFORCE_PVD 0
+#endif
+
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
+    static bool keyprov_voltage_ok_for_flash() noexcept
+    {
+#if HTS_KEYPROV_ENFORCE_PVD
+        constexpr uintptr_t PWR_CSR_ADDR = 0x40007004u;
+        constexpr uint32_t  PWR_CSR_PVDO = (1u << 2u);
+        const uint32_t csr = *reinterpret_cast<volatile uint32_t*>(PWR_CSR_ADDR);
+        return (csr & PWR_CSR_PVDO) == 0u;
+#else
+        return true;
+#endif
+    }
+#else
+    static bool keyprov_voltage_ok_for_flash() noexcept { return true; }
+#endif
+
+    // RFC 3394: 64-bit semiblock t 를 A(8B)와 XOR (빅엔디안)
+    static void keyprov_kw_xor_t(uint64_t t, const uint8_t a[8], uint8_t out_xor[8]) noexcept
+    {
+        for (int k = 0; k < 8; ++k) {
+            out_xor[k] = static_cast<uint8_t>(t >> (56 - 8 * k));
+        }
+        for (int k = 0; k < 8; ++k) {
+            out_xor[k] ^= a[k];
+        }
     }
 
     // =====================================================================
@@ -84,6 +117,10 @@ namespace ProtectedEngine {
 
     // OTP 바이트 프로그래밍 (타임아웃 가드 포함)
     static bool otp_write_byte(uint32_t addr, uint8_t val) noexcept {
+        // Brown-out 시 섹터 오염 방지: PVD(선택) 또는 양산 시 HTS_KEYPROV_ENFORCE_PVD=1
+        if (!keyprov_voltage_ok_for_flash()) {
+            return false;
+        }
         // BSY 대기 (타임아웃 100,000 사이클 ≈ 0.6ms @ 168MHz)
         uint32_t guard = 100000u;
         while ((*flash_reg(FLASH_SR_OFFSET) & FLASH_SR_BSY) != 0u) {
@@ -102,7 +139,10 @@ namespace ProtectedEngine {
             }
         }
         *flash_reg(FLASH_CR_OFFSET) &= ~FLASH_CR_PG;
-        return true;
+        // ⑯ Read-back: 프로그램 바이트 검증 (Brown-out/불완전 쓰기 조기 탐지)
+        const uint8_t rb =
+            *reinterpret_cast<const volatile uint8_t*>(addr);
+        return (rb == val);
     }
 
     static bool otp_write_block(
@@ -110,7 +150,9 @@ namespace ProtectedEngine {
     {
         if (!flash_unlock()) { return false; }
         for (size_t i = 0u; i < len; ++i) {
-            if (!otp_write_byte(base_addr + static_cast<uint32_t>(i), data[i])) {
+            const uint32_t phys_addr = static_cast<uint32_t>(
+                static_cast<size_t>(base_addr) + i);
+            if (!otp_write_byte(phys_addr, data[i])) {
                 flash_lock();
                 return false;
             }
@@ -153,6 +195,9 @@ namespace ProtectedEngine {
     static constexpr uint32_t RDP_MASK = 0x0000FF00u;
 
     static bool set_rdp_level2() noexcept {
+        if (!keyprov_voltage_ok_for_flash()) {
+            return false;
+        }
         // Option byte 잠금 해제
         *flash_reg(FLASH_OPTKEYR_OFFSET) = OPT_KEY1;
         *flash_reg(FLASH_OPTKEYR_OFFSET) = OPT_KEY2;
@@ -172,6 +217,11 @@ namespace ProtectedEngine {
         }
         // Option byte 잠금
         *flash_reg(FLASH_OPTCR_OFFSET) |= OPTCR_OPTLOCK;
+        const uint32_t chk = *flash_reg(FLASH_OPTCR_OFFSET);
+        const uint32_t rdp_byte = (chk & RDP_MASK) >> 8u;
+        if (rdp_byte != static_cast<uint32_t>(RDP_LEVEL_2 & 0xFFu)) {
+            return false;
+        }
         return true;
     }
 
@@ -225,25 +275,20 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  AES-KW 경량 언래핑 (RFC 3394, 128비트 키 전용)
+    //  AES-KW 언래핑 (RFC 3394, AES-256 키 / KEK)
     //
-    //  입력: 래핑된 키 24바이트 (IV 8B + 암호문 16B)
-    //  출력: 평문 키 16바이트
-    //  KEK:  공장 라인 공통 키 16바이트
-    //
-    //  AES-KW는 AES_Bridge 없이도 구현 가능하나,
-    //  ARIA/AES 브릿지를 재사용하기 위해 ECB 디크립트를 직접 호출.
-    //  → 현재 버전: 단순 XOR 래핑 (POC)
-    //  → 양산 시: AES_Bridge::Decrypt_ECB 연동으로 교체
+    //  입력: 래핑 40바이트 = (n+1)×8, n=4 세미블록(평문 32B)
+    //  KEK:  32바이트 — AES_Bridge ECB 복호
     // =====================================================================
     static bool aes_kw_unwrap(
         const uint8_t* wrapped, size_t wrapped_len,
         const uint8_t* kek, size_t kek_len,
         uint8_t* plain_out, size_t plain_cap) noexcept
     {
-        static constexpr size_t KEY_SIZE = 32u;   // 256비트 마스터 키
-        static constexpr size_t KEK_SIZE = 32u;   // 256비트 KEK
-        static constexpr size_t WRAP_SIZE = 40u;  // KEY + 8B IV
+        static constexpr size_t KEY_SIZE = 32u;
+        static constexpr size_t KEK_SIZE = 32u;
+        static constexpr size_t WRAP_SIZE = 40u;
+        static constexpr uint32_t N = 4u;
         static constexpr uint8_t AES_KW_IV[8] = {
             0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6
         };
@@ -255,23 +300,63 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // POC: XOR 기반 간이 언래핑 (양산 시 AES-ECB로 교체)
-        // IV 검증
-        uint32_t iv_diff = 0u;
-        for (size_t i = 0u; i < 8u; ++i) {
-            const uint8_t dec_iv = wrapped[i] ^ kek[i % KEK_SIZE];
-            iv_diff |= static_cast<uint32_t>(dec_iv ^ AES_KW_IV[i]);
-        }
-
-        // 평문 추출 (32바이트 전체를 KEK로 XOR)
-        for (size_t i = 0u; i < KEY_SIZE; ++i) {
-            plain_out[i] = wrapped[8u + i] ^ kek[i % KEK_SIZE];
-        }
-
-        // IV 불일치 시 평문 소거 후 실패
-        if (iv_diff != 0u) {
+        AES_Bridge aes;
+        if (!aes.Initialize_Decryption(kek, 256)) {
             Key_Prov_Secure_Wipe(plain_out, KEY_SIZE);
             return false;
+        }
+
+        uint8_t a[8];
+        uint8_t r[4][8];
+        for (int i = 0; i < 8; ++i) {
+            a[i] = wrapped[i];
+        }
+        for (uint32_t b = 0u; b < N; ++b) {
+            for (int i = 0; i < 8; ++i) {
+                r[b][i] = wrapped[8 + static_cast<int>(b) * 8 + i];
+            }
+        }
+
+        uint8_t block_in[16];
+        uint8_t block_out[16];
+        for (int j = 5; j >= 0; --j) {
+            for (int ii = static_cast<int>(N); ii >= 1; --ii) {
+                const uint64_t t =
+                    static_cast<uint64_t>(N) * static_cast<uint64_t>(j)
+                    + static_cast<uint64_t>(ii);
+                uint8_t axor[8];
+                keyprov_kw_xor_t(t, a, axor);
+                for (int k = 0; k < 8; ++k) {
+                    block_in[k] = axor[k];
+                }
+                for (int k = 0; k < 8; ++k) {
+                    block_in[8 + k] = r[static_cast<uint32_t>(ii - 1)][k];
+                }
+                if (!aes.Process_Block(block_in, block_out)) {
+                    aes.Reset();
+                    Key_Prov_Secure_Wipe(plain_out, KEY_SIZE);
+                    return false;
+                }
+                for (int k = 0; k < 8; ++k) {
+                    a[k] = block_out[k];
+                }
+                for (int k = 0; k < 8; ++k) {
+                    r[static_cast<uint32_t>(ii - 1)][k] = block_out[8 + k];
+                }
+            }
+        }
+
+        aes.Reset();
+
+        if (!ConstantTimeUtil::compare(a, AES_KW_IV, 8u)) {
+            Key_Prov_Secure_Wipe(plain_out, KEY_SIZE);
+            return false;
+        }
+        for (uint32_t b = 0u; b < N; ++b) {
+            for (int i = 0; i < 8; ++i) {
+                plain_out[static_cast<size_t>(b) * 8u + static_cast<size_t>(i)] =
+                    r[b][i];
+            }
         }
         return true;
     }
@@ -363,6 +448,10 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return KeyProvResult::NULL_INPUT; }
 
+        if (!keyprov_voltage_ok_for_flash()) {
+            return KeyProvResult::POWER_UNSTABLE;
+        }
+
         // 이미 프로비저닝 완료
         if (p->provisioned || otp_check_magic()) {
             p->provisioned = true;
@@ -425,6 +514,37 @@ namespace ProtectedEngine {
         return KeyProvResult::OK;
     }
 
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
+    /// RDP 적용 직후 AIRCR 시스템 리셋 + (GCC/Clang만) DBGMCU WDT 프리즈 해제.
+    /// 컴파일러 무관: fence·AIRCR·무한 대기 / DBGMCU·dsb·isb·wfi 는 전처리로 분리.
+    [[noreturn]] static void keyprov_arm_aircr_reset_and_hang() noexcept
+    {
+        static constexpr uint32_t AIRCR_ADDR = 0xE000ED0Cu;
+        static constexpr uint32_t AIRCR_VECTKEY = 0x05FA0000u;
+        static constexpr uint32_t AIRCR_SYSRESET = 0x00000004u;
+        std::atomic_thread_fence(std::memory_order_release);
+        volatile uint32_t* const aircr =
+            reinterpret_cast<volatile uint32_t*>(
+                static_cast<uintptr_t>(AIRCR_ADDR));
+        *aircr = AIRCR_VECTKEY | AIRCR_SYSRESET;
+#if defined(__GNUC__) || defined(__clang__)
+        static constexpr uint32_t ADDR_DBGMCU_FZ = 0xE0042008u;
+        static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+        static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+        volatile uint32_t* const dbgmcu_fz =
+            reinterpret_cast<volatile uint32_t*>(
+                static_cast<uintptr_t>(ADDR_DBGMCU_FZ));
+        *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+        __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
+        for (;;) {
+#if defined(__GNUC__) || defined(__clang__)
+            __asm__ __volatile__("wfi");
+#endif
+        }
+    }
+#endif
+
     // =====================================================================
     //  Read_Master_Key — OTP에서 마스터 키 읽기
     // =====================================================================
@@ -452,6 +572,10 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return KeyProvResult::NULL_INPUT; }
 
+        if (!keyprov_voltage_ok_for_flash()) {
+            return KeyProvResult::POWER_UNSTABLE;
+        }
+
         //  RAM 플래그(p->debug_locked)는 재부팅 시 초기화되므로 신뢰 불가
         //  → FLASH_OPTCR[15:8] = RDP 바이트 직접 읽기
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
@@ -477,28 +601,12 @@ namespace ProtectedEngine {
         p->debug_locked = true;
 
         //  리셋 없이 반환하면 다음 재부팅 전까지 JTAG 열림 (보안 공백)
-        //  AIRCR.SYSRESETREQ로 즉시 하드웨어 리셋 강제
+        //  AIRCR.SYSRESETREQ — ARM: noreturn 헬퍼 / PC: OK 반환만
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-        static constexpr uint32_t AIRCR_ADDR = 0xE000ED0Cu;
-        static constexpr uint32_t AIRCR_VECTKEY = 0x05FA0000u;
-        static constexpr uint32_t AIRCR_SYSRESET = 0x00000004u;
-        std::atomic_thread_fence(std::memory_order_release);
-        *reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR) =
-            AIRCR_VECTKEY | AIRCR_SYSRESET;
-#if defined(__GNUC__) || defined(__clang__)
-        static constexpr uint32_t ADDR_DBGMCU_FZ = 0xE0042008u;
-        static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
-        static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
-        volatile uint32_t* const dbgmcu_fz =
-            reinterpret_cast<volatile uint32_t*>(
-                static_cast<uintptr_t>(ADDR_DBGMCU_FZ));
-        *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
-        __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+        keyprov_arm_aircr_reset_and_hang();
+#else
+        return KeyProvResult::OK;
 #endif
-        // 이 아래 코드는 도달 불가 (리셋 즉시 실행)
-        for (;;) {}  // 리셋 대기 (CPU가 리셋될 때까지 홀드)
-#endif
-        return KeyProvResult::OK;  // PC: 리셋 불필요
     }
 
     // =====================================================================
@@ -512,21 +620,29 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
+        if (!keyprov_voltage_ok_for_flash()) {
+            return;
+        }
+
         // 1단계: 마스터 키 물리 소각
         //  OTP 특성: 1→0 쓰기만 가능 (비가역)
         //  0x00 덮어쓰기 → 모든 비트를 0으로 태움
         const uint8_t zero_block[MASTER_KEY_SIZE] = {};
-        otp_write_block(OTP_KEY_ADDR, zero_block, MASTER_KEY_SIZE);
+        const bool wiped_key = otp_write_block(OTP_KEY_ADDR, zero_block, MASTER_KEY_SIZE);
 
         // 2단계: 프로비저닝 매직도 함께 물리 소각
         //  sizeof(PROV_MAGIC) = 4B → 4바이트 영역 소각
         //  재부팅 후 Is_Provisioned() = false 보장
         //  (매직 불일치 → provisioned=false → Read_Master_Key 반환 차단)
         const uint8_t zero_magic[sizeof(PROV_MAGIC)] = {};
-        otp_write_block(OTP_MAGIC_ADDR,
+        const bool wiped_magic = otp_write_block(OTP_MAGIC_ADDR,
             zero_magic, static_cast<uint32_t>(sizeof(PROV_MAGIC)));
 
-        // 3단계: RAM 플래그 갱신 (현재 세션 즉시 차단)
+        if (!wiped_key || !wiped_magic) {
+            return;
+        }
+
+        // 3단계: RAM 플래그 갱신 (현재 세션 즉시 차단) — OTP와 일치할 때만
         p->key_destroyed = true;
         p->provisioned = false;  // RAM 상태도 동기화
     }

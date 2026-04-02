@@ -464,6 +464,9 @@ namespace ProtectedEngine {
 
         for (size_t i = 0u; i < MAX_PENDING; ++i) {
             PendingMsg& pm = p->pending[i];
+            if (pm.alloc_state.load(std::memory_order_acquire) != 2u) {
+                continue;
+            }
 
             //  PRIMASK 안에서 Enqueue → 수천 사이클 ISR 블로킹 → MCU 마비
             //  PRIMASK 안에서 로컬 복사(~50cyc)만 수행 → 즉시 락 해제
@@ -479,8 +482,10 @@ namespace ProtectedEngine {
                 : "=r"(primask) : : "memory");
 #endif
 
+            // 선행 검사와 IRQ 차단 사이 경합 가능성 방어: 잠금 후 상태 재확인
             if (pm.alloc_state.load(std::memory_order_acquire) == 2u) {
-                const uint8_t safe_shift = (pm.retries <= 21u) ? pm.retries : 21u;
+                const uint8_t safe_shift =
+                    (pm.retries <= 21u) ? pm.retries : 21u;
                 const uint32_t timeout = ACK_TIMEOUT_MS << safe_shift;
                 const uint32_t elapsed = systick_ms - pm.send_ms;
 

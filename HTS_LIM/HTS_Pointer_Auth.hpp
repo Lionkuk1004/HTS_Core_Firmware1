@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────
 
 #include <cstdint>
+#include <cstddef>
 
 namespace ProtectedEngine {
 
@@ -45,6 +46,10 @@ namespace ProtectedEngine {
 
         [[noreturn]] static void Halt_PAC_Violation(const char* reason) noexcept;
 
+        /// 구현은 HTS_Pointer_Auth.cpp — 템플릿은 uintptr_t 경유로 위임 (AArch64 안전)
+        static uint64_t Sign_Pointer_Untyped(void* ptr) noexcept;
+        static void* Authenticate_Pointer_Untyped(uint64_t signed_ptr) noexcept;
+
     public:
         /// @brief 부팅 시 PUF/TRNG 엔트로피 주입 (선택적)
         /// @warning Sign_Pointer보다 반드시 먼저 호출할 것
@@ -57,55 +62,14 @@ namespace ProtectedEngine {
         /// @warning nullptr 서명 금지 — Authenticate에서 abort
         template<typename T>
         static uint64_t Sign_Pointer(T* ptr) noexcept {
-            Ensure_Key_Initialized();
-            if (ptr == nullptr) {
-                Halt_PAC_Violation("Attempt to sign nullptr");
-            }
-
-            uint64_t raw_addr = static_cast<uint64_t>(
-                reinterpret_cast<uintptr_t>(ptr)) & ADDR_MASK;
-
-            uint32_t pac = Compute_PAC(raw_addr);
-            uint64_t pac_field = static_cast<uint64_t>(
-                pac & static_cast<uint32_t>((1ULL << PAC_BITS) - 1u));
-
-            return (pac_field << PAC_SHIFT) | raw_addr;
+            return Sign_Pointer_Untyped(reinterpret_cast<void*>(ptr));
         }
 
         /// @brief PAC 검증 후 원본 포인터 복원
         /// @note  변조 시 자가 치유 + 시스템 정지 (반환 안 함)
         template<typename T>
         static T* Authenticate_Pointer(uint64_t signed_ptr) noexcept {
-            Ensure_Key_Initialized();
-
-            // 1. PAC/주소 분리
-            uint32_t stored_pac = static_cast<uint32_t>(
-                (signed_ptr >> PAC_SHIFT) &
-                static_cast<uint64_t>((1ULL << PAC_BITS) - 1u));
-            uint64_t raw_addr = signed_ptr & ADDR_MASK;
-
-            // 2. PAC 재계산
-            uint32_t expected_pac = Compute_PAC(raw_addr);
-            expected_pac &= static_cast<uint32_t>((1ULL << PAC_BITS) - 1u);
-
-            // 3. 상수시간 PAC 비교 (volatile XOR)
-            volatile uint32_t diff = stored_pac ^ expected_pac;
-
-            // 2회 독립 검사로 단일 글리치 방어
-            if (diff != 0u) {
-                Halt_PAC_Violation("PAC mismatch — pointer tampered");
-            }
-            // 2차 확인: volatile 재읽기
-            if (diff != 0u) {
-                Halt_PAC_Violation("PAC mismatch — redundant check");
-            }
-
-            // 4. 포인터 복원 및 nullptr 방어
-            T* ptr = reinterpret_cast<T*>(static_cast<uintptr_t>(raw_addr));
-            if (ptr == nullptr) {
-                Halt_PAC_Violation("Authenticated pointer is nullptr");
-            }
-            return ptr;
+            return static_cast<T*>(Authenticate_Pointer_Untyped(signed_ptr));
         }
 
         PAC_Manager() = delete;

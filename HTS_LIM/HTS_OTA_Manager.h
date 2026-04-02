@@ -93,6 +93,8 @@ namespace ProtectedEngine {
         // [OTA-4] alignas(8) — Pimpl impl_buf_와 동일 정렬
         alignas(8) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool>  initialized_{ false };
+        /// 공개 API vs Shutdown 레이스 차단 — Process_OTA_Command·Get_*·Shutdown 상호 배제
+        mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
     };
 
     static_assert(sizeof(HTS_OTA_Manager) <= 1024u,

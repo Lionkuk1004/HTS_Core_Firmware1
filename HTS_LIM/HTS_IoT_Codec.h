@@ -20,13 +20,15 @@
 ///   사용 예시 (송신 측):
 ///   @code
 ///   ProtectedEngine::HTS_IoT_Codec codec;
-///   codec.Begin_Frame(IoT_MsgType::SENSOR_REPORT, device_id, uptime_sec);
-///   codec.Add_U16(SensorType::TEMPERATURE, temp_q8);
-///   codec.Add_U16(SensorType::HUMIDITY, hum_q8);
-///   codec.Add_U32(SensorType::ENERGY_WH, energy_wh);
+///   uint32_t tok = 0u;
+///   if (codec.Begin_Frame(IoT_MsgType::SENSOR_REPORT, device_id, uptime_sec, tok)
+///       != HTS_IoT_Codec::SECURE_TRUE) { return; }
+///   codec.Add_U16(tok, SensorType::TEMPERATURE, temp_q8);
+///   codec.Add_U16(tok, SensorType::HUMIDITY, hum_q8);
+///   codec.Add_U32(tok, SensorType::ENERGY_WH, energy_wh);
 ///   uint8_t wire[256];
 ///   uint16_t wire_len = 0;
-///   codec.Finalize(wire, sizeof(wire), wire_len);
+///   codec.Finalize(tok, wire, sizeof(wire), wire_len);
 ///   ipc.Send_Frame(IPC_Command::DATA_TX, wire, wire_len);
 ///   @endcode
 ///
@@ -41,10 +43,10 @@
 /// @warning sizeof(HTS_IoT_Codec) ~ 512B. 전역/정적 배치 권장.
 ///
 /// @note  ARM 전용. PC/서버 코드 없음.
-///        Stateless 설계: Begin_Frame -> Add_* -> Finalize 1사이클.
-///        스레드 안전하지 않음 (단일 컨텍스트 전용).
-/// @warning ISR 내부에서 Begin_Frame/Parse/Finalize 직접 호출 금지 — op_busy_
-///          Busy_Guard와 경합. 비상/인터럽트 경로는 메인 루프에 디스패치 후 처리.
+///        Begin_Frame / Add_* / Finalize / Get_* 는 IoT_Codec_Busy_Guard(RAII)로 op_busy_를
+///        짧게 점유해 직렬화한다. Add_*는 Begin 성공 시 발급된 session_token과 함께 호출해야 한다.
+/// @warning ISR에서 동일 인스턴스의 Begin_Frame/Add_*/Finalize 호출 금지 — 메인 빌드 세션과
+///          프레임 버퍼가 오염된다. Parse는 코덱 내부 빌드 상태를 사용하지 않는다.
 /// @author 임영준 (Lim Young-jun)
 /// @copyright INNOViD 2026. All rights reserved.
 
@@ -74,45 +76,52 @@ namespace ProtectedEngine {
         /// @name 프레임 빌드 (송신 측)
         /// @{
 
-        /// @brief 새 IoT 프레임 시작
+        /// @brief 새 IoT 프레임 시작 (RAII로 op_busy_ 짧게 점유; Finalize 전 미완료 세션 있으면 SECURE_FALSE)
         /// @param type       메시지 타입
         /// @param device_id  디바이스 고유 ID
         /// @param timestamp  타임스탬프 (에포크 초 또는 가동 초)
-        void Begin_Frame(IoT_MsgType type, uint32_t device_id,
-            uint32_t timestamp) noexcept;
+        /// @param[out] out_session_token 실패 시 0, 성공 시 Add_*/Finalize에 전달할 토큰
+        /// @return SECURE_TRUE=헤더 기록·세션 토큰 발급 성공, SECURE_FALSE=락 경합·미완료 세션·가드 실패(이후 Add_* 호출 금지)
+        [[nodiscard]] uint32_t Begin_Frame(IoT_MsgType type, uint32_t device_id,
+            uint32_t timestamp, uint32_t& out_session_token) noexcept;
 
         /// @brief uint8_t 값 TLV 추가
+        /// @param session_token Begin_Frame 성공 시 수신한 토큰(일치하지 않으면 SECURE_FALSE)
         /// @param sensor  센서 타입
         /// @param value   값
         /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
-        uint32_t Add_U8(SensorType sensor, uint8_t value) noexcept;
+        uint32_t Add_U8(uint32_t session_token, SensorType sensor, uint8_t value) noexcept;
 
         /// @brief uint16_t / int16_t 값 TLV 추가 (빅엔디안 직렬화)
+        /// @param session_token Begin_Frame 성공 시 수신한 토큰
         /// @param sensor  센서 타입
         /// @param value   값
         /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
-        uint32_t Add_U16(SensorType sensor, uint16_t value) noexcept;
+        uint32_t Add_U16(uint32_t session_token, SensorType sensor, uint16_t value) noexcept;
 
         /// @brief uint32_t / int32_t 값 TLV 추가 (빅엔디안 직렬화)
+        /// @param session_token Begin_Frame 성공 시 수신한 토큰
         /// @param sensor  센서 타입
         /// @param value   값
         /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
-        uint32_t Add_U32(SensorType sensor, uint32_t value) noexcept;
+        uint32_t Add_U32(uint32_t session_token, SensorType sensor, uint32_t value) noexcept;
 
         /// @brief 원시 바이트 배열 TLV 추가
+        /// @param session_token Begin_Frame 성공 시 수신한 토큰
         /// @param sensor    센서 타입
         /// @param data      값 바이트
         /// @param data_len  값 길이 (1~8)
         /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
-        uint32_t Add_Raw(SensorType sensor, const uint8_t* data,
+        uint32_t Add_Raw(uint32_t session_token, SensorType sensor, const uint8_t* data,
             uint8_t data_len) noexcept;
 
-        /// @brief 프레임 완성: CRC 부착 및 와이어 버퍼 출력
-        /// @param[out] out_buf     출력 와이어 버퍼
+        /// @brief 프레임 완성: CRC 부착 및 와이어 버퍼 출력 (성공 시 build_buf_ D-2 소거)
+        /// @param session_token Begin_Frame 성공 시 수신한 토큰
+        /// @param[out] out_buf     출력 와이어 버퍼 (nullptr이면 내부 빌드 버퍼 D-2 소거 후 실패)
         /// @param      out_buf_size 출력 버퍼 크기
         /// @param[out] out_len     실제 기록된 바이트
-        /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
-        uint32_t Finalize(uint8_t* out_buf, uint16_t out_buf_size,
+        /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE. out_buf가 크기 부족일 때는 frame_active_ 유지(재시도 가능).
+        uint32_t Finalize(uint32_t session_token, uint8_t* out_buf, uint16_t out_buf_size,
             uint16_t& out_len) noexcept;
 
         /// @}
@@ -124,7 +133,7 @@ namespace ProtectedEngine {
         /// @param[in]  wire_buf    입력 와이어 버퍼
         /// @param      wire_len    입력 길이
         /// @param[out] out_header  프레임 헤더
-        /// @param[out] out_items   TLV 항목 배열 (호출자 제공)
+        /// @param[out] out_items   TLV 항목 배열 (호출자 제공). 헤더의 tlv_count > 0 이면 nullptr 금지.
         /// @param      max_items   배열 최대 크기
         /// @param[out] out_item_count 실제 파싱된 항목 수
         /// @return 성공 시 SECURE_TRUE, 실패 시 SECURE_FALSE
@@ -135,10 +144,10 @@ namespace ProtectedEngine {
 
         /// @}
 
-        /// @brief 현재 빌드 중인 프레임의 TLV 항목 수
+        /// @brief 현재 빌드 중인 프레임의 TLV 항목 수 (op_busy_ try-lock; 실패 시 0)
         uint8_t Get_TLV_Count() const noexcept;
 
-        /// @brief 현재 빌드 중인 프레임의 사용된 바이트
+        /// @brief 현재 빌드 중인 프레임의 사용된 바이트 (op_busy_ try-lock; 실패 시 0)
         uint16_t Get_Used_Bytes() const noexcept;
 
         // -- 복사 허용 (경량 구조체, Pimpl 불필요) --
@@ -149,6 +158,7 @@ namespace ProtectedEngine {
         uint16_t build_pos_;     ///< 현재 기록 위치
         uint8_t  tlv_count_;     ///< 추가된 TLV 항목 수
         bool     frame_active_;  ///< Begin_Frame 호출 여부
+        uint32_t session_token_; ///< Begin 성공 시 발급(0=비활성); Add/Finalize 검증용
         mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
 
         /// @brief 엔디안 독립 직렬화 헬퍼 (인라인)
