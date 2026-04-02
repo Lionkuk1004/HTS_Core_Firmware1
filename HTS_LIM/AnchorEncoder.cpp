@@ -23,12 +23,12 @@
 // HTS_Secure_Logger, HTS_POST_Manager — 사용처 0건
 
 
-// ── Self-Contained [BUG-08] ─────────────────────────────────────────
+// ── Self-Contained 표준 헤더 ────────────────────────────────────────
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <atomic>
-#include <mutex>   // [BUG-18] std::call_once (A55 멀티스레드 안전)
+#include <mutex>   // std::call_once (A55 멀티스레드 안전)
 
 namespace ProtectedEngine {
     // =====================================================================

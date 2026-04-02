@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Device_Status_Reporter.cpp
 // 장비 상태 보고 + Wake-on-Signal 응답 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -81,9 +81,7 @@ namespace ProtectedEngine {
         uint8_t    fault_flags = 0u;
         uint8_t    module_flags = 0u;
 
-        //  get_uptime_hours(now-boot) 방식: 49.7일 래핑 시 0으로 리셋
-        //  수정: last_hour_ms에서 1시간 경과할 때마다 uptime_hours++
-        //  → 255시간(10.6일) 후 255 고정, 래핑과 무관
+        //  uptime: 1시간마다 last_hour_ms 기준으로 uptime_hours++ (uint8 캡)
         uint32_t   last_hour_ms = 0u;
         uint8_t    uptime_hours = 0u;
         uint32_t   last_rpt_ms = 0u;

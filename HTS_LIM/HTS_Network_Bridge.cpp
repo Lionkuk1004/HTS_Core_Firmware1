@@ -1,4 +1,4 @@
-﻿/// @file  HTS_Network_Bridge.cpp
+/// @file  HTS_Network_Bridge.cpp
 /// @brief HTS Network Bridge -- Ethernet <-> B-CDMA Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -8,7 +8,7 @@
 #include "HTS_IPC_Protocol.h"
 #include <new>
 #include <atomic>
-#include <cstring>   // [OPT-2] memcpy, memset
+#include <cstring>   // memcpy, memset
 
 namespace ProtectedEngine {
     struct Bridge_Busy_Guard {
@@ -94,9 +94,9 @@ namespace ProtectedEngine {
                 return IPC_Error::CFI_VIOLATION;
             }
 
-            // [OPT-1] ceil 나눗셈: while 루프(분기 7회) → UDIV 1회(2~12cyc)
+            // [OPT-1] ceil: UDIV 1회
             //  Cortex-M4 하드웨어 UDIV: 비2의제곱 나눗셈도 단일 명령어
-            //  BRIDGE_FRAG_MAX_DATA=248 → 시프트 대체 불가 → UDIV 최적
+            //  BRIDGE_FRAG_MAX_DATA=248 (2의 거듭제곱 아님) — UDIV 사용
             uint32_t total_u32 = 0u;
             uint32_t remain_u32 = static_cast<uint32_t>(eth_len);
             while (remain_u32 > 0u && total_u32 < BRIDGE_MAX_FRAGMENTS) {
@@ -136,7 +136,7 @@ namespace ProtectedEngine {
                 tx_frag_buf[2] = total;
                 tx_frag_buf[3] = idx;
 
-                // [OPT-2] byte loop → memcpy (ARM LDMIA/STMIA 4워드 burst)
+                // [OPT-2] memcpy 블록 복사
                 std::memcpy(&tx_frag_buf[BRIDGE_FRAG_HEADER_SIZE],
                     &eth_frame[offset], chunk);
 
@@ -246,7 +246,7 @@ namespace ProtectedEngine {
                 return BRIDGE_SECURE_FALSE;
             }
 
-            // [OPT-2] byte loop → memcpy
+            // [OPT-2] memcpy 블록 복사
             const uint8_t* src = &frag_payload[BRIDGE_FRAG_HEADER_SIZE];
             std::memcpy(&slot->data[data_offset], src, data_len);
 
@@ -329,7 +329,7 @@ namespace ProtectedEngine {
         static void Init_Slot(ReassemblySlot& s, uint8_t seq, uint8_t total,
             uint32_t tick) noexcept
         {
-            // [OPT-2] byte loop → memset
+            // [OPT-2] memset 제로화
             std::memset(s.data, 0, BRIDGE_ETH_MAX_FRAME);
             s.data_len = 0u;
             s.seq = seq;
@@ -379,7 +379,7 @@ namespace ProtectedEngine {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
             "HTS_Network_Bridge::Impl exceeds IMPL_BUF_SIZE");
 
-        // [OPT-2] byte loop → memset
+        // [OPT-2] memset 제로화
         std::memset(impl_buf_, 0, IMPL_BUF_SIZE);
     }
 

@@ -1,4 +1,4 @@
-﻿/// @file  HTS_Holo_Dispatcher.cpp
+/// @file  HTS_Holo_Dispatcher.cpp
 /// @brief HTS 4D Holographic Dispatcher -- V400 Integration Shim
 /// @note  ARM only. Pure ASCII. No PC/server code.
 ///
@@ -271,17 +271,7 @@ namespace ProtectedEngine {
             const int chip_offset = static_cast<int>(blk) * static_cast<int>(N);
 
             //
-            //  기존 착각: N*L*chip² 오버플로 우려 → >>8 강제
-            //  실제: 홀로그래픽 역투영은 1차 선형 상관(Σ rx×walsh(±1))
-            //        최대 누적: N × max_rx = 64 × 32767 = 2,097,088
-            //        L=4 레이어: 4 × 2,097,088 = 8,388,352
-            //        INT32_MAX = 2,147,483,647 → 사용률 0.39% (오버플로 불가)
-            //
-            //  >>8 피해: 수신 진폭 ≤±255인 약전계 신호 전부 0 절사
-            //           → Soft-decision 정보 파괴 → 복조 100% 실패
-            //
-            //  수정: (I+Q)/2만 수행, >>8 제거 → Q16 전정밀도 유지
-            //        combined 범위: -32767..+32767 → int16_t 완벽 적합
+            //  누적합은 int32 범위 내 — >>8 없이 (I+Q)/2만 수행해 Q16 soft-decision 유지
             int16_t rx_soft[HOLO_CHIP_COUNT];
             for (uint16_t i = 0u; i < N; ++i) {
                 const int32_t combined = (static_cast<int32_t>(rx_I[chip_offset + i]) +

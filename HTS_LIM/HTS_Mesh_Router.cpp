@@ -205,7 +205,7 @@ namespace ProtectedEngine {
     //
     //  이웃이 보내온 라우팅 테이블을 순회하며:
     //   new_metric = neighbor_metric + calc_metric(1, neighbor_lqi)
-    //   기존 경로보다 좋으면 갱신, 없으면 추가
+    //   경로보다 좋으면 갱신, 없으면 추가
     //   Split Horizon: 이웃 경유 경로는 이웃에게 재전파 안 함 (Tick에서)
     // =====================================================================
     void HTS_Mesh_Router::On_Route_Update(
@@ -263,7 +263,7 @@ namespace ProtectedEngine {
                     continue;  // hold-down 중 → 모든 갱신 거부
                 }
 
-                //  기존 경로 next_hop ≠ 이 이웃이고, 새 경로가 더 나쁘면
+                //  경로 next_hop ≠ 이 이웃이고, 새 경로가 더 나쁘면
                 //  → 이웃이 나를 경유해서 온 경로 (루프)
                 if (existing.next_hop != neighbor_id &&
                     new_metric >= existing.metric)
@@ -652,8 +652,8 @@ namespace ProtectedEngine {
             p->trigger_update = true;
         }
 
-        //  기존: 역산 (hold_down_until - HOLD_DOWN_MS) → 래핑 시 붕괴
-        //  수정: (systick_ms - hold_down_until) < 0x80000000 → 경과 판정
+        //  역산 (hold_down_until - HOLD_DOWN_MS) → 래핑 시 붕괴
+        //  (systick_ms - hold_down_until) < 0x80000000 → 경과 판정
         //  uint32_t 래핑에 면역 (49일 주기 내 정상 동작)
         for (size_t i = 0u; i < MAX_RT; ++i) {
             if (p->table[i].hold_down_until == 0u) { continue; }

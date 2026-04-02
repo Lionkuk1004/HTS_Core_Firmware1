@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Key_Rotator.cpp
 // Forward Secrecy 기반 동적 시드 로테이터 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -6,7 +6,7 @@
 #include "HTS_Key_Rotator.h"
 #include "HTS_Secure_Memory.h"
 
-// ── Self-Contained 표준 헤더 [BUG-11] ───────────────────────────────
+// ── Self-Contained 표준 헤더 ───────────────────────────────────────
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -89,8 +89,7 @@ namespace {
     static inline uint32_t RotL32(uint32_t x, uint32_t r) noexcept {
         r &= 31u;
         if (r == 0u) { return x; }
-        //  기존: 32u-r 잠재적 UB → 정적 분석기 경고
-        //  수정: C++20에서 std::rotl 사용 (UB 원천 불가)
+        //  (32−r) 비트 시프트 UB 회피: C++20 std::rotl 우선
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
         return std::rotl(x, static_cast<int>(r));
 #else
@@ -102,7 +101,7 @@ namespace {
         const uint8_t* data, size_t len, uint32_t seed) noexcept {
 
         uint32_t h = seed;
-        // [⑨-FIX] /4u → >>2u (2의제곱 시프트 전환)
+        // ⑨ 바이트 길이 → 워드 수: >>2 (나눗셈 대신 시프트)
         const size_t nblocks = len >> 2u;
 
         for (size_t i = 0u; i < nblocks; ++i) {
@@ -118,7 +117,7 @@ namespace {
             h = h * 5u + 0xE6546B64u;
         }
 
-        // tail — [BUG-10] [[fallthrough]] + C++14 주석 병행
+        // tail — [[fallthrough]] + C++14 주석 병행
         const uint8_t* tail = data + nblocks * 4u;
         uint32_t k1 = 0u;
         switch (len & 3u) {
@@ -217,9 +216,7 @@ namespace {
 
     // =====================================================================
     //
-    //  기존: std::make_unique<Impl>(masterSeed) + try-catch
-    //  수정: impl_buf_ SecWipe → ::new Impl(masterSeed) → impl_valid_ = true
-    //  Impl(masterSeed) 내부 try-catch가 OOM 처리 → 생성자 자체는 noexcept 유지
+    //  placement new(impl_buf_): 선행 SecWipe 후 Impl 구성, impl_valid_로 가시성
     // =====================================================================
 #if !defined(__arm__) && !defined(__TARGET_ARCH_ARM) && \
     !defined(__TARGET_ARCH_THUMB) && !defined(__ARM_ARCH)
@@ -254,7 +251,7 @@ namespace {
     // =====================================================================
     //  deriveNextSeed — 블록 인덱스 기반 단방향 시드 파생
     //  반환: 호출자 버퍼에 복사 (Raw API)
-    //  기존 vector 반환 API는 헤더에서 유지 (호출자 마이그레이션 후 제거)
+    //  vector 반환 API는 헤더에서 유지 (호출자 마이그레이션 후 제거)
     // =====================================================================
     // =====================================================================
     // =====================================================================
@@ -274,9 +271,8 @@ namespace {
         //    메인루프가 lock 보유 중 ISR 발생 → ISR이 동일 lock spin
         //    → ISR이 CPU 점유 → 메인루프 영원히 복귀 불가 → 즉사(Deadlock)
         //
-        //  수정: Cortex-M 계열 — PRIMASK (HTS_KEY_ROTATOR_PRIMASK_CRIT)
-        //        PC  — atomic_flag 유지 (멀티스레드 테스트 환경)
-        //        A55 — atomic_flag 유지 (멀티코어 Linux)
+        //  Cortex-M: PRIMASK (HTS_KEY_ROTATOR_PRIMASK_CRIT)
+        //  PC/A55: atomic_flag (멀티스레드)
         // ─────────────────────────────────────────────────────────────
 #if HTS_KEY_ROTATOR_PRIMASK_CRIT && (defined(__GNUC__) || defined(__clang__))
         [[maybe_unused]] const KeyRotator_Primask_Guard kr_irq_guard{};
@@ -298,7 +294,7 @@ namespace {
 
         // 2단계: Murmur3 기반 전체 시드 비가역 혼합
         uint32_t running_hash = blockIndex ^ 0x5BD1E995u;
-        // [⑨-FIX] /4u → >>2u (2의제곱 시프트 전환)
+        // ⑨ 바이트 길이 → 워드 수: >>2 (나눗셈 대신 시프트)
         size_t num_passes = (seed_len + 3u) >> 2u;
         if (num_passes == 0u) { num_passes = 1u; }
 
@@ -307,7 +303,7 @@ namespace {
                 seed, seed_len,
                 running_hash ^ static_cast<uint32_t>(pass));
 
-            // [⑨-FIX] seed_len=2^k → % m 대신 & (m-1) (나눗셈 병목 회피, static_assert 참조)
+            // ⑨ seed_len=2^k → 오프셋 마스크 &(m−1) (static_assert와 일치)
             const size_t offset = (pass * 4u) & (seed_len - 1u);
             for (size_t b = 0u; b < 4u && (offset + b) < seed_len; ++b) {
                 seed[offset + b] ^= static_cast<uint8_t>(

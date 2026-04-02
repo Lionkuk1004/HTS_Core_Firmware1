@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 /// @file  HTS_FEC_HARQ.hpp
 /// @brief V400 3모드 FEC + HARQ (1칩/16칩/64칩)
 /// @target STM32F407VGT6 (Cortex-M4F) / PC
@@ -108,7 +108,7 @@ namespace ProtectedEngine {
             return 6;                                 // 115
         }
 
-        // ── [BUG-22] NF 임계값 — 적응형 BPS 전환 기준 (J-3) ──
+        // ── NF 임계값 — 적응형 BPS 전환 기준 (J-3) ────────────────
         static constexpr uint32_t NF_HEAVY_JAM = 2000u;  // 강력 재밍 → BPS=3
         static constexpr uint32_t NF_MED_JAM = 500u;   // 중간 간섭 → BPS=4
         static constexpr uint32_t NF_LIGHT_JAM = 200u;   // 약한 간섭 → BPS=5
@@ -129,7 +129,7 @@ namespace ProtectedEngine {
         static constexpr int VOICE_K = 5;
         static constexpr int DATA_K = 800;
 
-        // ── [BUG-23] Viterbi 실측 사용량 기반 WorkBuf 최적화 ──
+        // ── Viterbi 실측 사용량 기반 WorkBuf 최적화 ───────────────
         //
         //  Viterbi_Decode: steps = CONV_OUT / 2 = 86
         //   → surv[t] 최대 t = 85, tb[t] 최대 t = 85
@@ -143,21 +143,21 @@ namespace ProtectedEngine {
         static constexpr int VIT_STEPS =
             ((CONV_OUT / 2) + 7) & ~7;  // 86 → 88 (8-align)
 
-        // ── [BUG-14+23] 워킹 버퍼 (호출자가 할당, DI 주입) ──
+        // ── 워킹 버퍼 (호출자가 할당, DI 주입) ─────────────────────
         // 재진입성 100% 보장. 전역/스택/동적 할당 자유.
         /// @warning sizeof(WorkBuf) ≈ 15KB — ARM에서 전역 또는 정적 배치 권장.
         struct WorkBuf {
             int32_t  pm[2][64];
-            uint8_t  surv[VIT_STEPS][64];       // [BUG-23] 256→88
-            uint8_t  tb[VIT_STEPS];             // [BUG-23] 256→88
-            uint16_t perm[TOTAL_CODED];       // [BUG-23] 1024→688 (index only)
-            int32_t  tmp_soft[TOTAL_CODED];     // [BUG-23] 1024→688
+            uint8_t  surv[VIT_STEPS][64];       // Viterbi 경로 256→88
+            uint8_t  tb[VIT_STEPS];             // traceback 256→88
+            uint16_t perm[TOTAL_CODED];       // 순열 인덱스 1024→688
+            int32_t  tmp_soft[TOTAL_CODED];     // 소프트 메트릭 1024→688
             uint8_t  rep[TOTAL_CODED];
-            int32_t  all_llr[TOTAL_CODED];      // [BUG-23] 1024→688
+            int32_t  all_llr[TOTAL_CODED];      // LLR 1024→688
             int32_t  combined[CONV_OUT];
         };
 
-        // ── [BUG-13] int64_t → int32_t (메모리 50% 절감) ──
+        // ── int64_t → int32_t (메모리 50% 절감) ───────────────────
         // 누적 최대: DATA_K(800) × 32767 = 26.2M ≪ INT32_MAX(2.14B)
         // FWHT 64칩 ×64 증폭 후: 1.68B < INT32_MAX (21.9% 여유)
         struct RxState16 {
@@ -194,7 +194,7 @@ namespace ProtectedEngine {
         static void Init16(RxState16& s) noexcept;
         static void Init64(RxState64& s) noexcept;
 
-        // ── [BUG-24] 심볼 단위 스트리밍 Feed ──
+        // ── 심볼 단위 스트리밍 Feed ───────────────────────────────
         //
         //  [수학적 등가성]
         //   Feed64(state, sI, sQ) = 심볼 전체 일괄 누적
@@ -233,7 +233,7 @@ namespace ProtectedEngine {
         static void Advance_Round_16(RxState16& s) noexcept;
         static void Advance_Round_64(RxState64& s) noexcept;
 
-        // 기존 일괄 Feed 인터페이스 (하위 호환 유지 — PC 테스트용)
+        // 일괄 Feed 인터페이스 (하위 호환 유지 — PC 테스트용)
         static void Feed16(RxState16& s, const int16_t I[][C16],
             const int16_t Q[][C16]) noexcept;
         static void Feed64(RxState64& s, const int16_t I[][C64],
@@ -256,7 +256,7 @@ namespace ProtectedEngine {
         [[nodiscard]] static bool Decode1(const int16_t* rx_I,
             uint8_t* out, int* len) noexcept;
 
-        // ── [BUG-54] I/Q 분리 배치용 Decode 래퍼 ──
+        // ── I/Q 분리 배치용 Decode 래퍼 ───────────────────────────
         //  harq_I(SRAM)와 harq_Q(CCM)가 물리적으로 분리되어
         //  RxState64 구조체를 직접 전달할 수 없을 때 사용.
         //  내부적으로 Decode_Core(accI, accQ, ...)에 단순 위임.

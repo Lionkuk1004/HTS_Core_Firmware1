@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Unified_Scheduler.cpp
 // DMA 핑퐁 이중 버퍼 기반 통합 송신 스케줄러 구현부
 // Target: STM32F407 (Cortex-M4)
@@ -52,8 +52,8 @@ namespace ProtectedEngine {
     // =====================================================================
     //  생성자
     //
-    //   기존: while(true) 무한 루프 — 워치독 만료까지 CPU 점유
-    //   수정: AIRCR SYSRESETREQ → 즉시 하드웨어 리셋 (BB1 표준)
+    //   while(true) 무한 루프 — 워치독 만료까지 CPU 점유
+    //   AIRCR SYSRESETREQ → 즉시 하드웨어 리셋 (BB1 표준)
     //         while(true)는 AIRCR 실패 시 폴백으로 유지
     // =====================================================================
     Unified_Scheduler::Unified_Scheduler(Dual_Tensor_Pipeline* pipeline) noexcept
@@ -106,11 +106,11 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: 소멸자 미정의 (= default 암시)
+    //  소멸자 미정의 (= default 암시)
     //   → 32KB 핑퐁 버퍼에 텐서 데이터 평문 잔존
     //   → 콜드부트/힙 스캔 공격으로 직전 송신 데이터 복원 가능
     //
-    //  수정: volatile 소거 + asm clobber + release fence
+    //  volatile 소거 + asm clobber + release fence
     //   → BB1, TensorCodec, Anchor_Vault 소멸자 보안 소거 표준과 통일
     // =====================================================================
     Unified_Scheduler::~Unified_Scheduler() noexcept {
@@ -126,8 +126,8 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Schedule_Next_Transfer — 센서 → 듀얼 텐서 → 핑퐁 버퍼 → DMA
     //
-    //   기존: relaxed — ISR/다른 컨텍스트에서 stale 값 가능
-    //   수정: acquire — store(release)와 쌍을 이루어 가시성 보장
+    //   relaxed — ISR/다른 컨텍스트에서 stale 값 가능
+    //   acquire — store(release)와 쌍을 이루어 가시성 보장
     //         현재 ISR이 비어있어 실질 영향 없으나, 향후 ISR에서
     //         버퍼 스왑 로직 추가 시 데이터 레이스 예방
     //
@@ -188,7 +188,7 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Trigger_DMA_Hardware — DMA 레지스터 장전 + 전송 시작
     //
-    //  [양산 수정] 3단 플랫폼 분기
+    //  3단 플랫폼 분기
     //
     //  ⚠ CRITICAL: FPGA 커스텀 DMA 컨트롤러는 BUSY=1 상태에서
     //     source_address / dest_address / transfer_length 레지스터를
@@ -220,7 +220,7 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // ── [BUG-73] Step 0: FPGA DMA BUSY 해제 대기 ──────────────
+        // ── Step 0: FPGA DMA BUSY 해제 대기 ─────────────────────
         //  이전 전송이 완료될 때까지 레지스터 쓰기를 절대 하지 않음.
         //  BUSY=1 상태에서 source_address 쓰기 → FPGA 락업 → HardFault.
         //

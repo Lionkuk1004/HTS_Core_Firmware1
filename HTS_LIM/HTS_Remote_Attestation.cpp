@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Remote_Attestation.cpp
 // Remote Attestation — FNV-1a + 디바이스 바인딩 + 상수시간 검증
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -65,20 +65,19 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: uint64_t hash × FNV1A_PRIME(64bit) = __aeabi_lmul ~30cyc/바이트
-    //  수정: FNV32 × 2 독립 누적 → ARM MUL 1cyc × 2 = 2cyc/바이트
+    //  uint64_t hash × FNV1A_PRIME(64bit) = __aeabi_lmul ~30cyc/바이트
+    //  FNV32 × 2 독립 누적 → ARM MUL 1cyc × 2 = 2cyc/바이트
     //        hi: 바이트 + key_hi 혼합, lo: 바이트 + key_lo 혼합
     //
     //
-    //  기존 문제:
+    //  문제:
     //    data[i]는 일반 포인터 → 컴파일러가:
     //    (1) 여러 바이트를 LDM으로 일괄 읽기 (벡터화)
     //    (2) 레지스터에 캐시하여 Flash 재읽기 생략
     //    (3) 루프 반복 간 읽기를 재배치
     //    → 공격자가 읽기 사이에 DMA/글리치로 Flash 변조 가능
     //
-    //  수정:
-    //    (1) volatile const uint8_t*: 매 바이트 실제 메모리에서 강제 읽기
+    //  //    (1) volatile const uint8_t*: 매 바이트 실제 메모리에서 강제 읽기
     //    (2) 매 반복 asm memory clobber: 읽기 재배치/벡터화 원천 차단
     //    (3) hash volatile 유지: DSE(Dead Store Elimination) 차단
     // =====================================================================

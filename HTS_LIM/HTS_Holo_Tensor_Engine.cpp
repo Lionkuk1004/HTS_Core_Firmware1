@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Holo_Tensor_Engine.cpp — 4D 홀로그래픽 텐서 변조/암호화 코어
 // Target: STM32F407 (Cortex-M4) — 순수 정수 연산
 //
@@ -34,9 +34,8 @@ namespace ProtectedEngine {
         }
     }
 
-    // ── [FIX-CSPRNG] Xoshiro128ss — 128비트 상태 PRNG ──
-    //  기존 XorShift32: 32비트 → 단일 출력으로 상태 복원 (GPU 0.4초)
-    //  수정: 128비트 상태 → 2^128 전수탐색 불가 (10^38)
+    // ── Xoshiro128ss — 128비트 상태 PRNG ───────────────────────
+    //  128비트 상태 공간 — 단일 출력으로의 상태 복원 비현실적
     struct Holo_Xoshiro128 {
         uint32_t s[4];
 
@@ -52,7 +51,7 @@ namespace ProtectedEngine {
         }
     };
 
-    // ── [FIX-CSPRNG] 128비트 시드 → Xoshiro128ss 상태 초기화 ──
+    // ── 128비트 시드 → Xoshiro128ss 상태 초기화 ─────────────────
     //  SplitMix32 화이트닝: 입력 상관 제거 + 비가역 확산
     static Holo_Xoshiro128 expand_seed(const uint32_t seed[4]) noexcept {
         Holo_Xoshiro128 rng;
@@ -120,7 +119,7 @@ namespace ProtectedEngine {
         }
     }
 
-    // ── 24가지 전체 순열 테이블 [BUG-02] ──
+    // ── 24가지 전체 순열 테이블 ─────────────────────────────────
     static constexpr uint8_t PERM_TABLE[24][4] = {
         {0,1,2,3}, {0,1,3,2}, {0,2,1,3}, {0,2,3,1}, {0,3,1,2}, {0,3,2,1},
         {1,0,2,3}, {1,0,3,2}, {1,2,0,3}, {1,2,3,0}, {1,3,0,2}, {1,3,2,0},
@@ -155,7 +154,7 @@ namespace ProtectedEngine {
         block4[3] = pv[0] - pv[1] - pv[2] + pv[3];
     }
 
-    // ── 역방향 4D 회전 (Decode 전용 — uint32_t 안전 산술) [BUG-05/10] ──
+    // ── 역방향 4D 회전 (Decode 전용 — uint32_t 안전 산술) ────────
     static void inverse_rotate_4d_safe(
         int32_t* block4, uint32_t gyro_seed) noexcept {
         uint32_t uw = static_cast<uint32_t>(block4[0]);

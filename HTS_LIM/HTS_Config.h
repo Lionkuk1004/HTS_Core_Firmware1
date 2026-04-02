@@ -13,12 +13,6 @@
 ///   MCU_DMA_SRAM_KB → DMA_RAM_BYTES → TARGET → SINGLE_BUF
 ///   → BASE_MIN_NODES → FINAL_NODE_COUNT → PACKED → RAM
 ///   ★ 최상단 MCU_DMA_SRAM_KB 하나만 변경하면 전체 자동 재계산
-///
-/// [양산 수정 이력 — 17건]
-///  BUG-14 [HIGH] FINAL_* 매직넘버 → 체인 파생 (자동 스케일링)
-///  BUG-15 [MED]  >= 32u 절사 방어 + __attribute__((used)) LTO 방어
-///  BUG-16 [HIGH] 나눗셈/곱셈 → 비트 시프트 100% 대체 (⑨ 컨벤션 일관성)
-///  BUG-17 [MED]  1024u/8u/32u 매직넘버 → constexpr 명명 상수 (J-3 MISRA)
 // =========================================================================
 #pragma once
 // ─────────────────────────────────────────────────────────
@@ -42,7 +36,7 @@ namespace ProtectedEngine {
     /// @brief STM32F407 텐서 메모리 스케일링 상수 (순수 static, 인스턴스화 불가)
     class HTS_Static_Config final {
     public:
-        // ── [BUG-17] 단위 변환 명명 상수 (J-3 매직넘버 금지) ─────
+        // ── 단위 변환 명명 상수 (J-3 매직넘버 금지) ───────────────
         static constexpr uint32_t BYTES_PER_KB = 1024u;  // 1 << 10
         static constexpr uint32_t BITS_PER_BYTE = 8u;     // 1 << 3
         static constexpr uint32_t BITS_PER_WORD = 32u;    // 1 << 5
@@ -52,7 +46,7 @@ namespace ProtectedEngine {
         static constexpr uint32_t MCU_TOTAL_RAM_KB = 192u;
         static constexpr uint32_t MCU_DMA_SRAM_KB = 128u;
 
-        // ── [BUG-16] 메모리 할당 정책 (나눗셈/곱셈 → 시프트 100%) ──
+        // ── 메모리 할당 정책 (나눗셈/곱셈 → 시프트 100%) ─────────
         static constexpr size_t DMA_RAM_BYTES =
             static_cast<size_t>(MCU_DMA_SRAM_KB) << 10u;        // × BYTES_PER_KB
         static constexpr size_t TARGET_HTS_RAM_BYTES =

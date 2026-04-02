@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // TensorCodec.hpp
 // 3D 텐서 FEC 코덱 — 공개 인터페이스
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
@@ -19,21 +19,9 @@
 //         → IMPL_BUF_SIZE = 2048B (초과 시 static_assert 즉시 실패)
 //
 //  [보안 설계]
-//   tensor_data/평탄 앵커: TensorPacket 소멸자에서 capacity 전체 secureWipe (BUG-40)
-//   impl_buf_: 소멸자에서 SecureMemory + impl_valid_ atomic (BUG-39/40)
+//   tensor_data/평탄 앵커: TensorPacket 소멸자에서 capacity 전체 secureWipe
+//   impl_buf_: 소멸자에서 SecureMemory + impl_valid_ atomic
 //   복사/이동: = delete (보안 상태 복제 차단)
-//
-//  [양산 수정 이력]
-//   BUG-01~15 (소거, Pimpl, 헤더차단, copy/move, OOB방어, noexcept,
-//              iostream제거, nodiscard, Self-Contained, Doxygen, SRAM문서,
-//              앵커평탄화, insert크기검증, RAII소거, 네임스페이스빌드에러)
-//   BUG-16~19 (pragma O0 삭제→asm clobber, DecodePacket 크기검증,
-//              앵커슬라이싱 OOB 방어, RAII 소거)
-//   BUG-40 DecodePacket 앵커 메타↔평탄 무결성 + vector wipe는 capacity 기준
-//   BUG-41 RAII·u16_vec secureWipe 호출부 H-1 + HTS_Secure_Memory D-2 정합
-//   BUG-20 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//          · impl_buf_[2048] alignas(64) (BUG-39)
-//          · 소멸자 = default → 명시적 p->~Impl() + SecWipe_Tensor
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -51,7 +39,7 @@ namespace ProtectedEngine {
     class AnchorDecoder;
 
     // =====================================================================
-    //  TensorPacket — [BUG-12] 평탄화 앵커 구조
+    //  TensorPacket — 평탄화 앵커 구조
     // =====================================================================
     class TensorPacket {
     private:
@@ -129,7 +117,7 @@ namespace ProtectedEngine {
         void provideFeedback(int residual_errors, int loops_used) noexcept;
 
     private:
-        // ── [BUG-20] Pimpl In-Place Storage (zero-heap) ──────────────
+        // ── Pimpl In-Place Storage (zero-heap) ─────────────────────
         //
         // IMPL_BUF_SIZE 산출:
         //   Impl = AnchorManager(값) + AnchorEncoder(값) + AnchorDecoder(값)
@@ -138,7 +126,7 @@ namespace ProtectedEngine {
         //   → 초과 시 즉시 빌드 실패 → IMPL_BUF_SIZE 값을 늘릴 것
         //   → 2048B를 시작값으로 설정 (모자라면 static_assert가 알려줌)
         static constexpr size_t IMPL_BUF_SIZE = 2048u;
-        /// placement new 정렬 여유 — SIMD/캐시라인 대비 (BUG-39)
+        /// placement new 정렬 여유 — SIMD/캐시라인 대비
         static constexpr size_t IMPL_BUF_ALIGN = 64u;
 
         struct Impl;  ///< AnchorManager + Encoder + Decoder 완전 은닉

@@ -1,7 +1,7 @@
 // =========================================================================
 //  HTS_LSH256_KCMVP_KAT.cpp  —  KCMVP LSH-256 / LSH-224 KAT
 //
-//  [KCMVP / BUG-KAT-46-LSH] Known Answer = 검증된 **정적** 기대 해시만
+//  [KCMVP KAT — LSH] Known Answer = 검증된 **정적** 기대 해시만
 //  · 기대값: NSR lsh256_digest와 동일 결과를 외부 1회 산출한 상수 (본 TU에서 캡처 금지)
 //  · MUT(LSH256_Bridge)로 런타임 캡처하여 expected를 채우면 안 됨(자기 참조/Tautology)
 //
@@ -200,7 +200,7 @@ static const size_t KAT_COUNT =
 // =========================================================================
 static bool KAT_Phase() {
     std::cout << "\n==========================================\n"
-        << "  KAT 검증 — 정적 기대 해시 vs MUT [BUG-KAT-46-LSH]\n"
+        << "  KAT 검증 — 정적 기대 해시 vs MUT [KCMVP KAT — LSH]\n"
         << "  (런타임 캡처/자기 참조 없음)\n"
         << "==========================================\n";
 

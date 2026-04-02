@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 // HTS_FEC_HARQ.cpp — V400 3모드 (1칩/16칩/64칩)
 // Target: STM32F407VGT6 (Cortex-M4F) / PC
 //
@@ -22,7 +22,7 @@ namespace ProtectedEngine {
         return crc;
     }
 
-    // ── [BUG-13] FWHT (int32_t, 가변 크기: 16 또는 64) ──
+    // ── FWHT (int32_t, 가변 크기: 16 또는 64) ───────────────────
     void FEC_HARQ::FWHT(int32_t* d, int n) noexcept {
         for (int len = 1; len < n; len <<= 1)
             for (int i = 0; i < n; i += 2 * len)
@@ -60,16 +60,15 @@ namespace ProtectedEngine {
         }
     }
 
-    // ── [BUG-14+16+17] Soft Viterbi ──
+    // ── Soft Viterbi ───────────────────────────────────────────
     //
     void FEC_HARQ::Viterbi_Decode(const int32_t* soft, int nc,
         uint8_t* out, int no, WorkBuf& wb) noexcept {
         if (!soft || !out || nc < 2 || no < 1) return;
 
-        // [⑨-FIX] /2 → >>1 (nc≥2 가드에 의해 양수 보장, ASR 안전)
+        // ⑨ T = nc>>1
         const int T = nc >> 1;
-        //  기존: steps ≤ 256 → surv[88]/tb[88] OOB → 스택 파괴 → HardFault
-        //  MSVC C6386/C6385 경고의 근본 원인
+        //  steps 상한 VIT_STEPS — surv/tb 배열 경계와 일치
         const int steps = (T < VIT_STEPS) ? T : VIT_STEPS;
 
         static constexpr int32_t DEAD_STATE = -1000000000;
@@ -111,7 +110,7 @@ namespace ProtectedEngine {
         for (int i = 0; i < no && i < steps; ++i) out[i] = wb.tb[i];
     }
 
-    // ── [BUG-15] LLR: MAX-LOG-MAP + Viterbi 안전 스케일링 ──
+    // ── LLR: MAX-LOG-MAP + Viterbi 안전 스케일링 ────────────────
     void FEC_HARQ::Bin_To_LLR(const int32_t* fI, const int32_t* fQ,
         int nc, int bps, int32_t* llr) noexcept {
 
@@ -439,7 +438,7 @@ namespace ProtectedEngine {
         s.k++;
     }
 
-    // ── [BUG-24] Feed16_1sym — 16칩 심볼 1개 즉시 HARQ 누적 ──
+    // ── Feed16_1sym — 16칩 심볼 1개 즉시 HARQ 누적 ─────────────
     void FEC_HARQ::Feed16_1sym(RxState16& s, const int16_t* I,
         const int16_t* Q, int sym_idx) noexcept {
         if (s.ok) return;
@@ -451,7 +450,7 @@ namespace ProtectedEngine {
         }
     }
 
-    // ── [BUG-24] Feed64_1sym — 64칩 심볼 1개 즉시 HARQ 누적 ──
+    // ── Feed64_1sym — 64칩 심볼 1개 즉시 HARQ 누적 ─────────────
     void FEC_HARQ::Feed64_1sym(RxState64& s, const int16_t* I,
         const int16_t* Q, int sym_idx) noexcept {
         if (s.ok) return;
@@ -463,7 +462,7 @@ namespace ProtectedEngine {
         }
     }
 
-    // ── [BUG-24] Advance_Round — 스트리밍 Feed 후 라운드 카운터 증가 ──
+    // ── Advance_Round — 스트리밍 Feed 후 라운드 카운터 증가 ─────
     void FEC_HARQ::Advance_Round_16(RxState16& s) noexcept {
         if (!s.ok) s.k++;
     }
@@ -479,7 +478,7 @@ namespace ProtectedEngine {
             nsym_for_bps(bps), C64, bps, out, len, il, wb);
     }
 
-    // ── [BUG-54] Decode_Core_Split — I/Q 분리 배치용 Decode 래퍼 ──
+    // ── Decode_Core_Split — I/Q 분리 배치용 Decode 래퍼 ──────────
     bool FEC_HARQ::Decode_Core_Split(
         const int32_t* accI, const int32_t* accQ,
         int nsym, int nc, int bps,

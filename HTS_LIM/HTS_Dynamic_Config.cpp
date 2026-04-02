@@ -1,7 +1,6 @@
-#if __cplusplus >= 202002L || \\
-    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_LIKELY   HTS_LIKELY
-#define HTS_UNLIKELY HTS_UNLIKELY
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   [[likely]]
+#define HTS_UNLIKELY [[unlikely]]
 #else
 #define HTS_LIKELY
 #define HTS_UNLIKELY
@@ -16,19 +15,19 @@
 namespace ProtectedEngine {
 
     namespace {
-        // ── [BUG-16] AIRCR 레지스터 상수 (⑨강화 J-3) ────────────
+        // ── AIRCR 레지스터 상수 (⑨강화 J-3) ─────────────────────
         constexpr uintptr_t k_AIRCR_ADDR = 0xE000ED0Cu;
         constexpr uint32_t  k_AIRCR_VECTKEY = 0x05FA0000u;
         constexpr uint32_t  k_AIRCR_SYSRST = 0x04u;
 
-        // ── [BUG-18] 단위 변환 명명 상수 (J-3) ──────────────────
+        // ── 단위 변환 명명 상수 (J-3) ───────────────────────────
         constexpr uint64_t  k_ARM_SRAM = 128ULL << 10u;    // 128 KB
         constexpr uint8_t   k_RATIO_MAX_PCT = 100u;
 
-        // ── [BUG-22] Q16 역수: 1/100 × 65536 ≈ 656 (Ceiling) ────
-        //   기존: 655/65536 = 0.009994… (−0.06% 절사 오차)
+        // ── Q16 역수: 1/100 × 65536 ≈ 656 (Ceiling) ─────────────
+        //   655/65536 = 0.009994… (−0.06% 절사 오차)
         //    → 131072×25×655>>16<<3 = 262,000 → Floor_Pow2 = 131,072 (−50%!)
-        //   수정: 656/65536 = 0.010009… (+0.09% 양의 오차)
+        //   656/65536 = 0.010009… (+0.09% 양의 오차)
         //    → 131072×25×656>>16<<3 = 262,400 → Floor_Pow2 = 262,144 (0%!)
         //   원리: Floor_Pow2 앞에서는 반드시 양의 오차(ceil)를 써야
         //         2^N 경계를 살짝 넘겨 절반 손실을 방지
@@ -65,7 +64,7 @@ namespace ProtectedEngine {
             return (v >> 1u) + 1u;
         }
 
-        // ── [BUG-19] C++20 속성 가드 ────────────────────────────
+        // ── C++20 속성 가드 ─────────────────────────────────────
 #if __cplusplus >= 202002L
 #define HTS_DYNCFG_LIKELY   HTS_LIKELY
 #else
@@ -73,8 +72,8 @@ namespace ProtectedEngine {
 #endif
 
         // ── System_Panic: ARM AIRCR 즉시 리셋 / PC abort 폴백 ──
-        //   기존: __GNUC__로 가드 → x86 GCC에서 cpsid/dsb/wfi 컴파일 에러
-        //   수정: __arm__ 가드로 ARM asm 격리 + PC는 무한루프 폴백
+        //   __GNUC__로 가드 → x86 GCC에서 cpsid/dsb/wfi 컴파일 에러
+        //   __arm__ 가드로 ARM asm 격리 + PC는 무한루프 폴백
         [[noreturn]] inline void System_Panic() noexcept {
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
@@ -184,8 +183,8 @@ namespace ProtectedEngine {
             active_ratio = 2u;
         }
 
-        //  기존: (ram * ratio / 100) << 3
-        //  수정: (ram * ratio * 655) >> 16 << 3
+        //  (ram * ratio / 100) << 3
+        //  (ram * ratio * 655) >> 16 << 3
         //  Q16 역수: floor(65536 / 100) = 655
         //  오차 -0.06% — Floor_Power_Of_Two가 2^N 정렬하므로 무영향
         const uint64_t calc_nodes_64 =

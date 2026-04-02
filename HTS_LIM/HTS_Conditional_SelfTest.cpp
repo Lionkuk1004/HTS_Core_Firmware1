@@ -107,13 +107,13 @@ namespace ProtectedEngine {
         };
 
         // 암호화 (in-place)
-        alignas(4) uint8_t work[16] = {};
+        // Strict Aliasing 위반 방지: 원본 버퍼를 uint32_t로 선언
+        uint32_t work[4] = {};
         std::memcpy(work, pt_raw, 16);
         {
             LEA_Bridge enc;
             if (enc.Initialize(key, key_len_bytes, iv_16) != LEA_Bridge::SECURE_TRUE) return false;
-            if (enc.Encrypt_Payload(
-                reinterpret_cast<uint32_t*>(work), 4u) != LEA_Bridge::SECURE_TRUE) {
+            if (enc.Encrypt_Payload(work, 4u) != LEA_Bridge::SECURE_TRUE) {
                 SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
@@ -126,14 +126,13 @@ namespace ProtectedEngine {
                 SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
-            if (dec.Decrypt_Payload(
-                reinterpret_cast<uint32_t*>(work), 4u) != LEA_Bridge::SECURE_TRUE) {
+            if (dec.Decrypt_Payload(work, 4u) != LEA_Bridge::SECURE_TRUE) {
                 SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
         }
 
-        bool ok = CST_CT_Eq(work, pt_raw, 16);
+        bool ok = CST_CT_Eq(reinterpret_cast<const uint8_t*>(work), pt_raw, 16);
         SecureMemory::secureWipe(work, sizeof(work));
         return ok;
     }

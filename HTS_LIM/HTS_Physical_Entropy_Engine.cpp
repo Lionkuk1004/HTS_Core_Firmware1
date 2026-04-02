@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Physical_Entropy_Engine.cpp
 // 물리적 엔트로피 엔진 구현부 — Murmur3 다중 혼합 PRNG
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -31,14 +31,10 @@ namespace ProtectedEngine {
     //  DWT LAR 레지스터는 M4에 물리적 미존재 (M7/M33 전용)
     // =====================================================================
     static uint32_t Read_DWT_CYCCNT() noexcept {
-        // [J-3 FIX] 매직넘버 → constexpr (ARM CoreSight 표준)
+        // J-3: DWT CYCCNT 주소 constexpr (CoreSight)
         static constexpr uintptr_t ADDR_DWT_CYCCNT = 0xE0001004u;  ///< DWT Cycle Count Register
 
-        //  기존: if(미활성) → RMW(DEMCR|=TRCENA, DWT_CTRL|=ENA)
-        //  위험: ISR+스레드 동시 진입 시 RMW 충돌 → 레지스터 값 붕괴
-        //  수정: Hardware_Init::Initialize_System()에서 부팅 시 1회 활성화 완료
-        //        → 여기서는 단순 읽기만 수행 (RMW 0회, 레이스 원천 차단)
-        //  전제: DWT는 Hardware_Init에서 이미 활성화됨 (DEMCR.TRCENA=1, CYCCNTENA=1)
+        //  DWT는 Hardware_Init::Initialize_System()에서 활성화 — 여기서는 읽기만
         volatile uint32_t* const DWT_CYCCNT =
             reinterpret_cast<volatile uint32_t*>(ADDR_DWT_CYCCNT);
         return *DWT_CYCCNT;
@@ -49,7 +45,7 @@ namespace ProtectedEngine {
     //  타임아웃/에러 시 DWT 폴백 (TRNG 고장 대비)
     // =====================================================================
     static uint32_t Read_STM32_RNG() noexcept {
-        // [J-3 FIX] 매직넘버 → constexpr (STM32F407 RNG + RCC)
+        // J-3: RNG/RCC 레지스터 constexpr
         static constexpr uintptr_t ADDR_RNG_CR = 0x50060800u;  ///< RNG Control
         static constexpr uintptr_t ADDR_RNG_SR = 0x50060804u;  ///< RNG Status
         static constexpr uintptr_t ADDR_RNG_DR = 0x50060808u;  ///< RNG Data

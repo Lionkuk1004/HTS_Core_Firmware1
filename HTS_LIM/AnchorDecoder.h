@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // =========================================================================
 // AnchorDecoder.h
 // GF(2^8) Cauchy Reed-Solomon 이레이저 복구 디코더 — 공개 인터페이스
@@ -21,12 +21,6 @@
 //      → 0xFFFF 마커 위치를 이레이저로 식별 → RS 복원
 //      → CRC-32 매치 시 즉시 반환 (이미 정상)
 //      → 복원 불가 시 빈 벡터 반환 (훼손 원본 전파 차단)
-//
-//  [양산 수정 이력 — 세션 5+6+11+14: 22건]
-//   BUG-01~12 (abort 7회 제거, dead include 8개, GF8Bit 초기화,
-//   divide/0 방어, Cauchy xor_val 가드, copy/move, AnchorManager,
-//   CRC32 Zero-copy, nodiscard, Self-Contained, iostream/cstdlib, Doxygen)
-//   BUG-13~22 (CRC 엔디안, Post-CRC, 빈 벡터 통일, DRY, decode_inplace)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once

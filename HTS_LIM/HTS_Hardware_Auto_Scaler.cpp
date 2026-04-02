@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Hardware_Auto_Scaler.cpp
 // 텐서 자동 스케일링 구현부
 // Target: STM32F407 (Cortex-M4, DMA SRAM 128KB)
@@ -105,7 +105,7 @@ namespace ProtectedEngine {
     //  2. 50% HTS 엔진 할당
     //  3. 4바이트(듀얼 텐서)로 나누기
     //  4. [MIN_TENSORS, MAX_TENSORS] 클리핑 (두 값 모두 2의제곱)
-    //  5. [BUG-04] 2의 제곱수 내림 정렬 (DMA 버스트 최적)
+    //  5. 2의 제곱수 내림 정렬 (DMA 버스트 최적)
     //
     //  [STM32F407 결과]
     //  128KB → 64KB → 16384 → clip[1024, 2^20] = 16384 → pow2 = 16384 (2^14) ✓
@@ -117,11 +117,11 @@ namespace ProtectedEngine {
         size_t free_mem = Get_Free_System_Memory();
 
         // 전체 가용 메모리의 50%만 HTS 엔진에 할당
-        // [⑨-FIX] /2 → >>1u (2의제곱 시프트 전환)
+        // ⑨ /2 → >>1u
         size_t allocatable_mem = free_mem >> 1u;
 
         // 듀얼 텐서(4바이트) 단위 개수 산출
-        // [⑨-FIX] /BYTES_PER_DUAL_TENSOR(=4) → >>2u
+        // ⑨ /BYTES_PER_DUAL_TENSOR(=4) → >>2u
         size_t optimal_tensors = allocatable_mem >> 2u;
 
         // 안전 클리핑 [MIN, MAX] — 두 값 모두 2의제곱수 (헤더 static_assert)

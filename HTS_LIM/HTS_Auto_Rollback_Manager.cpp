@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Auto_Rollback_Manager.cpp
 // 치명적 변조 감지 시 자가 치유(Self-Healing) 트리거 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -91,8 +91,7 @@ namespace ProtectedEngine {
         __asm__ __volatile__("isb" : : : "memory");
 
 #elif defined(__aarch64__)
-        //  기존: while(true) → watchdog SIGKILL 대기 수 초 → 덤프 가능
-        //  수정: __builtin_trap() → SIGILL 즉시 발생 → OS가 프로세스 메모리 회수  
+        //  A55: __builtin_trap() → 즉시 SIGILL (무한 대기·덤프 창 최소화)  
         __builtin_trap();
 
 #else

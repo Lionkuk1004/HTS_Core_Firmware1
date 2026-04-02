@@ -1,39 +1,9 @@
-﻿// =============================================================================
+// =============================================================================
 /// @file   HTS64_Native_ECCM_Core.cpp
 /// @brief  64칩 ECCM 수신 엔진 구현
 /// @target STM32F407VGT6 (Cortex-M4F, 168 MHz) / PC 시뮬레이션
 ///
 /// @see HTS64_Native_ECCM_Core.hpp
-///
-/// [양산 수정 이력 — 35건]
-///  BUG-20 [CRIT] soft_clip int64_t 나눗셈 → Q8 역수 곱셈
-///  BUG-21 [HIGH] seq_cst → release × 2곳 (소거 배리어 정책 통일)
-///  BUG-22 [MED]  U-A: sizeof(Impl) ≈ 1040B 경고 (BUG-32 수치 수정)
-///  BUG-23 [MED]  U-B: sizeof ≤ 4096 static_assert SRAM 예산 검증
-///  BUG-24 [LOW]  D-2: SecWipe MSVC volatile char→uint8_t 프로젝트 통일
-///  BUG-25 [MED]  J-3: Q25/Q75 인덱스(15,47) → N 파생 constexpr
-///  BUG-26 [LOW]  nth_select 가드 카운터 추가 (V400 통일, WCET 결정론)
-///  BUG-27 [HIGH] N % 4 == 0 static_assert 추가
-///  BUG-28 [HIGH] Calibrate() cal TOCTOU → compare_exchange_strong CAS
-///  BUG-29 [MED]  extract_and_descramble 소프트 클리핑 중복 static_cast 제거
-///  BUG-30 [LOW]  Calibrate() @pre Doxygen 사전조건 추가
-///  BUG-31 [LOW]  PRNG 스레드 안전성 Doxygen 주석 보강
-///  BUG-32 [LOW]  sizeof(Impl) Doxygen 수치 재검증 (2056B → 약 1040B)
-///  BUG-33 [CRIT] clip8/mags[i] 런타임 나눗셈 → CLZ 기반 역수 근사
-///  BUG-34 [FATAL] CFAR 오경보 마진 누락 수정
-///          · 기존: adaptive_threshold = nf^2*N (α=1.0, 오경보율 이론치 초과)
-///          · 수정: th = nf^2*N << CFAR_MARGIN_SHIFT (α=2.0)
-///                 CFAR_MARGIN_SHIFT=1 상수로 필드 조정 가능
-///  BUG-36 [CRIT]  D-2 SecureMemory + impl_valid_ atomic + 소멸 순서 (get_impl 후 invalid)
-///  BUG-37 [HIGH]  impl_buf_ alignas(64) + alignof(Impl)≤IMPL_BUF_ALIGN static_assert
-///  BUG-38 [MED]   p_metrics_ std::atomic — Set(release) / Decode(acquire) 레이스 제거
-///  BUG-41 [CRIT]  D-2: HTS_Secure_Memory Force_Secure_Wipe 전 플랫폼 배리어 (구현 파일)
-///  BUG-42 [HIGH] I-2/N-3: PRNG/NF CAS 스핀 상한 + IQ·FWHT 포인터 정렬 검사 (B-2/H-5)
-///                 G-2: argmax 에너지 int64_t 중간합 (오버플로·UB 방지)
-///  BUG-35 [CRIT]  EMP 펀칭 우회 결함 수정
-///          · 기존: is_cw=true 시 clip_u = q75<<2 >> punch → 필터링 누락
-///          · 수정: clip_u = min(clip_u_raw, punch) 클램프
-///                 → clip_u <= punch 항상 보장, 전 구간 연속 필터링
 // =============================================================================
 #include "HTS64_Native_ECCM_Core.hpp"
 #include "HTS_RF_Metrics.h"   // ajc_nf 기록용 (선택적)
@@ -63,26 +33,25 @@ namespace ProtectedEngine {
     static_assert(N % 4 == 0,
         "N must be a multiple of 4 for exact Q25/Q75 index derivation");
 
-    /// @brief Q75/Q25 비율 임계값 (CW 감지 — BUG-19)
+    /// @brief Q75/Q25 비율 임계값 (CW 감지)
     static constexpr uint32_t CW_RATIO_TH = 4u;
 
-    /// @brief 32비트 argmax 안전 피크 임계값 (BUG-17)
+    /// @brief 32비트 argmax 안전 피크 임계값
     static constexpr int32_t ARGMAX_SAFE_PEAK = 46340;
 
-    /// @brief Q25/Q75 인덱스 — N에서 자동 파생 (BUG-25 J-3)
+    /// @brief Q25/Q75 인덱스 — N에서 자동 파생 (J-3)
     static constexpr int Q25_IDX = N / 4 - 1;       // 15 (N=64)
     static constexpr int Q75_IDX = 3 * N / 4 - 1;   // 47 (N=64)
 
-    /// @brief [BUG-FIX CFAR] OS-CFAR 오경보 마진 팩터 (left-shift 적용)
-    ///  기존: th = nf^2 * N  (α=1.0, 오경보율 이론치 초과)
-    ///  수정: th = nf^2 * N << CFAR_MARGIN_SHIFT  (α=2^1=2.0)
+    /// @brief OS-CFAR 오경보 마진 팩터 (left-shift 적용)
+    ///  CFAR 임계: th = nf^2 * N << CFAR_MARGIN_SHIFT
     ///  근거: OS-CFAR 표준 마진 α=1.5~4.0. α=2는 오경보율 50% 감소
     ///         동시에 최소 SNR 요구값 +3dB (재밍 환경 적합)
     ///  값 조정: CFAR_MARGIN_SHIFT=1(α=2) → 오경보 -50%, 감도 -3dB
     ///           필드 환경에서 SNR 여유가 충분하면 SHIFT=2(α=4)도 가능
     static constexpr int CFAR_MARGIN_SHIFT = 1;  ///< α = 2^SHIFT = 2
 
-    /// @brief [BUG-FIX EMP] 소프트 클리핑 상한 = punch 이하로 강제 클램프
+    /// @brief 소프트 클리핑 상한 = punch 이하로 강제 클램프
     ///  punch = baseline << PUNCH_SHIFT (기본 3 = 8배)
     ///  clip_u가 punch보다 크면 EMP 펄스 에너지가 필터링 없이 통과
     ///  → clip_u = min(clip_u, punch - 1) 로 항상 punch 내측 보장
@@ -117,7 +86,7 @@ namespace ProtectedEngine {
             && ptr_aligned_for(b, alignof(int32_t));
     }
 
-    /// @brief Q8 비율 clip8/m — 런타임 UDIV 없음 [BUG-33]
+    /// @brief Q8 비율 clip8/m — 런타임 UDIV 없음 (CLZ 역수 근사)
     /// @details m≥2^msb 이므로 clip8/m ≤ clip8/2^msb = clip8>>msb. 상한 근사로 소프트 클립(피크 억제)에 적합.
     static uint32_t ratio_q8_from_clip8_m(uint32_t clip8, uint32_t m) noexcept {
         m |= 1u;
@@ -148,7 +117,7 @@ namespace ProtectedEngine {
     }
 
     /// @brief Quickselect O(N) — k번째 최솟값 반환
-    /// [BUG-26] 가드 카운터: guard = N×4 = 256 → WCET 결정론
+    /// 가드 카운터: guard = N×4 = 256 → WCET 결정론
     static uint32_t nth_select(uint32_t* a, int n, int k) noexcept {
         if (a == nullptr || n <= 0 || k < 0 || k >= n) {
             return 0u;
@@ -198,7 +167,7 @@ namespace ProtectedEngine {
         union {
             uint32_t sorted[N];   // nth_select 전용 (파괴적 읽기)
             int32_t  sI[N];       // 스크램블 해제 I + FWHT
-        } scratch_ = {};          // [FIX-C26495] 익명 union 제로 초기화
+        } scratch_ = {};          // 익명 union 제로 초기화 (MSVC C26495)
         int32_t  sQ[N] = {};
 
         // ── Lock-Free PRNG (Xorshift32) — CAS 스핀 상한 (I-2 / N-3, ISR·RTOS 행업 방지)
@@ -292,7 +261,7 @@ namespace ProtectedEngine {
 
             const bool is_cw_like = (q75 > baseline * CW_RATIO_TH);
             const bool is_clean = (baseline < CLEAN_TH);
-            //  기존: 하드코딩 << 3u — PUNCH_SHIFT 상수화
+            //  하드코딩 << 3u — PUNCH_SHIFT 상수화
             const uint32_t punch = baseline << static_cast<uint32_t>(PUNCH_SHIFT);
 
             int32_t clip = is_cw_like
@@ -301,28 +270,8 @@ namespace ProtectedEngine {
             if (clip < 4) { clip = 4; }
 
             //
-            //  기존 문제:
-            //   CW 재밍 시 clip_u = q75<<2 (예: 400) > punch (예: 80)
-            //   -> mags[i] 가 punch~clip_u 구간에 있으면 어느 조건도 미충족
-            //   -> EMP/순간 고에너지 펄스가 소프트클립 없이 디코더 직통
+            //  clip_u = min(clip_u_raw, punch) — clip와 punch 사이 갭 제거, mags>punch는 영점 소거
             //
-            //  수정:
-            //   clip_u = min(clip_u, punch)로 강제 클램프
-            //   -> mags[i] > punch  : 제로(영점 소거, 기존 동작)
-            //   -> mags[i] > clip_u : 소프트클립 (clip_u <= punch 보장)
-            //   -> punch와 clip_u 사이 구간이 소멸 -> 필터링 누락 없음
-            //
-            //  EMP 케이스 검증:
-            //   baseline=500, q75=600, is_cw=false
-            //   punch=4000, clip_u=min(2000,4000)=2000
-            //   mags[i]=500: clip_u(2000) > 500 → 소프트클립 적용 ✓
-            //   mags[i]=3000: punch(4000) > 3000 → 소프트클립 적용 ✓
-            //   mags[i]=5000: > punch(4000) → 제로 소거 ✓
-            //  CW 케이스 검증:
-            //   baseline=10, q75=100, is_cw=true
-            //   punch=80, clip_u=min(400,80)=80
-            //   mags[i]=50: clip_u(80) > 50 → 소프트클립 적용 ✓
-            //   mags[i]=100: > punch(80) → 제로 소거 ✓
             const uint32_t clip_u_raw = static_cast<uint32_t>(clip);
             const uint32_t clip_u = (clip_u_raw < punch) ? clip_u_raw : punch;
             const uint32_t clip8 = clip_u << 8u;
@@ -355,10 +304,10 @@ namespace ProtectedEngine {
         uint64_t adaptive_threshold() const noexcept {
             uint32_t nf = nf_q16.load(std::memory_order_relaxed) >> 16u;
             if (nf < MIN_NF) { nf = MIN_NF; }
-            //  기존: th = nf^2 * N  (α=1.0)
+            //  th = nf^2 * N  (α=1.0)
             //    → 오경보 조건: best_actual >= th 에서 α=1.0은
             //      노이즈 피크가 통계적으로 th를 넘을 확률이 높음
-            //  수정: th = nf^2 * N << CFAR_MARGIN_SHIFT  (α=2^1=2.0)
+            //  th = nf^2 * N << CFAR_MARGIN_SHIFT  (α=2^1=2.0)
             //    → 임계값 2배 상승 → 오경보율 이론상 50% 감소
             //    → 정상 수신 신호는 nf의 수배 이상이므로 miss 없음
             //  오버플로 안전성:
@@ -535,7 +484,7 @@ namespace ProtectedEngine {
     ///      함수 내부에서 포인터 산술(nI += N)로 순차 접근하므로
     ///      배열이 부족하면 OOB 읽기 발생 — 호출자가 경계 보장할 것
     ///
-    /// [BUG-28] CAS 가드: compare_exchange_strong으로 1회만 진입
+    /// CAS 가드: compare_exchange_strong으로 1회만 진입
     // =========================================================================
     bool HTS64_Native_ECCM_Core::Calibrate(
         const int16_t* nI, const int16_t* nQ, uint32_t nf) noexcept
@@ -546,9 +495,9 @@ namespace ProtectedEngine {
             return false;
         }
 
-        //  기존: nf 루프로 nI += N 반복 → 호출자가 N*nf 크기 보장 필수
+        //  nf 루프로 nI += N 반복 → 호출자가 N*nf 크기 보장 필수
         //  문제: V400은 Feed_Chip 1프레임(64칩)만 전달 → nf>1이면 OOB 즉사
-        //  수정: nf를 1로 클램프하여 단일 프레임만 처리
+        //  nf를 1로 클램프하여 단일 프레임만 처리
         //  캘리브레이션 정밀도: update_nf IIR 필터가 프레임별로 수렴 → 1프레임 충분
         if (nf > 1u) { nf = 1u; }
 

@@ -29,9 +29,9 @@
 //
 //  @warning sizeof ≈ 560B — 전역/정적 배치 권장
 //
-//  BUG-42 [CRIT] D-2: 안티포렌식 소거는 SecureMemory::secureWipe 단일화
+//  D-2: 안티포렌식 소거는 SecureMemory::secureWipe 단일화
 //         소멸자: op_busy_ 단일 스핀 획득 후 impl_buf 전량 파쇄(조기 return 없음)
-//  BUG-43 [CRIT] Cortex-M 소멸자: PRIMASK로 스핀·파쇄 구간 ISR 재진입 데드락 차단
+//  Cortex-M 소멸자: PRIMASK로 스핀·파쇄 구간 ISR 재진입 데드락 차단
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 // ─────────────────────────────────────────────────────────

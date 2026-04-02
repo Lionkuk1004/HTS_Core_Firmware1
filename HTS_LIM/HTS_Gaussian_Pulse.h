@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Gaussian_Pulse.h
 // 가우시안 펄스 셰이핑 엔진 (GMSK/GFSK 기반 8-Way 텐서 다중화)
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -25,14 +25,6 @@
 //  [메모리]
 //   filter_coeffs[128] + filter_coeffs_H1[128] = 1KB (정적, 힙 0회)
 //   IIR 상태: prev_in(8B) + prev_out(8B) = 16B
-//
-//  [양산 수정 이력 — 20건]
-//   BUG-15 [HIGH] seq_cst → release
-//   BUG-16 [CRIT] try-catch 4블록 제거
-//   BUG-17 [CRIT] filter_coeffs vector → int32_t[128] 정적 배열
-//   BUG-18 [CRIT] fp64 -> fp32 (ARM 단정밀도 하드웨어 FPU)
-//   BUG-19 [HIGH] Raw 포인터 API 추가 (ARM Zero-Heap)
-//   BUG-20 [HIGH] 소멸자: 계수 배열 보안 소거 추가
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once

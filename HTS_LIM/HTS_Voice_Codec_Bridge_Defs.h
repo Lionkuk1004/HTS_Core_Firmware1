@@ -16,7 +16,6 @@
 /// @details
 ///   보코더(MELP/CELP) 파라미터 프레임 B-CDMA 패킹/언패킹.
 ///
-///   [양산 수정]
 ///   - PLC(Packet Loss Concealment): 프레임 손실 시 Comfort Noise 주입
 ///   - 시퀀스 검증: 역전/중복 패킷 탐지 + 드롭
 ///   - 패딩 제거 + ASIC ROM 합성 최적화

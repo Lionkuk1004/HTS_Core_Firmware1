@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Session_Gateway.cpp
 // 최상위 보안 세션 컨트롤러 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -17,7 +17,7 @@
 
 namespace ProtectedEngine {
 
-    // ── [BUG-24] 매직 넘버 상수화 ──
+    // ── 매직 넘버 상수화 (J-3) ───────────────────────────────────
     namespace {
         constexpr uint32_t HEAL_PUF_FAIL = 0xDEAD0000u;  ///< PUF 시드 추출 실패
         constexpr uint32_t HEAL_ALLOC_FAIL = 0xDEAD0001u;  ///< 세션 초기화 실패

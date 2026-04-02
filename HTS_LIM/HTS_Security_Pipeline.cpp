@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Security_Pipeline.cpp
 // 최상위 보안 파이프라인 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -76,11 +76,11 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: if (Is_Under_Observation() || !Continuous_Session_Verification())
+    //  if (Is_Under_Observation() || !Continuous_Session_Verification())
     //  → 글리치로 첫 번째 BNE 스킵 시 두 번째 검사 건너뜀!
     //
-    //  수정: 각 검사를 volatile bool에 개별 저장 → 비트 OR 합산
-    //  → 단일 분기로 축소 (Anti_Glitch BUG-07과 동일 원리)
+    //  각 검사를 volatile bool에 개별 저장 → 비트 OR 합산
+    //  → 단일 분기로 축소 (Anti_Glitch와 동일 원리)
     // =====================================================================
     static bool security_check_failed(uint64_t session_id) noexcept {
         // 각 검사 결과를 volatile에 개별 저장
@@ -158,9 +158,9 @@ namespace ProtectedEngine {
     //  '청크 단위 훼손 탐지용 체크섬'으로만 사용하십시오.
     //
     //  ARM Cortex-M4: 64비트 원자적 연산 미지원
-    //  기존: fetch_xor(__atomic_fetch_xor_8) → libatomic 소프트웨어 락
+    //  fetch_xor(__atomic_fetch_xor_8) → libatomic 소프트웨어 락
     //        → Tearing + 링커 에러 + HardFault
-    //  수정: hi/lo 32비트 분할 → LDREX/STREX 단일 사이클 lock-free
+    //  hi/lo 32비트 분할 → LDREX/STREX 단일 사이클 lock-free
     // =====================================================================
     void Security_Pipeline::Secure_Master_Worker_AEAD(
         uint32_t* data, size_t start, size_t end,
@@ -181,9 +181,9 @@ namespace ProtectedEngine {
             return;
         }
 
-        // 기존: uint64_t local_tag × FNV_PRIME(64bit) + rotl64(13)
+        // uint64_t local_tag × FNV_PRIME(64bit) + rotl64(13)
         //  → __aeabi_lmul(30cyc) + 64bit shift(8cyc) = 요소당 ~50cyc
-        // 수정: tag_hi/tag_lo 독립 FNV-1a 32비트 × FNV32_PRIME
+        // tag_hi/tag_lo 독립 FNV-1a 32비트 × FNV32_PRIME
         //  → UMULL(1cyc) + ROR(1cyc) = 요소당 ~6cyc (8× 가속)
         // 출력 호환: global_tag_hi/lo에 직접 XOR 병합 (분할 불필요)
         uint32_t tag_hi = 0u;

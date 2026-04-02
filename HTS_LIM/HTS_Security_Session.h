@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Security_Session.h
 // KCMVP 암호/인증 통합 오케스트레이터 — 공개 인터페이스
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -27,13 +27,6 @@
 //     헤더에는 불투명 바이트 배열만 노출 → 외부 업체 역공학 차단
 //   소멸자: 세션 키 + HMAC o_key_pad + inner_ctx 전부 보안 소거
 //   복사/이동: = delete (세션 상태 복제 원천 차단)
-//
-//  [양산 수정 이력 — 19건]
-//   세션5 01~10: HMAC 소거, Pimpl, memset DCE, LEA 절삭, pragma,
-//     Doxygen, CTR partial, O(1) counter, header, nothrow
-//   세션8 11~19: keystream 소거, partial_len 주석, ARIA_Bridge 주석,
-//     static_assert, placement new(힙0), 더티 메모리 0클린,
-//     ~15u 제로 확장, 키 확장 캐싱, MAC 실패→세션 종료
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -104,11 +97,10 @@ namespace ProtectedEngine {
 
     private:
         //
-        // unique_ptr<Impl> → alignas(4) uint8_t[] 고정 버퍼
-        // cpp에서 placement new로 Impl 구축 → 힙 접근 0회
+        // Pimpl: alignas(8) uint8_t impl_buf_ 고정, placement new (힙 0)
         //
         // IMPL_BUF_SIZE: Impl 구조체 크기 상한
-        //   기존 멤버: ~800B
+        //   멤버: ~800B
         //   → 안전 마진 포함 4096B
         //
         // static_assert(sizeof(Impl) <= IMPL_BUF_SIZE)는 cpp에서 검증

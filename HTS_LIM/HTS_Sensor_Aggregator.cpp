@@ -118,7 +118,7 @@ namespace ProtectedEngine {
         // ──────────────────────────────────────────────────
         //  센서 건강 상태 머신 (3단계 판정)
         //
-        //  수정: 3단계 에스컬레이션 + 명확한 복구 경로
+        //  3단계 에스컬레이션 + 명확한 복구 경로
         //
         //  상태 전이:
         //   OK ──(동일값 10회)──→ STALE ──(+0/4095)──→ STUCK
@@ -281,8 +281,8 @@ namespace ProtectedEngine {
         const uint32_t elapsed = systick_ms - p->last_sample_ms;
         if (elapsed < period) { return; }
 
-        //  기존: last = systick_ms → 지연 누적 → IIR 시정수 왜곡
-        //  수정: last += period → 정확한 샘플링 주파수 유지
+        //  last = systick_ms → 지연 누적 → IIR 시정수 왜곡
+        //  last += period → 정확한 샘플링 주파수 유지
         //  안전 장치: 2주기 이상 밀린 경우 → 현재 시각으로 리셋 (폭주 방지)
         if (elapsed >= period * 2u) {
             p->last_sample_ms = systick_ms;  // 과도 지연: 리셋

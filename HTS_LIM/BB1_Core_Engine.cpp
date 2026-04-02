@@ -1,7 +1,6 @@
-#if __cplusplus >= 202002L || \\
-    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_LIKELY   HTS_LIKELY
-#define HTS_UNLIKELY HTS_UNLIKELY
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   [[likely]]
+#define HTS_UNLIKELY [[unlikely]]
 #else
 #define HTS_LIKELY
 #define HTS_UNLIKELY
@@ -12,34 +11,6 @@
 // Target: STM32F407VGT6 (Cortex-M4F, 168MHz)
 //         Flash 1MB / SRAM 192KB (112KB+16KB CCM+64KB 보조)
 //
-// ─────────────────────────────────────────────────────────────────────────
-//  [양산 수정 이력 — 누적 59건]
-//  BUG-47 [CRIT] unique_ptr Pimpl → placement new (zero-heap)
-//  BUG-48 [HIGH] Secure_Wipe_BB1 pragma O0 제거
-//  BUG-49 [HIGH] Secure_Wipe_BB1 seq_cst → release
-//  BUG-50 [CRIT] noise_ratio_to_q16 double → 정수 나눗셈
-//  BUG-51 [CRIT] Scramble_XOR LCG 31비트 마스킹 제거
-//  BUG-52 [CRIT] Impl vector 6개 → 정적 배열 (힙 완전 제거)
-//  BUG-53 [MED]  static_assert 메시지 "1024B" 잔류 → "81920B" 수정
-//  BUG-54 [LOW]  HTS_UNLIKELY/HTS_LIKELY C++20 가드 매크로 (C++14/17 호환)
-//  BUG-55 [CRIT] noise_to_q16 uint64_t 나눗셈 → uint32_t 다운캐스트
-//         · MAX_TENSOR_ELEMENTS=2048 → 2048<<16=134M < UINT32_MAX ✓
-//         · __aeabi_uldivmod 100+cyc → UDIV 2~12cyc
-//  BUG-56 [MED]  AIRCR 매직넘버(0xE000ED0C,0x05FA) → constexpr 상수화
-//         · TX pipeline + RX pipeline 2곳 모두 적용
-//  BUG-57 [LOW]  C26495 tx/rx 익명 구조체 멤버 초기화 (MSVC 경고 해소)
-//         · struct { uint32_t arr[N]; } tx; → struct { uint32_t arr[N] = {}; } tx = {};
-//         · 생성자에서 placement new + Wipe로 이중 초기화되므로 기능 무관
-//  BUG-58 [LOW]  Polymorphic_Shield block_index CTR 카운터 추가
-//         · TX Apply + RX Reverse 양쪽 static_cast<uint32_t>(i) 전달
-//         · 기존: block_index=0 (동일 청크 내 동일 키스트림)
-//         · 수정: 원소별 고유 CTR → 키스트림 다양성 확보
-//  BUG-59 [HIGH] noise_to_q16 오버플로우 안전 증명 → static_assert 추가
-//         · 기존: 주석 증명만 존재 ("2048<<16=134M < UINT32_MAX")
-//         · 수정: static_assert로 컴파일 타임 보장
-//         · MAX_TENSOR_ELEMENTS 변경 시 주석 미갱신 위험 원천 차단
-//  BUG-60 [검수 KB] static_assert 실측: BB1_STATIC_ARRAYS < 80*1024;
-//         IMPL_BUF_SIZE=20480B — sizeof(Impl)≤IMPL_BUF_SIZE(메시지 문자열은 참고용)
 // =========================================================================
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -53,6 +24,7 @@
 #include <cstring>
 #include <new>
 #include <algorithm>
+#include <type_traits>
 
 #include "HTS_Gyro_Engine.h"
 #include "HTS_Entropy_Arrow.hpp"
@@ -61,13 +33,11 @@
 #include "HTS_Polymorphic_Shield.h"
 #include "HTS_Universal_API.h"
 #include "HTS_AntiAnalysis_Shield.h"
-// [VDF 삭제] HTS_Quantum_Decoy_VDF.h 제거
-//  Execute_Time_Lock_Puzzle: 50,000회×64비트 = 119ms CPU 독점
-//  → DMA 타임슬롯 1ms의 119배 초과 → 패킷 100% 유실
-//  V400 Walsh 확산 + ARIA/LEA 암호화 + Polymorphic_Shield가 보안 담당
+// Quantum Decoy VDF 미연동 — BB1은 Walsh·암호·Polymorphic_Shield 경로
 #include "HTS_Orbital_Mapper.hpp"
 #include "HTS_Sparse_Recovery.h"
 #include "HTS_Holo_Tensor_Engine.h"
+#include "HTS_Secure_Memory.h"
 
 // =========================================================================
 //  프로젝트 표준 패턴 (HTS_Universal_Adapter, HTS_Entropy_Arrow 등과 통일)
@@ -82,16 +52,10 @@
 
 namespace ProtectedEngine {
 
-    // ── [BUG-48] 보안 메모리 소거 ─────────────────────────────────────
-    // pragma O0 제거 → memset + asm clobber(DSE 차단) + seq_cst(순서 보장)
-    // Strict Aliasing 규칙 준수 — volatile 포인터 캐스팅 우회 없음
+    // ── 보안 메모리 소거 ─────────────────────────────────────────────
+    // SecureMemory::secureWipe — volatile 바이트 스토어 + 배리어 (LTO/DCE 안전)
     static void Secure_Wipe_BB1(void* ptr, size_t size) noexcept {
-        if (ptr == nullptr || size == 0u) { return; }
-        std::memset(ptr, 0, size);
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(ptr) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
+        SecureMemory::secureWipe(ptr, size);
     }
 
     // ── Q16 상수 ────────────────────────────────────────────────────────
@@ -113,7 +77,7 @@ namespace ProtectedEngine {
     // shared: state_map(8KB) + temp_vec(8KB) = 16KB (TX/RX 반이중 공유)
     // rx_only: erased_bits(256B) — 비트 패킹 (uint8_t[2048] → uint32_t[64])
     // erasure_idx: 완전 제거 (2-pass → 1-pass 인라인)
-    // 합계: 32.5KB (기존 76KB → 56% 절감)
+    // 합계: 32.5KB 정적 배열
     static constexpr size_t BB1_STATIC_ARRAYS =
         MAX_TENSOR_ELEMENTS * sizeof(uint32_t) * 2   // state_map + temp_vec (공유)
         + (MAX_TENSOR_ELEMENTS / 32u) * sizeof(uint32_t);  // erased_bits
@@ -128,16 +92,82 @@ namespace ProtectedEngine {
         <= static_cast<uint64_t>(UINT32_MAX),
         "MAX_TENSOR_ELEMENTS << 16이 uint32_t 범위를 초과합니다 — noise_to_q16 수정 필요");
 
-    // ── [BUG-56] ARM Cortex-M AIRCR 리셋 상수 (J-3 매직넘버 상수화) ────
+    // ── ARM Cortex-M AIRCR 리셋 상수 (J-3 매직넘버 상수화) ─────────────
     // Application Interrupt and Reset Control Register
     // ARM Architecture Reference Manual (DDI0403E) §B3.2.6
     static constexpr uintptr_t AIRCR_ADDR = 0xE000ED0Cu;  // AIRCR 레지스터 주소
     static constexpr uint32_t  AIRCR_VECTKEY = 0x05FA0000u;  // 쓰기 허가 키
     static constexpr uint32_t  AIRCR_SYSRST = 0x04u;        // SYSRESETREQ 비트
 
-    //   기존: (uint64_t)(destroyed) << 16 / total → __aeabi_uldivmod 100+cyc
-    //   수정: (uint32_t)(destroyed) << 16 / (uint32_t)total → UDIV 2~12cyc
-    //   안전 증명: BUG-59 static_assert로 컴파일 타임 보장
+    // ── Holo_Tensor_Engine(64): Encode가 입력을 Max_Safe_Amplitude로 클램프 —
+    //    uint16_t는 단일 int32 레인으로 무손실(상위 비트 0).
+    //    uint32_t→int32_t 단순 캐스트는 상위 값에서 UB/랩어라운드 → Holo 한계로 선클램프.
+    // ── 출력: int32_t→T 잘림 대신 [0..max(T)] 명시 클램프(복구율 보존).
+    template <typename T>
+    static int32_t BB1_Holo_Tensor_To_I32(T v) noexcept {
+        static constexpr uint32_t HOLO_N = 64u;
+        const int32_t mx = Holo_Tensor_Engine::Max_Safe_Amplitude(HOLO_N);
+        if constexpr (std::is_same_v<T, uint16_t>) {
+            (void)mx;
+            return static_cast<int32_t>(v);
+        } else {
+            static_assert(std::is_same_v<T, uint32_t>, "BB1 Holo T must be uint16_t or uint32_t");
+            const uint64_t w = static_cast<uint64_t>(v);
+            const uint64_t mu = static_cast<uint64_t>(static_cast<uint32_t>(mx));
+            if (w > mu) {
+                return mx;
+            }
+            return static_cast<int32_t>(static_cast<uint32_t>(w));
+        }
+    }
+
+    template <typename T>
+    static T BB1_I32_To_Holo_Tensor(int32_t v) noexcept {
+        if constexpr (std::is_same_v<T, uint16_t>) {
+            if (v < 0) {
+                return static_cast<uint16_t>(0u);
+            }
+            if (v > 65535) {
+                return static_cast<uint16_t>(65535u);
+            }
+            return static_cast<uint16_t>(static_cast<uint32_t>(v));
+        } else {
+            static_assert(std::is_same_v<T, uint32_t>, "BB1 Holo T must be uint16_t or uint32_t");
+            if (v < 0) {
+                return static_cast<uint32_t>(0u);
+            }
+            return static_cast<uint32_t>(v);
+        }
+    }
+
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+    [[noreturn]] static void BB1_Pipeline_Bad_Context_Reset() noexcept {
+        *reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR) =
+            AIRCR_VECTKEY | AIRCR_SYSRST;
+        for (;;) {
+            __asm__ __volatile__("" ::: "memory");
+            __asm__ __volatile__("wfi");
+        }
+    }
+
+    static void BB1_Assert_Pipeline_Call_Context() noexcept {
+        uint32_t primask_val = 0u;
+        uint32_t ipsr_val = 0u;
+        __asm__ __volatile__(
+            "mrs %0, primask\n\t"
+            "mrs %1, ipsr"
+            : "=r"(primask_val), "=r"(ipsr_val)
+            :: "memory");
+        if (primask_val != 0u || ipsr_val != 0u) {
+            BB1_Pipeline_Bad_Context_Reset();
+        }
+    }
+#endif
+
+    //   (uint64_t)(destroyed) << 16 / total → __aeabi_uldivmod 100+cyc
+    //   (uint32_t)(destroyed) << 16 / (uint32_t)total → UDIV 2~12cyc
+    //   안전 증명: static_assert로 컴파일 타임 보장
     static int32_t noise_to_q16(size_t destroyed, size_t total) noexcept {
         if (total == 0u || destroyed == 0u) return 0;
         if (destroyed >= total) return Q16_ONE;
@@ -148,21 +178,21 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: vector<T> 6개 + Reserve_Buffers(resize) → 데드코드
+    //  vector<T> 6개 + Reserve_Buffers(resize) → 데드코드
     //   · -fno-exceptions에서 resize OOM = std::terminate 즉시 → 반환값 검사 도달 불가
     //   · "방어 코드처럼 보이지만 실제 보호 효과 0"인 거짓 안전 패턴
     //
-    //  수정: MAX_TENSOR_ELEMENTS(2048) 컴파일 타임 상수 → 정적 배열
+    //  MAX_TENSOR_ELEMENTS(2048) 컴파일 타임 상수 → 정적 배열
     //   · sizeof(Impl) ≈ 17KB → IMPL_BUF_SIZE = 20480 (20KB)
     //   · 힙 할당 0회 → OOM 경로 자체가 존재하지 않음
-    //   · SRAM 총량 동일 (힙 76KB → 정적 76KB, 할당 전략만 전환)
+    //   · SRAM 예산 내 정적 배열 (힙 경로 없음)
     //
     //  ⚠ BB1_Core_Engine은 반드시 전역/정적 변수로 배치할 것
     //    스택에 놓으면 ~80KB 스택 소모 → ARM 스택 오버플로우
     // =====================================================================
     struct BB1_Core_Engine::Impl {
 
-        // ── [BUG-65] TX/RX 공유 버퍼 (반이중 → 동시 접근 불가) ──
+        // ── TX/RX 공유 버퍼 (반이중 → 동시 접근 불가) ───────────────
         //  Build_Map → state_map 생성, 매 호출 시 재생성
         //  temp_vec: 인터리빙/역인터리빙 스크래치
         //  TX/RX 순차 실행 → 1개로 공유 (−32KB)
@@ -174,7 +204,7 @@ namespace ProtectedEngine {
         // ── TX 전용 상태 (경량) ──────────────────────────────────
         Gyro_Engine            tx_gyro;
         uint32_t               tx_gyro_phase = 0;
-        Entropy_Time_Arrow     tx_time_arrow = Entropy_Time_Arrow(3600u);
+        Entropy_Time_Arrow     tx_time_arrow = Entropy_Time_Arrow(3600000u);  // 1h (ms)
 
         // ── RX 전용 상태 (경량) ──────────────────────────────────
         static constexpr size_t ERASED_WORDS = MAX_TENSOR_ELEMENTS / 32u;
@@ -182,9 +212,9 @@ namespace ProtectedEngine {
 
         Gyro_Engine            rx_gyro;
         uint32_t               rx_gyro_phase = 0;
-        Entropy_Time_Arrow     rx_time_arrow = Entropy_Time_Arrow(3600u);
+        Entropy_Time_Arrow     rx_time_arrow = Entropy_Time_Arrow(3600000u);  // 1h (ms)
 
-        // ── [BUG-65] erased 비트 접근 헬퍼 (인라인, 분기 0개) ────
+        // ── erased 비트 접근 헬퍼 (인라인, 분기 0개) ───────────────
         void set_erased(size_t idx) noexcept {
             erased_bits[idx >> 5u] |= (1u << (idx & 31u));
         }
@@ -238,9 +268,9 @@ namespace ProtectedEngine {
             return 20u;
         }
 
-        // ── [BUG-51] LCG 스크램블 — FIX-09 전파 (31비트 마스킹 제거) ──
-        // 기존: & 0x7FFFFFFFu → MSB 항상 0 → XOR bit-15 항상 0 노출
-        // 수정: uint32_t 자연 오버플로우 → 32비트 전 영역 엔트로피 활용
+        // ── LCG 스크램블 (31비트 마스킹 제거) ───────────────────────
+        // & 0x7FFFFFFFu → MSB 항상 0 → XOR bit-15 항상 0 노출
+        // uint32_t 자연 오버플로우 → 32비트 전 영역 엔트로피 활용
         template <typename T>
         static void Scramble_XOR(T* data, size_t n,
             uint64_t session) noexcept {
@@ -252,7 +282,7 @@ namespace ProtectedEngine {
             }
         }
 
-        // ── [BUG-65] PLL (erased 비트 패킹) ──────────────────────
+        // ── PLL (erased 비트 패킹) ───────────────────────────────
         template <typename T>
         void PLL(T* data, size_t n, uint32_t anchor) noexcept {
             if (anchor == 0u || n == 0u) { return; }
@@ -273,10 +303,10 @@ namespace ProtectedEngine {
                 const size_t p = std::min(b + fa - 1u, n - 1u);
                 const bool bi = (data[p] == IV) ? true
                     : (data[p] == AV) ? false : ph;
-                set_erased(p);             // [BUG-65] 비트 패킹
+                set_erased(p);             // 비트 패킹
                 data[p] = EM;
                 for (size_t i = b; i < p; ++i) {
-                    if (data[i] == EM) { set_erased(i); }  // [BUG-65]
+                    if (data[i] == EM) { set_erased(i); }  // 비트 패킹
                     else if (bi) {
                         data[i] = static_cast<T>(
                             static_cast<T>(~data[i]) + static_cast<T>(1));
@@ -286,7 +316,7 @@ namespace ProtectedEngine {
             }
         }
 
-        // ── [BUG-45] 인터리버 상태맵: % → 뺄셈 강도 절감 ────────
+        // ── 인터리버 상태맵: % → 뺄셈 강도 절감 ───────────────────
         static void Build_Map(uint32_t* buf,
             size_t n, uint32_t fa) noexcept {
             if (fa <= 1u || n % static_cast<size_t>(fa) != 0u) {
@@ -327,7 +357,7 @@ namespace ProtectedEngine {
             return fa;
         }
 
-        // ── [BUG-43+50] CAS Lock-free EMA 갱신 (double 완전 제거) ──
+        // ── CAS Lock-free EMA 갱신 (double 완전 제거) ─────────────
         void Update_Noise_EMA(const RecoveryStats& stats) noexcept {
             const int32_t nn = noise_to_q16(
                 stats.destroyed_count, stats.total_elements);
@@ -363,11 +393,11 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: Reserve_Buffers(resize) → 실패 검사 → 데드코드
+    //  Reserve_Buffers(resize) → 실패 검사 → 데드코드
     //   · -fno-exceptions에서 resize OOM = std::terminate 즉시 호출
     //   · 반환값 검사 코드는 도달 불가 → 거짓 안전 패턴
     //
-    //  수정: 정적 배열 → 힙 할당 0회 → OOM 경로 자체가 존재하지 않음
+    //  정적 배열 → 힙 할당 0회 → OOM 경로 자체가 존재하지 않음
     //   · Secure_Wipe_BB1 + placement new = 초기화 완료
     //   · 실패 경로 0개, 분기 0개, 완벽하게 결정론적
     // =====================================================================
@@ -423,6 +453,11 @@ namespace ProtectedEngine {
                 return false;
             }
 
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+        BB1_Assert_Pipeline_Call_Context();
+#endif
+
         auto& m = *p_impl;
         uint64_t vs = session_id;
 
@@ -451,9 +486,9 @@ namespace ProtectedEngine {
 
         Sparse_Recovery_Engine::Generate_Interference_Pattern(
             tensor_data, elements, vs, fa32, is_test_mode);
-        // [VDF 삭제] Apply_Quantum_Decoy 제거 (119ms CPU 독점 → DMA 유실)
+        // Apply_Quantum_Decoy 미호출 (Sparse/Orbital 경로)
 
-        Impl::Build_Map(m.shared.state_map, elements, fa32);  // [BUG-65] tx→shared
+        Impl::Build_Map(m.shared.state_map, elements, fa32);  // tx→shared
         for (size_t i = 0u; i < elements; ++i)
             m.shared.temp_vec[i] = static_cast<uint32_t>(tensor_data[i]);
         Orbital_Mapper::Apply_Orbital_Clouding(
@@ -480,7 +515,7 @@ namespace ProtectedEngine {
                     tensor_data[i] =
                         Polymorphic_Shield::Apply_Holographic_Folding(
                             tensor_data[i], m.tx_gyro_phase, vs,
-                            static_cast<uint32_t>(i));  // [BUG-58] CTR 카운터
+                            static_cast<uint32_t>(i));  // CTR 카운터
                 }
             }
         }
@@ -493,8 +528,8 @@ namespace ProtectedEngine {
 
         {
             static constexpr uint32_t HOLO_CHIP = 64u;
-            //  기존: (uint32_t)(vs ^ (vs>>32)) = 32비트 → GPU 4초 해독
-            //  수정: vs 64비트 전체 + 골든 래셔 혼합 = 128비트 시드 기반
+            //  (uint32_t)(vs ^ (vs>>32)) = 32비트 → GPU 4초 해독
+            //  vs 64비트 전체 + 골든 래셔 혼합 = 128비트 시드 기반
             const uint32_t vs_lo = static_cast<uint32_t>(vs);
             const uint32_t vs_hi = static_cast<uint32_t>(vs >> 32);
 
@@ -502,8 +537,9 @@ namespace ProtectedEngine {
             for (size_t base = 0u; base < elements; base += HOLO_CHIP) {
                 const size_t chunk =
                     std::min<size_t>(HOLO_CHIP, elements - base);
-                for (size_t k = 0u; k < chunk; ++k)
-                    holo_buf[k] = static_cast<int32_t>(tensor_data[base + k]);
+                for (size_t k = 0u; k < chunk; ++k) {
+                    holo_buf[k] = BB1_Holo_Tensor_To_I32(tensor_data[base + k]);
+                }
                 for (size_t k = chunk; k < HOLO_CHIP; ++k)
                     holo_buf[k] = 0;
 
@@ -518,8 +554,9 @@ namespace ProtectedEngine {
                 Holo_Tensor_Engine::Encode_Hologram(
                     holo_buf, HOLO_CHIP, crypto_seed);
 
-                for (size_t k = 0u; k < chunk; ++k)
-                    tensor_data[base + k] = static_cast<T>(holo_buf[k]);
+                for (size_t k = 0u; k < chunk; ++k) {
+                    tensor_data[base + k] = BB1_I32_To_Holo_Tensor<T>(holo_buf[k]);
+                }
             }
         }
 
@@ -528,7 +565,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  RX 파이프라인 (ISR/DMA 안전)
+    //  RX 파이프라인 (메인 루프 전용 — PRIMASK/ISR에서 호출 시 AIRCR 리셋)
     // =====================================================================
     template <typename T>
     bool BB1_Core_Engine::Recover_Tensor_Pipeline(
@@ -546,6 +583,11 @@ namespace ProtectedEngine {
                     damaged_tensor, elements * sizeof(T));
                 return false;
             }
+
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+        BB1_Assert_Pipeline_Call_Context();
+#endif
 
         auto& m = *p_impl;
         uint64_t vs = session_id;
@@ -582,9 +624,9 @@ namespace ProtectedEngine {
             for (size_t base = 0u; base < elements; base += HOLO_CHIP) {
                 const size_t chunk =
                     std::min<size_t>(HOLO_CHIP, elements - base);
-                for (size_t k = 0u; k < chunk; ++k)
-                    holo_buf[k] =
-                    static_cast<int32_t>(damaged_tensor[base + k]);
+                for (size_t k = 0u; k < chunk; ++k) {
+                    holo_buf[k] = BB1_Holo_Tensor_To_I32(damaged_tensor[base + k]);
+                }
                 for (size_t k = chunk; k < HOLO_CHIP; ++k)
                     holo_buf[k] = 0;
 
@@ -598,8 +640,9 @@ namespace ProtectedEngine {
                 Holo_Tensor_Engine::Decode_Hologram(
                     holo_buf, HOLO_CHIP, crypto_seed);
 
-                for (size_t k = 0u; k < chunk; ++k)
-                    damaged_tensor[base + k] = static_cast<T>(holo_buf[k]);
+                for (size_t k = 0u; k < chunk; ++k) {
+                    damaged_tensor[base + k] = BB1_I32_To_Holo_Tensor<T>(holo_buf[k]);
+                }
             }
         }
 
@@ -625,17 +668,17 @@ namespace ProtectedEngine {
                         cp = std::min(nb - 1u, elements - 1u);
                     }
                     if (fa > 0u && i == cp) { continue; }
-                    if (!m.is_erased(i))       // [BUG-65] 비트 패킹
+                    if (!m.is_erased(i))       // 비트 패킹
                         damaged_tensor[i] =
                         Polymorphic_Shield::Reverse_Holographic_Folding(
                             damaged_tensor[i], m.rx_gyro_phase, vs,
-                            static_cast<uint32_t>(i));  // [BUG-58] CTR 카운터
+                            static_cast<uint32_t>(i));  // CTR 카운터
                 }
             }
         }
 
         // 3. 역 인터리빙 (공유 버퍼)
-        Impl::Build_Map(m.shared.state_map, elements, fa32);  // [BUG-65] rx→shared
+        Impl::Build_Map(m.shared.state_map, elements, fa32);  // rx→shared
         for (size_t i = 0u; i < elements; ++i)
             m.shared.temp_vec[i] = static_cast<uint32_t>(damaged_tensor[i]);
         Orbital_Mapper::Reverse_Orbital_Collapse(
@@ -645,7 +688,7 @@ namespace ProtectedEngine {
 
         //
         //   → EM(0xFFFF)이 유효 데이터와 충돌 시 파일럿 복원에서 데이터 파괴
-        //  수정: erased_bits 비트맵을 역인터리빙 좌표로 재구축
+        //  erased_bits 비트맵을 역인터리빙 좌표로 재구축
         //   → 비트맵은 데이터 값과 무관한 확정적 삭제 상태
         //
         //  temp_vec[0..63] 임시 사용 (역인터리빙 완료 후 미사용 구간)
@@ -671,27 +714,19 @@ namespace ProtectedEngine {
             }
         }
 
-        // 4. [VDF 삭제] Reverse_Quantum_Decoy 제거 (TX Apply와 대칭 삭제)
-
-        //
-        //  삭제 사유:
-        //   (a) TX에 대응하는 파일럿 주입 로직이 존재하지 않음 (TX는 0x7FFF 앵커만)
-        //   (b) 역 인터리빙 완료 후 실행 → 인터리빙 간격(cp)과 현재 인덱스(i) 비교 무의미
-        //   (c) ERASURE_MARKER(EM)를 PRNG 쓰레기로 덮어씀 → L1 복구 엔진이
-        //       파괴 위치를 인식 불가 → 복구 100% 실패
-        //   (d) VDF/Decoy 기능 삭제 시 잔존한 유령 코드 (Dead Code)
+        // Reverse_Quantum_Decoy 미호출 — Sparse L1 복구만 진행
 
         m.Wipe_RX();
 
-        // 6. L1 복구 — [BUG-44] SeqLock 보호 쓰기
+        // 6. L1 복구 — SeqLock 보호 쓰기
         RecoveryStats temp_stats = {};
         const bool ok = Sparse_Recovery_Engine::Execute_L1_Reconstruction(
             damaged_tensor, elements, vs, fa32,
             is_test_mode, strict_mode, temp_stats);
 
-        //  기존: release만 → 데이터 쓰기(B)가 시퀀스 증가(A) 위로 재배치 가능
+        //  release만 → 데이터 쓰기(B)가 시퀀스 증가(A) 위로 재배치 가능
         //        → Reader가 짝수 seq 보고 안전 판단 → 반쯤 쓰인 데이터 읽기(Tearing)
-        //  수정: acq_rel → acquire가 (B)의 상방 재배치 차단
+        //  acq_rel → acquire가 (B)의 상방 재배치 차단
         //        release가 이전 연산의 하방 재배치 차단 → 완전한 SeqLock 성립
         //
         //  (A) seq++ [acq_rel] — 데이터 쓰기가 여기 위로 올라갈 수 없음

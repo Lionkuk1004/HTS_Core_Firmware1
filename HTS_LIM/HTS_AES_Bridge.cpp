@@ -147,10 +147,7 @@ namespace ProtectedEngine {
         }
     }
 
-    // Multiply by x in GF(2^8) — [BUG-FIX HIGH] Constant-Time
-    //  기존: if (hi) a ^= 0x1B / if (b & 1) p ^= a → 데이터 의존 분기
-    //  수정: 비트 마스크로 분기 완전 제거 → 타이밍 사이드채널 차단
-    //  원리: 0 - bit = 0x00(bit=0) / 0xFF(bit=1) → AND 마스크
+    // Multiply by x in GF(2^8) — Constant-Time (bitmask, 데이터 의존 분기 없음)
     static constexpr uint8_t gmul(uint8_t a, uint8_t b) noexcept {
         uint8_t p = 0;
         for (int i = 0; i < 8; ++i) {
@@ -369,9 +366,7 @@ namespace ProtectedEngine {
             return false;
         }
 
-        //  기존: input==output → AES_Secure_Zero(output) → 원본 데이터 파괴
-        //  실제: AES_Encrypt/Decrypt_Block은 내부 state[16] 스택 복사 후 연산
-        //        → input==output여도 메모리 오버랩 이슈 없음 (In-place 안전)
+        //  In-place: AES_Encrypt/Decrypt_Block은 내부 state[16] 사용
 
         if (is_encrypt) {
             AES_Encrypt_Block(input_16bytes, output_16bytes, round_keys, num_rounds);

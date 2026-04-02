@@ -3,10 +3,6 @@
 // FIPS 140-3 Power-On Self-Test (POST) - KAT Validation Manager
 // Target: STM32F407 (Cortex-M4)
 //
-// [Revision - 10 fixes]
-//  01~05: iostream removal, namespace, while barrier, noexcept
-//  06~10: Self_Healing sig, dead code, vector->fixed array,
-//         try-catch removal, magic numbers, Doxygen, delete 6
 // =========================================================================
 #pragma once
 // ─────────────────────────────────────────────────────────

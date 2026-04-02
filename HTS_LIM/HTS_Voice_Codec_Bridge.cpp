@@ -1,25 +1,7 @@
 /// @file  HTS_Voice_Codec_Bridge.cpp
 /// @brief HTS Voice Codec Bridge -- Implementation
 ///
-/// [양산 수정]
-///  VCB-1 [CRIT] PLC(Packet Loss Concealment)
-///        · Consume_RX_Frame: 패킷 미도착 시 Comfort Noise 프레임 자동 주입
-///        · 연속 손실 카운터(plc_consecutive_loss) 추적
-///        · PLC_MAX_CONSECUTIVE_LOSS(3) 이내: 이전 프레임 반복 + 감쇠
-///        · 초과 시: 무음(0x00) 전환 (보코더 Unvoiced 파라미터)
-///        · 정상 프레임 수신 시 카운터 리셋
-///  VCB-2 [CRIT] 시퀀스 검증
-///        · Unpack_RX: pkt_seq 활성화 + 반원 비교 (SEQ_WINDOW=128)
-///        · 역전(과거) 패킷 → 드롭 (rx_seq_drop_count 통계)
-///        · 정상 범위 내 미래 패킷 → 수용 + expected_rx_seq 갱신
-///  VCB-3 [HIGH] Shutdown impl_buf_ 전체 보안 소거
-///  VCB-4 [MED]  생성자 for→memset
-///  VCB-5 [MED]  alignas(8) (헤더에서 처리)
-///  VCB-6 [CRIT] PLC 연속손실 카운터 uint8 포화(255 랩 → 반복/무음 분기 오염 방지)
-///  VCB-7 [HIGH] TX/RX 더블버퍼 오버런 방어 — tx/rx_frame_ready acquire 선검사 후 드롭
-///  VCB-8 [CRIT] PLC 사본·plc_consecutive_loss 갱신은 Consume_RX_Frame 전용(Unpack 레이스 제거)
-///  VCB-9 [HIGH] tx/rx/drop 통계 카운터 std::atomic<uint32_t> (relaxed)
-///  - 패딩 제거 + ASIC ROM 합성 최적화
+/// PLC(손실 시 Comfort Noise), 시퀀스 검증·통계, impl_buf_ 소거, 더블버퍼·원자 카운터.
 ///
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
@@ -170,8 +152,7 @@ namespace ProtectedEngine {
         // ============================================================
         //  [VCB-1+2] Unpack RX Packet → Double Buffer
         //
-        //  기존: pkt_seq 주석 처리 → 도착 순서 무조건 수용
-        //  수정: 시퀀스 반원 비교 → 역전 패킷 드롭
+        //  시퀀스 반원 비교 — 역전 패킷 드롭
         //  [VCB-8] PLC 사본/카운터는 Consume_RX_Frame에서만 갱신 (생산자·소비자 분리)
         // ============================================================
         void Unpack_RX(const uint8_t* payload, uint16_t len) noexcept {

@@ -3,10 +3,7 @@
 // 경량 CoAP 메시징 엔진 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
-// [수정 이력]
-//  FIX-1: resp 버퍼 상수화 (MAX_PKT_SIZE 기반, 하드코딩 제거)
-//  FIX-2: dest_id 2B 프리픽스 캡슐화 (메쉬 라우팅 연동)
-//  FIX-3: IMPL_BUF_SIZE 768B (x64 포인터/패딩 안전)
+// resp: MAX_PKT_SIZE 기반, dest_id 2B 프리픽스, IMPL_BUF_SIZE 768B(x64 패딩 안전).
 // =========================================================================
 #include "HTS_CoAP_Engine.h"
 #include "HTS_Priority_Scheduler.h"
@@ -62,9 +59,9 @@ namespace ProtectedEngine {
         out[len] = '\0';
     }
 
-    //  기존: a[i]!=b[i] → return false (단축 평가)
+    //  a[i]!=b[i] → return false (단축 평가)
     //        → 공격자가 타이밍 계측으로 은닉 API URI를 바이트 단위 유추
-    //  수정: 전체 max 길이를 무조건 XOR → 고정 사이클
+    //  전체 max 길이를 무조건 XOR → 고정 사이클
     static bool safe_streq(const char* a, const char* b, size_t max) noexcept {
         uint8_t diff = 0u;
         for (size_t i = 0u; i < max; ++i) {
@@ -99,12 +96,12 @@ namespace ProtectedEngine {
         uint32_t send_ms;
         uint8_t  retries;
         //  0=FREE, 1=ALLOCATING(복사 중), 2=READY(전송 가능)
-        //  기존: uint8_t valid → Send_GET에서 valid=1 직후 ISR Tick이
+        //  uint8_t valid → Send_GET에서 valid=1 직후 ISR Tick이
         //        덜 쓰인 msg를 읽어 쓰레기 패킷 송출
-        //  수정: ALLOCATING(1) 동안 Tick이 건너뜀 → 복사 완료 후 READY(2)
+        //  ALLOCATING(1) 동안 Tick이 건너뜀 → 복사 완료 후 READY(2)
         std::atomic<uint8_t> alloc_state{ 0u };
         uint8_t  pad[2];
-        uint8_t  msg[MPKT];    // [FIX-1] 상수 기반 (56B)
+        uint8_t  msg[MPKT];    // 상수 기반 (56B)
         size_t   msg_len;
     };
 
@@ -228,9 +225,9 @@ namespace ProtectedEngine {
 
         for (size_t i = 0u; i < MAX_RESOURCES; ++i) {
             if (p->resources[i].valid == 0u) {
-                //  기존: uri_len 이후 꼬리 영역에 쓰레기 잔류
+                //  uri_len 이후 꼬리 영역에 쓰레기 잔류
                 //        → safe_streq가 24바이트 전체 XOR → 꼬리 불일치 → 항상 NOT_FOUND
-                //  수정: 쓰기 전 전체 소거 → 꼬리 0x00 보장
+                //  쓰기 전 전체 소거 → 꼬리 0x00 보장
                 Coap_Secure_Wipe(p->resources[i].uri, sizeof(p->resources[i].uri));
 
                 const size_t len = safe_strlen(uri, MAX_URI_LEN - 1u);
@@ -261,9 +258,9 @@ namespace ProtectedEngine {
         if (p == nullptr || msg == nullptr) { return; }
         if (msg_len < DST + HDR) { return; }  // dest(2) + hdr(6) 최소
 
-        //  기존: TKL 무시 → 고정 HDR(6) 오프셋으로 페이로드 파싱
+        //  TKL 무시 → 고정 HDR(6) 오프셋으로 페이로드 파싱
         //        → TKL≠2 패킷 시 페이로드 오프셋 틀어짐 → URI 오정렬
-        //  수정: TKL==2 아니면 즉각 폐기 (설계 규격 엄격 준수)
+        //  TKL==2 아니면 즉각 폐기 (설계 규격 엄격 준수)
         const uint8_t  type_raw = (msg[DST + 0u] >> 4u) & 0x03u;
         const uint8_t  tkl = msg[DST + 0u] & 0x0Fu;
         if (tkl != 2u) { return; }  // 허용 TKL: 2 only
@@ -278,8 +275,8 @@ namespace ProtectedEngine {
             const int32_t slot = p->find_pending(mid);
             if (slot >= 0) {
                 PendingMsg& apm = p->pending[static_cast<size_t>(slot)];
-                //  기존: 무조건 Wipe → Tick이 동시에 msg 읽기 가능 → 쓰레기 패킷
-                //  수정: CAS로 소유권 확보 후에만 Wipe (Tick은 state≠2 → skip)
+                //  무조건 Wipe → Tick이 동시에 msg 읽기 가능 → 쓰레기 패킷
+                //  CAS로 소유권 확보 후에만 Wipe (Tick은 state≠2 → skip)
                 uint8_t expected = 2u;
                 if (apm.alloc_state.compare_exchange_strong(
                     expected, 3u, std::memory_order_acq_rel)) {
@@ -291,8 +288,8 @@ namespace ProtectedEngine {
                 }
             }
 
-            //  기존: 바이너리 응답 페이로드를 URI로 파싱 → 서버 핸들러 강제 호출
-            //  수정: 순수 페이로드로 보존 → 향후 클라이언트 콜백 연동 지점
+            //  바이너리 응답 페이로드를 URI로 파싱 → 서버 핸들러 강제 호출
+            //  순수 페이로드로 보존 → 향후 클라이언트 콜백 연동 지점
             if (code == CoapCode::CONTENT_205) {
                 if (msg_len > DST + HDR) {
                     // 향후: 클라이언트 응답 콜백으로 페이로드 전달
@@ -316,8 +313,8 @@ namespace ProtectedEngine {
         const size_t   pay_len = msg_len - DST - HDR;
         if (pay_len > MPAY) { return; }
 
-        //  기존: i < 23u 하드코딩 → MAX_URI_LEN(24) 변경 시 불일치 가능
-        //  수정: MAX_URI_LEN - 1u로 상수 연동 → 마지막 바이트 항상 '\0' 보장
+        //  i < 23u 하드코딩 → MAX_URI_LEN(24) 변경 시 불일치 가능
+        //  MAX_URI_LEN - 1u로 상수 연동 → 마지막 바이트 항상 '\0' 보장
         char uri_buf[MAX_URI_LEN] = {};
         size_t uri_len = 0u;
         for (size_t i = 0u; i < pay_len && i < (MAX_URI_LEN - 1u); ++i) {
@@ -338,10 +335,10 @@ namespace ProtectedEngine {
             const ResourceEntry& re =
                 p->resources[static_cast<size_t>(res_slot)];
 
-            //  기존: data_off = uri_len + 1u → 맹목적 건너뛰기
+            //  data_off = uri_len + 1u → 맹목적 건너뛰기
             //        → 공격자가 MAX_URI_LEN 긴 URI 전송 시 24번째 바이트를
             //          0xFF 마커로 오인 → 악성 데이터가 핸들러로 주입
-            //  수정: payload[uri_len]이 실제 0xFF인지 엄격 검증
+            //  payload[uri_len]이 실제 0xFF인지 엄격 검증
             const size_t data_off = uri_len + 1u;
             const uint8_t* req_data = nullptr;
             size_t req_len = 0u;
@@ -363,8 +360,8 @@ namespace ProtectedEngine {
             Impl::build_header(resp, DST, CoapType::ACK,
                 resp_code, mid, token);
 
-            //  기존: 헤더 바로 뒤에 페이로드 직결 → 수신측 옵션 델타 오인 → 패킷 폐기
-            //  수정: 페이로드 존재 시 0xFF 마커 삽입 (RFC 7252 §3)
+            //  헤더 바로 뒤에 페이로드 직결 → 수신측 옵션 델타 오인 → 패킷 폐기
+            //  페이로드 존재 시 0xFF 마커 삽입 (RFC 7252 §3)
             size_t marker_offset = 0u;
             if (resp_pay_len > 0u) {
                 resp[DST + HDR] = 0xFFu;
@@ -418,8 +415,8 @@ namespace ProtectedEngine {
         ser_u16_le(&pkt[0], dest_id);
         Impl::build_header(pkt, DST, CoapType::CON, CoapCode::GET, mid, tok);
 
-        //  기존: pkt_total = DST+HDR+uri_len+1u → uri_len=MPAY(48) 시 57B > MPKT(56) 오버플로
-        //  수정: CoAP 규격상 URI 길이는 옵션 헤더로 식별 → nullptr 불필요
+        //  pkt_total = DST+HDR+uri_len+1u → uri_len=MPAY(48) 시 57B > MPKT(56) 오버플로
+        //  CoAP 규격상 URI 길이는 옵션 헤더로 식별 → nullptr 불필요
         //        uri_len을 MPAY로 클램프하여 원천 차단
         size_t uri_len = safe_strlen(uri, MAX_URI_LEN - 1u);
         if (uri_len > MPAY) { uri_len = MPAY; }
@@ -468,8 +465,8 @@ namespace ProtectedEngine {
         for (size_t i = 0u; i < MAX_PENDING; ++i) {
             PendingMsg& pm = p->pending[i];
 
-            //  기존: PRIMASK 안에서 Enqueue → 수천 사이클 ISR 블로킹 → MCU 마비
-            //  수정: PRIMASK 안에서 로컬 복사(~50cyc)만 수행 → 즉시 락 해제
+            //  PRIMASK 안에서 Enqueue → 수천 사이클 ISR 블로킹 → MCU 마비
+            //  PRIMASK 안에서 로컬 복사(~50cyc)만 수행 → 즉시 락 해제
             //        락 밖에서 Enqueue → ISR 지연 0
             bool need_enqueue = false;
             uint8_t local_msg[MPKT];

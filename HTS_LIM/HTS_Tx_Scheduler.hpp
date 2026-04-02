@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Tx_Scheduler.hpp
 // B-CDMA TX 전송 스케줄러 — 공개 인터페이스
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -53,20 +53,6 @@
 //  [STM32F407 성능]
 //   Push/Pop (256 words): ~300사이클 ≈ 1.8µs @168MHz
 //   비트 마스크 교체로 기존 모듈러 % 대비 ~40% 가속
-//
-//  [양산 수정 이력]
-//   BUG-01~08 (DCE소거, chunk=0방어, 전방선언, 비트마스크,
-//             SPSC문서, C26495, available분기제거, copy/move)
-//   BUG-09~12 (Self-Contained, dead include, Free-running, chunk정렬)
-//   BUG-59~63 (SRAM 한계, SecWipe, Dead Branch, 배리어, Flush/Used/Avail)
-//   BUG-64 [CRIT] unique_ptr Pimpl → placement new (zero-heap)
-//          힙 단편화 및 런타임 OOM 원천 제거
-//          AlignedIndex alignas(64) 요구 → impl_buf_ alignas(64) 적용
-//   BUG-67 [CRIT] MAX_RING_POW2/CACHELINE 플랫폼 분리
-//          ARM: ring[2048](8KB) + alignas(8) — 60KB SRAM 절감 (94%)
-//          PC:  ring[16384](64KB) + alignas(64) — 기존 유지
-//   BUG-68 [검수 KB] static_assert 실측: sizeof(Impl) ≤ IMPL_BUF_SIZE
-//          (ARM 8704B / PC 67584B) — NVIC는 HTS_Hardware_Init::Initialize_System()
 //
 // ─────────────────────────────────────────────────────────────────────────
 /// @note NVIC 우선순위 설정 위치: HTS_Hardware_Init::Initialize_System()
@@ -133,7 +119,7 @@ namespace ProtectedEngine {
             int32_t* out_buffer, size_t requested_size) noexcept;
 
     private:
-        // ── [BUG-64+66+67] Pimpl In-Place Storage (zero-heap) ────────────
+        // ── Pimpl In-Place Storage (zero-heap) ─────────────────────────
         //
         //
         //  ARM (EMBEDDED_MINI): node_count=256 → ring_size=1024

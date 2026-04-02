@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Dual_Tensor_16bit.h
 // B-CDMA 듀얼 레인 텐서 파이프라인 — 공개 인터페이스
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -34,16 +34,6 @@
 //   impl_buf_: 소멸자에서 SecWipe — Impl 전체 이중 소거
 //   복사/이동: = delete (키 소재/암호 상태 복제 경로 원천 차단)
 //   Get_Master_Seed: Raw API (힙 0회, ARM Zero-Heap 준수)
-//
-//  [양산 수정 이력 — 21건]
-//   BUG-15 [CRIT] Impl try-catch 제거 (-fno-exceptions)
-//   BUG-16 [CRIT] Execute try-catch 래퍼 제거
-//   BUG-17 [CRIT] dual_lane_buffer vector → 정적 배열[4096]
-//   BUG-18 [HIGH] seq_cst → release (배리어 정책 통일)
-//   BUG-19 [HIGH] Get_Master_Seed → Get_Master_Seed_Raw
-//   BUG-20 [PENDING] fp64/vector 외부 API 의존 (3D_FEC 검수 후 전환)
-//   BUG-22 [검수 KB] static_assert 실측: IMPL_BUF_SIZE ARM=65536B(64KB), PC=589824B;
-//          sizeof(Impl) ≤ IMPL_BUF_SIZE (get_impl)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -89,7 +79,7 @@ namespace ProtectedEngine {
         [[nodiscard]]
         size_t Get_Active_Tensor_Count() const noexcept;
 
-        // ── [BUG-17] 듀얼 레인 버퍼 접근 (Raw API — ARM/PC 공용) ────
+        // ── 듀얼 레인 버퍼 접근 (Raw API — ARM/PC 공용) ───────────
 
         /// @brief 생성된 DMA 전송 버퍼 (raw 포인터)
         /// @return 듀얼 레인 배열 포인터 (impl_valid_=false 시 nullptr)
@@ -102,7 +92,7 @@ namespace ProtectedEngine {
         size_t Get_Dual_Lane_Size() const noexcept;
 
     private:
-        // ── [BUG-14/17/20] Pimpl In-Place Storage ──────────────────────
+        // ── Pimpl In-Place Storage ───────────────────────────────────
         //   ARM: work_A(17.2KB) + work_B(17.2KB) + temp_sec(6KB)
         //        + dual_lane(16KB) + sub-modules(~3KB) ≈ 60KB
         //        INTLV_DIM=26 → dim³=17,576 ≥ MAX_RAW_BITS(16,384)

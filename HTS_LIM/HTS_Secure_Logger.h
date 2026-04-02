@@ -23,13 +23,6 @@
 //  [M-3] HTS_MILITARY_GRADE_EW 정의 시 logSecurityEvent 묵살
 //       (HTS_Hardware_Init fputc EMCON과 동일 Zero-Emission 정책)
 //
-//  [양산 수정 이력 — 12건]
-//   FIX-01~03, BUG-01~08: (이전 이력 참조)
-//   BUG-09 [CRIT] D-2: 스택 버퍼 잔상 소거 3중 방어
-//   BUG-10 [LOW]  Target "/ Windows / Linux" 제거
-//   BUG-11 [CRIT] std::string/std::vector 파라미터 → const char* (힙 0)
-//   BUG-12 [CRIT] PC 코드 물리삭제: iostream/Log_PC/플랫폼분기 전량 제거
-//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 

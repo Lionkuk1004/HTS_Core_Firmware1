@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Security_Session.cpp
 // KCMVP 암호/인증 통합 오케스트레이터 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz) / PC
@@ -144,7 +144,7 @@ namespace ProtectedEngine {
             // 문제: ~15u = 0xFFFFFFF0 (32비트)
             //   64비트 size_t로 제로 확장 → 0x00000000FFFFFFF0
             //   → 4GB 이상 데이터에서 상위 32비트 증발!
-            // 수정: size_t 캐스트 후 반전 → 0xFFFFFFFFFFFFFFF0 (64비트)
+            // size_t 캐스트 후 반전 → 0xFFFFFFFFFFFFFFF0 (64비트)
             //   32비트에서도 동일: ~(size_t)15 = 0xFFFFFFF0
             size_t full_blocks_bytes = remaining & ~static_cast<size_t>(15u);
 
@@ -264,7 +264,7 @@ namespace ProtectedEngine {
     //        → 패딩에 과거 키 잔류 (Information Leak)
     //        → 64비트 정렬 HW 가속기가 패딩을 해석 시 BusFault
     //
-    //  수정: placement new 전에 SecureWipe로 전체 버퍼 0클린
+    //  placement new 전에 SecureWipe로 전체 버퍼 0클린
     //        → 패딩 포함 모든 바이트 = 0
     //        → Impl() 생성자가 멤버를 덮어쓰더라도 패딩은 0 유지
     // =====================================================================

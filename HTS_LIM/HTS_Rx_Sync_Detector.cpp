@@ -9,7 +9,7 @@
 #include "HTS_Dynamic_Config.h"
 #include "HTS_RF_Metrics.h"     // SNR 프록시 기록용 (선택적)
 
-// ── Self-Contained 표준 헤더 [BUG-07] ───────────────────────────────
+// ── Self-Contained 표준 헤더 (<atomic>, <cstdint> 등) ────────────────
 #include <atomic>
 #include <climits>
 #include <cstddef>
@@ -20,7 +20,7 @@
 #include <intrin.h>             // _BitScanReverse (CLZ 등가)
 #endif
 
-// ── 플랫폼 검증 (BUG-03: 헤더→.cpp 이동) ──────────────────────────
+// ── 플랫폼 검증 (int32_t/size_t) ───────────────────────────────────
 static_assert(sizeof(int32_t) == 4,
     "[HTS_Sync] int32_t != 4 bytes: CFAR accumulator arithmetic will break");
 static_assert(sizeof(size_t) >= 2,
@@ -118,7 +118,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  Set_CFAR_Multiplier — CFAR 배수 동적 조정 [FIX-04]
+    //  Set_CFAR_Multiplier — CFAR 배수 동적 조정
     // =====================================================================
     void HTS_Rx_Sync_Detector::Set_CFAR_Multiplier(
         int32_t multiplier) noexcept
@@ -156,10 +156,10 @@ namespace ProtectedEngine {
     //
     //    energy_sum(양수) / buffer_size(전체) → 과소평가
     //    → 음수 50% 시 noise_floor가 절반 → 임계치 절반 → 오탐 폭증
-    //    수정: energy_sum(양수) / positive_count(양수만) → 정확한 평균
+    //    energy_sum(양수) / positive_count(양수만) → 정확한 평균
     //
-    //    기존: O(2N) 두 번 순회 → SRAM 이중 로드 → 대역폭 50% 낭비
-    //    수정: 1회 순회로 energy_sum + max_value/max_index 동시 추적
+    //    O(2N) 두 번 순회 → SRAM 이중 로드 → 대역폭 50% 낭비
+    //    1회 순회로 energy_sum + max_value/max_index 동시 추적
     //
     // =====================================================================
     int32_t HTS_Rx_Sync_Detector::Detect_Sync_Peak(
@@ -204,32 +204,8 @@ namespace ProtectedEngine {
         }
 
         //
-        //  [문제]
-        //   energy_sum: 양수 int32_t 누적 → 최대 buffer_size × INT32_MAX ≈ 2^43
-        //   → int64_t / int64_t = __aeabi_ldivmod (~200cyc)
-        //   → 나눗셈 결과(양수 평균)는 INT32_MAX 이내이므로 32비트 축소 가능
-        //
-        //  [기존] while(nf_num > INT32_MAX) { nf_num >>= 1; nf_den >>= 1; }
-        //   → 순차 상태 머신: worst 13~14회 순회 ≈ 40~50cyc
-        //
-        //  [수정] __builtin_clz(hi) 1사이클로 시프트량 직접 산출 → 루프 0회
-        //
-        //  [유도]
-        //   상위 32비트 hi = nf_num >> 32
-        //   nf_num 유효 비트 수 = 64 - CLZ(hi)
-        //   INT32_MAX = 31비트 → shift = max(0, 33 - CLZ(hi))
-        //   hi == 0 → nf_num ≤ 0xFFFFFFFF → bit31 추출 (브랜치리스, 1cyc)
-        //
-        //  [검증]
-        //   hi=1(CLZ=31): shift=2, 0x1FFFFFFFF>>2 = 0x7FFFFFFF ≤ INT32_MAX ✓
-        //   hi=2(CLZ=30): shift=3, 0x2FFFFFFFF>>3 = 0x5FFFFFFF ≤ INT32_MAX ✓
-        //   hi=0x800(2^43,CLZ=20): shift=13 → while 13회와 동일 결과 ✓
-        //
-        //  [성능] CLZ(1) + CMP(1) + LSR×2(2) + UDIV(12) = 고정 ~17cyc
-        //         기존 while worst ~52cyc → 3× 가속
-        //
-        //  [정밀도] while 루프와 동일 — 동일 shift량 적용
-        //    worst = buffer_size 4096 → shift=13 → 오차 ≤ 1 LSB (CFAR 무시 가능)
+        //  int64 평균: ldivmod 회피 — nf_num을 INT32 범위로 동일 비율 스케일
+        //  스케일량: hi=nf_num>>32에 대해 CLZ로 shift 산출(while 스케일과 동치)
         int64_t  nf_num = energy_sum;
         uint32_t nf_den = static_cast<uint32_t>(positive_count);
 
@@ -274,8 +250,8 @@ namespace ProtectedEngine {
         }
 
         nf_num >>= shift;
-        //  기존: nf_den >>= shift → nf_den=1,shift=1 → nf_den=0 → 가드=1 → 2배 왜곡
-        //  수정: nf_den가 shift를 수용 가능할 때만 시프트
+        //  nf_den >>= shift → nf_den=1,shift=1 → nf_den=0 → 가드=1 → 2배 왜곡
+        //  nf_den가 shift를 수용 가능할 때만 시프트
         //  불가 시: nf_den 유지 → 결과는 noise_floor 과소추정 (보수적 CFAR, 안전)
         if (shift > 0u && nf_den >= (1u << shift)) {
             nf_den >>= shift;

@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Sensor_Fusion.cpp
 // 다중 센서 융합 + 경보 등급 산출 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -40,8 +40,8 @@ namespace ProtectedEngine {
     // =====================================================================
     static constexpr int32_t IIR_SHIFT = 2;
 
-    //  기존: -1 >> 2 = -1 (2의 보수) → old + (-1) → 영원히 1 오차 표류
-    //  수정: |diff| < 4 → output = raw (데드존 스냅)
+    //  -1 >> 2 = -1 (2의 보수) → old + (-1) → 영원히 1 오차 표류
+    //  |diff| < 4 → output = raw (데드존 스냅)
     static int16_t iir_i16(int16_t old_val, int16_t raw) noexcept {
         const int32_t diff = static_cast<int32_t>(raw) -
             static_cast<int32_t>(old_val);

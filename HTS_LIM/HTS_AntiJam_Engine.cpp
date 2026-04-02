@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_AntiJam_Engine.cpp — 3층 통합 항재밍 엔진
 // Target: STM32F407 (Cortex-M4F, 168MHz, SRAM 192KB)
 //
@@ -7,7 +7,7 @@
 //  3층) Spatial Null: 16칩 서브밴드 투영 제거
 //
 //  [세션 10 수정]
-//   BUG-44 [CRIT] Seed_CW_Profile() 구현
+//   Seed_CW_Profile() 구현
 //          cw_cancel_64_()의 ja_I/ja_Q를 jprof_[]에 직접 주입
 //          CW 17~19dB 닭-달걀 문제 완전 해소
 //
@@ -331,10 +331,7 @@ namespace ProtectedEngine {
         int nc_shift = 0;
         { int tmp = nc; while (tmp > 1) { nc_shift++; tmp >>= 1; } }
 
-        //  기존: amp = (|corr_I|+|corr_Q|)/2/N → I/Q 위상 뭉개기
-        //   → 위상≠45° 시 my_sig에 인공 오차 주입 → Phantom Jamming
-        //  수정: corr_I/N, corr_Q/N → I축/Q축 독립 부호 보존 진폭
-        //   → walsh(sym,i) 곱셈으로 각 칩 원본 신호 정확 복원
+        //  I/Q 각각 corr/N 스케일 — 합산 평균으로 위상 왜곡 방지
         const int32_t amp_I = corr_I >> nc_shift;  // I축 진폭 (부호 보존)
         const int32_t amp_Q = corr_Q >> nc_shift;  // Q축 진폭 (부호 보존)
 

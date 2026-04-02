@@ -29,14 +29,6 @@
 //   impl_buf_: 소멸자에서 SecWipe — 전체 이중 소거
 //   복사/이동: = delete (단일 인스턴스 원칙)
 //
-//  [양산 수정 이력]
-//   BUG-01~08 (헤더→전방선언, Pimpl, static_assert 이동, Get_Config→개별접근자,
-//              MIN_CFAR→.cpp, ARM selftest 가드, Self-Contained,
-//              노이즈 플로어 분모 수정)
-//   BUG-09 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//          · impl_buf_[256] alignas(8)
-//          · 소멸자 = default → 명시적 p->~Impl() + SecWipe
-//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
@@ -92,12 +84,12 @@ namespace ProtectedEngine {
         int32_t Detect_Sync_Peak(
             const int32_t* correlation_buffer,
             size_t          buffer_size,
-            HTS_RF_Metrics* p_metrics = nullptr) noexcept;
+            HTS_RF_Metrics* p_metrics = NULL) noexcept;
 
     private:
-        // ── [BUG-09] Pimpl In-Place Storage (zero-heap) ──────────────
+        // ── Pimpl In-Place Storage (zero-heap) ─────────────────────
         // Impl = HTS_Phy_Config(≈36B) + threshold_multiplier(4B) ≈ 48B
-        // alignof(Impl) = 4 (int32_t) → alignas(8) 초과 정렬로 안전
+        // impl_buf_ alignas(8) — Impl 요구 정렬(4) 이상
         static constexpr size_t IMPL_BUF_SIZE = 256u;
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
 

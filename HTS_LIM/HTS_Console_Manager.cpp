@@ -1,17 +1,6 @@
-﻿/// @file  HTS_Console_Manager.cpp
+/// @file  HTS_Console_Manager.cpp
 /// @brief HTS Console Manager -- STM32 Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
-///
-/// [양산 수정 이력]
-///  BUG-FIX ⑦  secure_boot_state 하드코딩 1u 제거
-///    · 런타임 도달 = POST 통과 확정, POST_Manager.h include 추가
-///  BUG-FIX-5 [FATAL] Initialize() TOCTOU Read-Before-Init 수정
-///    · 기존: CAS 성공 즉시 initialized_=true -> Impl 미생성 상태 노출
-///    · 수정: initializing_ CAS로 이중 진입 차단,
-///            initialized_.store(release)는 placement new + 전체 멤버 구성 완료 후
-///  BUG-FIX-6 [CRIT] channel_config Torn Read/Write 수정
-///    · Apply_Param + Set/Get_Channel_Config 동시 접근 구조체 찢어짐 차단
-///    · con_critical_enter/exit (PRIMASK) 3곳 적용, memcpy 원자적 복사
 ///
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
@@ -391,7 +380,7 @@ namespace ProtectedEngine {
                 // Read-only or unknown param -- silently ignore
                 break;
             }
-            con_critical_exit(pm);  // [BUG-FIX CRIT] Torn Write 방어 크리티컬 섹션 해제
+            con_critical_exit(pm);  // Torn Write 방어 크리티컬 섹션 해제
         }
 
         // ============================================================
@@ -587,18 +576,7 @@ namespace ProtectedEngine {
     IPC_Error HTS_Console_Manager::Initialize(HTS_IPC_Protocol* ipc) noexcept
     {
         //
-        //  기존 문제:
-        //    CAS(false->true) 성공 -> initialized_=true 즉시 공개
-        //    -> Tick() 등 소비자가 initialized_=true 보고 impl_buf_ 접근
-        //    -> 아직 placement new 미실행 -> 쓰레기 메모리 -> HardFault
-        //
-        //  수정 설계:
-        //    1) initializing_ CAS(false->true): 이중 진입 차단 (소비자 비가시)
-        //    2) ipc nullptr 검증
-        //    3) placement new + 전체 멤버 구성 완료
-        //    4) initialized_.store(true, release): 소비자에게 공개
-        //       -> 소비자가 acquire로 읽을 때 위 모든 쓰기 가시화 보장
-        //       -> Read-Before-Init 경로 원천 차단
+        //  초기화 순서: initializing_ CAS → ipc 검증 → placement new → initialized_.store(release)
         bool init_expected = false;
         if (!initializing_.compare_exchange_strong(
             init_expected, true, std::memory_order_acq_rel))

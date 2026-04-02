@@ -1,4 +1,4 @@
-﻿/// @file  HTS_IPC_Protocol.cpp
+/// @file  HTS_IPC_Protocol.cpp
 /// @brief HTS IPC Protocol Engine -- STM32 SPI Slave Implementation
 /// @details
 ///   Pimpl implementation of HTS_IPC_Protocol for STM32F407VGT6.
@@ -9,7 +9,7 @@
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
 ///
-/// BUG-AIRCR-WDT [HIGH] AIRCR 폴백 전 DBGMCU IWDG/WWDG 프리즈 해제
+/// AIRCR 폴백 전 DBGMCU IWDG/WWDG 프리즈 해제
 ///   (HTS_Anti_Debug forceHalt Phase 3 동일 — 디버거 STOP 시 IWDG 리셋 보장)
 
 #include "HTS_IPC_Protocol.h"

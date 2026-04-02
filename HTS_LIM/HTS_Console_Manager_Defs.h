@@ -194,12 +194,12 @@ namespace ProtectedEngine {
     inline uint32_t TLV_Serialize(uint8_t* buf, ParamId id,
         const uint8_t* value, uint8_t val_len) noexcept
     {
-        if (buf == nullptr) { return 0u; }
+        if (buf == NULL) { return 0u; }
         if (val_len > TLV_MAX_VALUE) { return 0u; }
         buf[0] = static_cast<uint8_t>(id);
         buf[1] = val_len;
         for (uint8_t i = 0u; i < val_len; ++i) {
-            buf[TLV_HEADER_SIZE + i] = (value != nullptr) ? value[i] : 0u;
+            buf[TLV_HEADER_SIZE + i] = (value != NULL) ? value[i] : 0u;
         }
         return TLV_HEADER_SIZE + static_cast<uint32_t>(val_len);
     }
@@ -215,13 +215,13 @@ namespace ProtectedEngine {
         ParamId& out_id, uint8_t* out_value,
         uint8_t& out_val_len) noexcept
     {
-        if (buf == nullptr) { return 0u; }
+        if (buf == NULL) { return 0u; }
         if (buf_len < TLV_HEADER_SIZE) { return 0u; }
         out_id = static_cast<ParamId>(buf[0]);
         out_val_len = buf[1];
         if (out_val_len > TLV_MAX_VALUE) { return 0u; }
         if (buf_len < TLV_HEADER_SIZE + static_cast<uint32_t>(out_val_len)) { return 0u; }
-        if (out_value != nullptr) {
+        if (out_value != NULL) {
             for (uint8_t i = 0u; i < out_val_len; ++i) {
                 out_value[i] = buf[TLV_HEADER_SIZE + i];
             }

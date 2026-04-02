@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Dual_Tensor_16bit.cpp
 // B-CDMA 듀얼 레인 텐서 파이프라인 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -97,7 +97,7 @@ namespace ProtectedEngine {
     //    dual_lane[4096]: uint32_t DMA 출력 버퍼
     //
     //  Impl ≈ 52KB (정적, 힙 0회, 런타임 HardFault 0건)
-    //  기존 런타임 힙: ~4.2MB (vector<fp64> × 3 = 즉사) → 완전 제거
+    //  런타임 힙: ~4.2MB (vector<fp64> × 3 = 즉사) → 완전 제거
     // =====================================================================
     struct Dual_Tensor_Pipeline::Impl {
         size_t active_tensor_count = 0;
@@ -116,7 +116,7 @@ namespace ProtectedEngine {
         HTS_Engine::Soft_Tensor_FEC    tensor_fec_engine;
         HTS_Engine::Tensor_Interleaver tensor_interleaver;
 
-        // ── [BUG-20] 정적 워킹 버퍼 (vector/fp64 완전 제거) ──
+        // ── 정적 워킹 버퍼 (vector/fp64 제거) ───────────────────────
         //
         //  파이프라인 수명 분석:
         //    Stage ③: raw_bits 생성 (work_A)
@@ -137,7 +137,7 @@ namespace ProtectedEngine {
         static constexpr size_t MAX_PACKED_LEN = (MAX_PROCESS_LEN + 1u) / 2u;
 
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-        //  기존 dim=16(4096) < MAX_PACKED_LEN*32(16384) → 75% 데이터 절삭
+        //  dim=16(4096) < MAX_PACKED_LEN*32(16384) → 75% 데이터 절삭
         //  dim=26 → 17,576 ≥ 16,384 → 정합 완료
         //  work 버퍼 크기도 dim³에 맞춰 확장 (16384 → 17576, +1.2KB×2)
         static constexpr size_t INTLV_DIM = 26u;
@@ -158,11 +158,7 @@ namespace ProtectedEngine {
         // Ping-pong A: raw_bits → interleaved_bits (재사용)
         int8_t work_A[MAX_WORK_BITS] = {};
 
-        //  기존: union { fec_bits; tx_signal; } work_B
-        //   → Stage④ fec_bits 참조 중 Stage⑤ tx_signal 쓰기 → 데이터 오염
-        //   → union 크기 불일치(17576 vs 16384) → 패딩 소거 모호
-        //  수정: 독립 배열 → 파이프라인 단계 간 완벽 격리
-        //  추가 SRAM: ~16KB (192KB 중 충분한 여유)
+        //  fec_bits / tx_signal 분리 버퍼 — 단계 간 alias·union 패딩 이슈 방지
         int8_t  fec_bits[MAX_WORK_BITS] = {};
         int32_t tx_signal[MAX_TX_SAMPS] = {};
 
@@ -260,7 +256,7 @@ namespace ProtectedEngine {
         // ── ❶ 민감 데이터 선언 + RAII 바인딩 ──
         uint64_t crypto_state_A = 0u;
         uint64_t crypto_state_B = 0u;
-        uint64_t crypto_stream_cache = 0u;   // [BUG-FIX CRIT] PRNG 캐시 (4×16비트)
+        uint64_t crypto_stream_cache = 0u;   // PRNG 캐시 (4×16비트)
         uint32_t fec_seed = 0u;
 
         uint8_t fec_master_seed_buf[MAX_SEED_SIZE] = {};
@@ -283,7 +279,7 @@ namespace ProtectedEngine {
         RAII_Secure_Wiper wipe_tsec(impl.temp_sec, sizeof(impl.temp_sec));
 
         // ── ② 16비트 → 32비트 패킹 (정적 temp_sec) ──
-        // [⑨-FIX] /2u → >>1u (2의제곱 시프트 전환)
+        // ⑨ /2u → >>1u
         size_t packed_len = (process_len + 1u) >> 1u;
         if (packed_len > Impl::MAX_SEC_WORDS) {
             packed_len = Impl::MAX_SEC_WORDS;
@@ -339,7 +335,7 @@ namespace ProtectedEngine {
 
         // intlv(int8_t) → uint32 패킹 (temp_sec 재사용)
         const size_t interleaved_bits = intlv_len;
-        // [⑨-FIX] /32u → >>5u (2의제곱 시프트 전환)
+        // ⑨ /32u → >>5u
         const size_t fec_words = (interleaved_bits + 31u) >> 5u;
         if (fec_words > Impl::MAX_SEC_WORDS) { return false; }
 
@@ -349,7 +345,7 @@ namespace ProtectedEngine {
                 const size_t idx =
                     i * 32u + static_cast<size_t>(bit);
                 if (idx < interleaved_bits &&
-                    impl.work_A[idx] > 0) {          // [BUG-20] > 0.0 → > 0
+                    impl.work_A[idx] > 0) {          // 정수 부호 비교
                     word |= (1u << (31u - static_cast<uint32_t>(bit)));
                 }
             }
@@ -396,19 +392,7 @@ namespace ProtectedEngine {
 
         // ─────────────────────────────────────────────────────────────
         //
-        //  위협: mseed_len < 16 시 하드코딩 상수(0x3D48…/0xC2B2…) 유지
-        //    → 모든 패킷이 동일 Xoroshiro128++ 초기 상태로 시작
-        //    → 동일 키스트림 반복 생성 (Many-Time Pad)
-        //    → 공격자가 두 패킷 XOR → 평문⊕평문 즉시 복원
-        //
-        //  수정: 128비트(16바이트) 시드 미확보 → 즉시 false (암호화 거부)
-        //    · Xoroshiro128++ 내부 상태 = 128비트 → 최소 16바이트 엔트로피 필수
-        //    · Session_Gateway 미초기화 상태 → 상위 레이어가 세션 재설립 수행
-        //    · 불충분 시드(8~15B)로 암호화 강행 = 보안 게이트 무력화와 동치
-        //
-        //  기존 폴백 상수(0x3D48…) 완전 제거:
-        //    packet_nonce XOR만으로는 Xoroshiro 상태 공간 불충분
-        //    (32비트 nonce → 2^32 전탐색 가능 → 양자/GPU 수 초 내 파쇄)
+        //  Xoroshiro128++는 128비트 상태 — 마스터 시드 16바이트 미만이면 암호화 거부
         // ─────────────────────────────────────────────────────────────
         if (mseed_len < 16u) {
             return false;  // Fail-Closed: 엔트로피 불충분 → 패킷 전송 거부
@@ -507,7 +491,7 @@ namespace ProtectedEngine {
         return (p != nullptr) ? p->active_tensor_count : 0u;
     }
 
-    //  기존 vector API는 헤더에서 PC 전용으로 분리 (하위 호환)
+    //  vector API는 헤더에서 PC 전용으로 분리 (하위 호환)
     const uint32_t* Dual_Tensor_Pipeline::Get_Dual_Lane_Data() const noexcept {
         const Impl* p = get_impl();
         return (p != nullptr) ? p->dual_lane_buffer : nullptr;

@@ -11,13 +11,7 @@
 ///   비정상 재머(Pulse 등) 감지 시 AJC 자동 비활성화
 ///   → Hole Punch만 작동 → RAW 이상 보장
 ///
-///  [세션 10 수정 이력]
-///   BUG-44 [CRIT] CW 17~19dB 닭-달걀 문제 해소
-///          Seed_CW_Profile() 신규 추가:
-///          cw_cancel_64_()가 추정한 CW 진폭(ja_I, ja_Q)을
-///          jprof_[]에 직접 주입하여 판정 귀환 없이 AJC가
-///          첫 심볼부터 CW를 제거할 수 있도록 함.
-///          mismatch_ema_ 재초기화로 STATIONARITY 게이팅 해소.
+///  CW 17~19dB 구간: Seed_CW_Profile()로 jprof_[] 시딩, mismatch_ema_ 재초기화.
 ///
 ///  [제약] float 0, double 0, 나눗셈 0, try-catch 0, 힙 0
 // =========================================================================
@@ -56,7 +50,7 @@ namespace ProtectedEngine {
             int8_t sym, uint32_t best_e, uint32_t second_e,
             int nc, bool is_preamble = false) noexcept;
 
-        // ── [BUG-44] CW 프로파일 직접 시딩 ──────────────────────────────
+        // ── CW 프로파일 직접 시딩 ───────────────────────────────────
         /// @brief cw_cancel_64_()의 상관 추정값을 jprof_[]에 직접 주입
         ///
         /// [목적]

@@ -89,6 +89,10 @@
 #			define IS_LITTLE_ENDIAN 1
 #		endif
 #	endif
+#elif defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+/* STM32F407 등 Cortex-M: 리틀엔디안 고정 (endian.h 미제공 툴체인 대비) */
+#define IS_LITTLE_ENDIAN 1
 #else
 /* use <endian.h> */
 #	ifdef BSD

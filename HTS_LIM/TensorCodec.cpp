@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // TensorCodec.cpp
 // 3D 텐서 FEC 코덱 구현부 (Pimpl 은닉)
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
@@ -6,7 +6,7 @@
 
 #include "AnchorManager.h"
 
-// 기존: __arm__ 단독 + _MSC_VER 예외 → ARMCC(Keil)/IAR/GCC Thumb-only 누락
+// __arm__ 단독 + _MSC_VER 예외 → ARMCC(Keil)/IAR/GCC Thumb-only 누락
 // A55 (aarch64): __aarch64__ 정의 → 정상 통과
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
@@ -30,7 +30,7 @@ namespace ProtectedEngine {
 
     namespace {
 
-        /// @brief size_t 곱 오버플로 없이 a*b — [BUG-40] 평탄 배열 기대 크기
+        /// @brief size_t 곱 오버플로 없이 a*b — 평탄 배열 기대 크기
         static bool size_mul_ok(size_t a, size_t b, size_t* out) noexcept {
             if (out == nullptr) { return false; }
             if (a == 0u || b == 0u) { *out = 0u; return true; }
@@ -69,7 +69,7 @@ namespace ProtectedEngine {
     };
 
     // =====================================================================
-    //  TensorPacket 소멸자 [BUG-01]
+    //  TensorPacket 소멸자
     // =====================================================================
     TensorPacket::~TensorPacket() noexcept {
         secure_wipe_u16_vec(tensor_data);
@@ -133,7 +133,7 @@ namespace ProtectedEngine {
             }
         }
 
-        // ── insert [BUG-13] 크기 검증: 불일치 시 false 반환 ──────────
+        // ── insert 크기 검증: 불일치 시 false 반환 ──────────────────
 
         static bool insertRowFast(
             std::vector<uint16_t>& tensor,
@@ -213,14 +213,14 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: std::make_unique<Impl>() + try-catch
-    //  수정: impl_buf_ SecWipe → ::new Impl() → impl_valid_ = true
+    //  std::make_unique<Impl>() + try-catch
+    //  impl_buf_ SecWipe → ::new Impl() → impl_valid_ = true
     //
     //  Impl() 생성자(AnchorManager/Encoder/Decoder 초기화)가 예외를
     //  던질 수 있습니다. noexcept + 예외 = std::terminate — 의도적:
     //    ARM -fno-exceptions: bad_alloc → abort (코덱 없이 동작 불가)
     //    PC: std::terminate → 스택 트레이스로 원인 즉시 진단 가능
-    //  기존 make_unique + try-catch도 실질적으로 동일 효과였습니다.
+    //  make_unique + try-catch도 실질적으로 동일 효과였습니다.
     // =====================================================================
     TensorCodec::TensorCodec() noexcept {
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
@@ -238,7 +238,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  EncodeChunk — [BUG-12] 평탄화 앵커 + [BUG-14] RAII 소거
+    //  EncodeChunk — 평탄화 앵커 + RAII 소거
     // =====================================================================
     TensorPacket TensorCodec::EncodeChunk(
         const std::vector<char>& buffer,
@@ -275,7 +275,7 @@ namespace ProtectedEngine {
             temp_line.data(),
             temp_line.capacity() * sizeof(uint16_t));
 
-        // ── [BUG-12] 평탄화 앵커 생성 ───────────────────────────
+        // ── 평탄화 앵커 생성 ─────────────────────────────────────
         pkt.row_anchor_count = DEPTH * ROWS;  // 1024
         pkt.col_anchor_count = DEPTH * COLS;  // 1024
         pkt.depth_anchor_count = ROWS * COLS;   // 4096
@@ -372,7 +372,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  DecodePacket — [BUG-17] 크기 검증 + [BUG-18] OOB 방어
+    //  DecodePacket — 크기 검증 + OOB 방어
     // =====================================================================
     void TensorCodec::DecodePacket(
         TensorPacket& pkt, int turbo_iterations) noexcept
@@ -408,8 +408,8 @@ namespace ProtectedEngine {
             temp_line.data(),
             temp_line.capacity() * sizeof(uint16_t));
 
-        //  기존: 매 반복 anc_slice 복사 + fixed 반환 = ~36,000 malloc/free
-        //  수정: reserve(max_dim) 후 assign/decode_inplace 재사용 → 2회 할당
+        //  매 반복 anc_slice 복사 + fixed 반환 = ~36,000 malloc/free
+        //  reserve(max_dim) 후 assign/decode_inplace 재사용 → 2회 할당
         const size_t max_anc_len = std::max({
             pkt.depth_anchor_len,
             pkt.col_anchor_len,

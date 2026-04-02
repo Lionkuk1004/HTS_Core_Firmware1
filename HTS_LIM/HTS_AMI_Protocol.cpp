@@ -15,27 +15,6 @@
 ///     · PROCESSING → BLOCK_SENDING CFI 전이 추가
 ///     · 향후 Billing Profile 등 대형 응답 청킹 대응 가능
 ///
-/// [양산 수정]
-///  AMI-1 [HIGH] Shutdown impl_buf_ 전체 보안 소거
-///  AMI-2 [HIGH] Tick systick 래핑 주석 (unsigned 뺄셈 = 의도적 정상)
-///  AMI-3 [MED]  생성자 for 루프 → memset
-///  AMI-4 [MED]  alignas(4) → alignas(8) (헤더에서 처리)
-///  AMI-5 [MED]  Lookup remain 검사 → 타입별 정확한 크기
-///  AMI-6 [LOW]  CURRENT_L2/L3, METER_DATETIME/UPTIME Lookup 누락 추가
-///  BUG-FIX ⑦ SET_REQUEST/ACTION_REQUEST TODO 제거 → DLMS 에러 응답 명시 전송
-///     · 기존: break만 존재 → 무응답 (마스터 타임아웃 유발)
-///     · SET_RESPONSE: Data-Access-Error(3=ReadWriteDenied)
-///     · ACTION_RESPONSE: Action-Result(3=OtherReason)
-///     · IEC 62056-53 §7.4.2.3/7.4.2.6 준거
-///  BUG-FIX-A1 [FATAL] Process_Request CFI 위반 시 보안 잠금 유지
-///     · 1차: Transition_State 실패 → IDLE 강제복귀 (데드락 해소)
-///       → 보안 무장해제: 해커가 반복 공격으로 CFI 우회 가능
-///     · 최종: ERROR/OFFLINE 유지 (의도된 보안 잠금) + 상위 루프 Initialize() 위임
-///  BUG-FIX-A2 [CRIT] SET/ACTION 응답 스택 변수(rsp[4]) Dangling 위험
-///     · 기존: uint8_t rsp[4] 스택 변수 → Send_Frame에 포인터 전달
-///             Send_Frame 구현 변경(DMA 비동기화) 시 Dangling 포인터 → 메모리 파괴
-///     · 수정: Impl::apdu_buf 정적 버퍼에 4바이트 직렬화 후 전달
-///
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
 
@@ -198,8 +177,8 @@ namespace ProtectedEngine {
         // --- Periodic Report ---
         uint32_t report_interval_ms;
         uint32_t last_report_tick;
-        uint32_t report_seq;        ///< [FIX-AMI] 세션 내 단조증가 시퀀스
-        uint32_t boot_count;        ///< [FIX-AMI-NV] 비휘발 부팅 카운터 (RTC BKP)
+        uint32_t report_seq;        ///< 세션 내 단조증가 시퀀스
+        uint32_t boot_count;        ///< 비휘발 부팅 카운터 (RTC BKP)
 
         // --- APDU Build Buffer ---
         uint8_t apdu_buf[AMI_MAX_APDU_SIZE];
@@ -207,7 +186,7 @@ namespace ProtectedEngine {
         // --- [A2] Security Wrapped Buffer ---
         uint8_t secure_buf[AMI_MAX_SECURE_BUF];
 
-        // --- [FIX-STACK] RX 복호 버퍼 (스택→Impl 이동) ---
+        // --- RX 복호 버퍼 (Impl 정적, 스택 사용 금지) ---
         //  Process_Request에서 사용. 스택 48~1024B 점유 방지.
         //  향후 AMI_MAX_APDU_SIZE 확장 시에도 스택 오버플로우 원천 차단.
         uint8_t decrypt_buf[AMI_MAX_APDU_SIZE];
@@ -251,7 +230,7 @@ namespace ProtectedEngine {
 
         // ============================================================
         //  [A1] 딕셔너리 엔트리에서 값 읽기 + 직렬화
-        //  [AMI-5] remain 검사: 타입별 정확한 크기 (기존: 무조건 +4)
+        //  [AMI-5] remain 검사: 타입별 정확한 크기
         // ============================================================
         uint32_t Write_Entry(uint8_t* buf, uint32_t remain,
             const OBIS_DictEntry& entry) noexcept {
@@ -282,8 +261,8 @@ namespace ProtectedEngine {
 
         // ============================================================
         //  [A1] 딕셔너리 기반 주기 보고 APDU 빌드
-        //  기존: 6개 객체 하드코딩
-        //  수정: 딕셔너리 전체 순회 → 공간 허용하는 만큼 자동 직렬화
+        //  6개 객체 하드코딩
+        //  딕셔너리 전체 순회 → 공간 허용하는 만큼 자동 직렬화
         // ============================================================
         uint16_t Build_Report_APDU() noexcept {
             uint32_t pos = 0u;
@@ -463,7 +442,7 @@ namespace ProtectedEngine {
     //  Public API
     // ============================================================
 
-    // [AMI-3] 생성자: for 루프 → memset
+    // [AMI-3] 생성자: impl_buf_ memset 0 초기화
     HTS_AMI_Protocol::HTS_AMI_Protocol() noexcept
         : initialized_{ false }
     {
@@ -518,9 +497,11 @@ namespace ProtectedEngine {
     }
 
     // [AMI-1] Shutdown: impl_buf_ 전체 보안 소거
-    // A-5: ISR·재진입과 경쟁 시 안전 종료 — PRIMASK + op_busy_ 스핀 (OTA_AMI 동일)
+    // A-5: op_busy_ 대기는 IRQ 허용(인터럽트가 완료·락 해제 가능) → 짧은 구간만 PRIMASK
     void HTS_AMI_Protocol::Shutdown() noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
 
 #if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
         uint32_t primask_saved;
@@ -528,7 +509,6 @@ namespace ProtectedEngine {
             "cpsid i"
             : "=r"(primask_saved) :: "memory");
 #endif
-        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
 
         if (!initialized_.load(std::memory_order_acquire)) {
             op_busy_.clear(std::memory_order_release);
@@ -659,19 +639,8 @@ namespace ProtectedEngine {
         }
 
         //
-        //  기존 문제 (1차):
-        //    Transition_State(PROCESSING) 실패 → state=ERROR/OFFLINE 고착
-        //    → 프로토콜 데드락 (DLMS 마스터 통신 완전 중단)
-        //
-        //  기존 수정 (잘못된):
-        //    CFI 위반 후 state = IDLE 강제 복귀
-        //    → 해커가 반복적으로 상태를 흔들며 공격 가능 (보안 무장해제)
-        //
-        //  최종 수정:
-        //    CFI 위반 → state는 Transition_State 내부에서 ERROR/OFFLINE 전이 완료
-        //    → 여기서 IDLE 강제 복귀하지 않음 (ERROR 고착 = 의도된 보안 방어)
-        //    → 상위 메인 루프가 ERROR 감지 → Initialize() 재호출로 안전 리셋
-        //    → 데드락 해소 책임은 상위 루프에 위임 (CFI 무결성 보존)
+        //  Transition_State(PROCESSING) 실패 시 ERROR/OFFLINE 전이 완료 후 반환 — IDLE 금지
+        //  (복구는 상위 루프의 Initialize/재동기)
         if (!impl->Transition_State(AMI_State::PROCESSING)) {
             AMI_Secure_Wipe(impl->decrypt_buf, AMI_MAX_APDU_SIZE);
             // state는 이미 Transition_State 내부에서 ERROR/OFFLINE 전이됨
@@ -693,10 +662,10 @@ namespace ProtectedEngine {
             break;
         case DLMS_Service::SET_REQUEST:
             //  IEC 62056-53 §7.4.2.3: Data-Access-Error 3 = Read/Write Denied
-            //   기존: uint8_t rsp[4] 스택 → Send_Frame에 포인터 전달
+            //   uint8_t rsp[4] 스택 → Send_Frame에 포인터 전달
             //    Send_Frame이 현재 동기 직렬화이므로 즉시 복사되어 안전하나
             //    구현 변경 시 Dangling 포인터 위험 (스코프 이탈 후 DMA 접근)
-            //   수정: Impl::apdu_buf 정적 버퍼에 4바이트 직렬화 후 전달
+            //   Impl::apdu_buf 정적 버퍼에 4바이트 직렬화 후 전달
             //    apdu_buf는 Impl 내부 정적 배열 → 스코프 이탈 없음
             //    Send_Frame 호출 시점에 유효한 포인터 보장
             if (effective_len >= 1u && impl->ipc != nullptr) {

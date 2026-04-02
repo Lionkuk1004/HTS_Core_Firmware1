@@ -1,4 +1,4 @@
-﻿/// @file  HTS_CCTV_Security.cpp
+/// @file  HTS_CCTV_Security.cpp
 /// @brief HTS CCTV Security Coprocessor -- Anti-Hacking Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -8,6 +8,40 @@
 #include "HTS_IPC_Protocol.h"
 #include <new>
 #include <atomic>
+
+// 양산: -DHTS_CCTV_ENFORCE_RDP_LEVEL2=1 시 STM32F4 계열 OPTCR RDP Level2 미만이면 AIRCR 리셋
+#ifndef HTS_CCTV_ENFORCE_RDP_LEVEL2
+#define HTS_CCTV_ENFORCE_RDP_LEVEL2 0
+#endif
+
+#if HTS_CCTV_ENFORCE_RDP_LEVEL2 && \
+    (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
+    !defined(__aarch64__)
+namespace {
+[[noreturn]] void HTS_CCTV_Rdp_Fault_Halt() noexcept {
+    static constexpr uintptr_t AIRCR_ADDR = 0xE000ED0Cu;
+    static constexpr uint32_t  AIRCR_KEYRST = 0x05FA0000u | 0x04u;
+    *reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR) = AIRCR_KEYRST;
+    for (;;) {
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("wfi");
+#endif
+    }
+}
+
+void HTS_CCTV_Enforce_Rdp_Level2_If_Configured() noexcept {
+    static constexpr uintptr_t FLASH_OPTCR = 0x40023C14u;
+    static constexpr uint32_t  RDP_MASK = 0x0000FF00u;
+    static constexpr uint32_t  RDP_LEVEL_2 = 0xCCu;
+    const uint32_t optcr = *reinterpret_cast<volatile uint32_t*>(FLASH_OPTCR);
+    const uint32_t rdp = (optcr & RDP_MASK) >> 8u;
+    if (rdp != RDP_LEVEL_2) {
+        HTS_CCTV_Rdp_Fault_Halt();
+    }
+}
+} // namespace
+#endif
 
 namespace ProtectedEngine {
     static constexpr uint32_t CCTV_INIT_NONE = 0u;
@@ -49,8 +83,8 @@ namespace ProtectedEngine {
         // --- Identity ---
         uint32_t camera_id;
 
-        // --- CFI State ---
-        CCTV_SecState state;
+        // --- CFI State (ISR·메인 간 가시성: LTO 레지스터 캐시/DCE 방지) ---
+        std::atomic<CCTV_SecState> state{CCTV_SecState::OFFLINE};
         uint8_t       cfi_violation_count;
         uint8_t       hmac_key_len;
         uint8_t       pad_;
@@ -76,15 +110,14 @@ namespace ProtectedEngine {
         uint32_t frozen_start_tick;     ///< When freeze was first detected
         uint16_t baseline_resolution;   ///< Known-good resolution
         uint8_t  baseline_codec;        ///< Known-good codec
-        uint8_t  login_fail_snapshot;   ///< Last sampled login fail count
+        uint32_t login_fail_snapshot;   ///< Last sampled login fail count (full counter)
 
         // --- Statistics ---
         uint32_t total_event_count;
         uint32_t critical_event_count;
 
-        // --- [BUG-FIX FATAL] Tamper Edge-Trigger State ---
-        //  기존: Level 기반 → 매 Tick마다 Send_Event 무한 반복 → IPC 버스 마비
-        //  수정: 이전 상태 기억 → 전이 순간(Edge)에만 1회 발생
+        // --- Tamper Edge-Trigger State ---
+        //  엣지 전이 시에만 이벤트 1회 — 레벨 유지 중 반복 전송 방지
         bool prev_tamper_case;      ///< 이전 케이스 탬퍼 상태
         bool prev_cable_cut;        ///< 이전 케이블 절단 상태
         bool prev_lens_blocked;     ///< 이전 렌즈 가림 상태
@@ -102,17 +135,19 @@ namespace ProtectedEngine {
         // ============================================================
         bool Transition_State(CCTV_SecState target) noexcept
         {
-            if (!CCTV_Sec_Is_Legal_Transition(state, target)) {
-                if (CCTV_Sec_Is_Legal_Transition(state, CCTV_SecState::ERROR)) {
-                    state = CCTV_SecState::ERROR;
+            const CCTV_SecState current =
+                state.load(std::memory_order_acquire);
+            if (!CCTV_Sec_Is_Legal_Transition(current, target)) {
+                if (CCTV_Sec_Is_Legal_Transition(current, CCTV_SecState::ERROR)) {
+                    state.store(CCTV_SecState::ERROR, std::memory_order_release);
                 }
                 else {
-                    state = CCTV_SecState::OFFLINE;
+                    state.store(CCTV_SecState::OFFLINE, std::memory_order_release);
                 }
                 cfi_violation_count++;
                 return false;
             }
-            state = target;
+            state.store(target, std::memory_order_release);
             return true;
         }
 
@@ -121,9 +156,7 @@ namespace ProtectedEngine {
         // ============================================================
         void Log_Event(CCTV_EventType evt, CCTV_Severity sev) noexcept
         {
-            //  기존: 정순(0→N) 탐색 → wrap-around 후 과거 슬롯의 count 발견
-            //        → 최신이 아닌 오래된 count 기준으로 누적 → 값 널뛰기
-            //  수정: log_head-1부터 역순 → 가장 최근 동일 이벤트의 count 취득
+            //  동일 타입 최근 count: log_head-1부터 역순 검색
             uint32_t prev_count = 0u;
             const uint32_t search_limit =
                 (log_head < CCTV_EVENT_LOG_SIZE) ? log_head : CCTV_EVENT_LOG_SIZE;
@@ -155,9 +188,7 @@ namespace ProtectedEngine {
         {
             if (ipc == nullptr) { return; }
             if (detail_len > CCTV_EVT_MAX_DETAIL) { detail_len = static_cast<uint8_t>(CCTV_EVT_MAX_DETAIL); }
-            //  기존: detail==nullptr, detail_len==8 → 복사 생략되지만 pos += 8
-            //        → evt_buf에 이전 프레임 잔해가 평문으로 IPC 전송 (Information Leak)
-            //  수정: detail==nullptr → detail_len 강제 0 (쓰레기 바이트 합산 차단)
+            //  detail==nullptr 이면 detail_len=0 — 미복사 구간을 pos에 반영하지 않음
             if (detail == nullptr) { detail_len = 0u; }
 
             uint32_t pos = 0u;
@@ -203,13 +234,7 @@ namespace ProtectedEngine {
         void Compute_Lightweight_MAC(const uint8_t* data, uint32_t len,
             uint8_t out[4]) const noexcept
         {
-            //  기존: crc1=CRC(data), crc2=crc1^K → 둘 다 평문 출력
-            //        → 공격자: K = crc1 ^ crc2 (단일 패킷으로 키 추출)
-            //  수정: CRC(data || key) → 단일 CRC 출력만 전송
-            //        키가 CRC 내부에 혼합되어 역산 불가
-            //
-            //  주의: 여전히 Placeholder (양산 시 KCMVP HMAC-SHA256으로 교체)
-            //        이 수정은 Placeholder 상태에서도 키 노출만은 차단
+            //  단일 CRC 출력(키 혼합 체인) — Placeholder, 양산 시 KCMVP HMAC 권장
 
             // Pass 1: CRC over data
             uint16_t mac = IPC_Compute_CRC16(data, len);
@@ -237,6 +262,7 @@ namespace ProtectedEngine {
         void Check_Firmware_CRC() noexcept
         {
             if (mon_cb.get_fw_crc == nullptr) { return; }
+            // [양산] get_fw_crc()는 플래시 풀스캔/SPI 블로킹 금지 — 캐시된 O(1) 값만 반환
             const uint32_t live_crc = mon_cb.get_fw_crc();
             if (live_crc != baseline_fw_crc && baseline_fw_crc != 0u) {
                 uint8_t detail[8];
@@ -321,8 +347,7 @@ namespace ProtectedEngine {
 
         void Check_Physical_Tamper() noexcept
         {
-            //  기존: 상태 유지 중 매 Tick마다 Send_Event → IPC 큐 폭주
-            //  수정: 이전 상태→현재 상태 전이 시에만 1회 이벤트 발생
+            //  엣지에서만 Send_Event (레벨 유지 중 반복 방지)
             if (mon_cb.get_tamper_case != nullptr) {
                 const bool cur = mon_cb.get_tamper_case();
                 if (cur && !prev_tamper_case) {  // Rising edge only
@@ -364,12 +389,15 @@ namespace ProtectedEngine {
         {
             if (mon_cb.get_login_fail_count != nullptr) {
                 const uint32_t fails = mon_cb.get_login_fail_count();
-                const uint32_t delta = fails - static_cast<uint32_t>(login_fail_snapshot);
+                uint32_t delta = 0u;
+                if (fails >= login_fail_snapshot) {
+                    delta = fails - login_fail_snapshot;
+                }
                 if (delta >= CCTV_BRUTE_FORCE_THRESHOLD) {
                     Send_Event(CCTV_EventType::NET_BRUTE_FORCE,
                         CCTV_Severity::CRITICAL, nullptr, 0u);
                 }
-                login_fail_snapshot = static_cast<uint8_t>(fails & 0xFFu);
+                login_fail_snapshot = fails;
             }
         }
 
@@ -412,6 +440,13 @@ namespace ProtectedEngine {
                 : IPC_Error::NOT_INITIALIZED;
         }
 
+#if HTS_CCTV_ENFORCE_RDP_LEVEL2 && \
+    (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
+    !defined(__aarch64__)
+        HTS_CCTV_Enforce_Rdp_Level2_If_Configured();
+#endif
+
         if (ipc == nullptr) {
             init_state_.store(CCTV_INIT_NONE, std::memory_order_release);
             return IPC_Error::NOT_INITIALIZED;
@@ -421,7 +456,7 @@ namespace ProtectedEngine {
 
         impl->ipc = ipc;
         impl->camera_id = camera_id;
-        impl->state = CCTV_SecState::OFFLINE;
+        impl->state.store(CCTV_SecState::OFFLINE, std::memory_order_release);
         impl->cfi_violation_count = 0u;
         impl->hmac_key_len = 0u;
         impl->current_tick = 0u;
@@ -479,7 +514,7 @@ namespace ProtectedEngine {
         IPC_Secure_Wipe(impl->evt_buf, CCTV_EVT_MAX_FRAME_SIZE);
         std::atomic_thread_fence(std::memory_order_release);
 
-        impl->state = CCTV_SecState::OFFLINE;
+        impl->state.store(CCTV_SecState::OFFLINE, std::memory_order_release);
         impl->ipc = nullptr;
         impl->~Impl();
 
@@ -554,7 +589,8 @@ namespace ProtectedEngine {
             return;  // First tick: just initialize, no checks yet
         }
 
-        const uint8_t sv = static_cast<uint8_t>(impl->state);
+        const uint8_t sv = static_cast<uint8_t>(
+            impl->state.load(std::memory_order_acquire));
 
         // --- OFFLINE: do nothing ---
         if (sv == static_cast<uint8_t>(CCTV_SecState::OFFLINE)) { return; }
@@ -588,11 +624,19 @@ namespace ProtectedEngine {
 
         // =================================================================
         //  MONITORING / ALERT: full operation
-        //
-        //   즉시 나머지 검사 중단 (1틱 격리 붕괴 방지)
-        //   기존: sv 캐싱 → 전이 후에도 Network/Stream 계속 실행
-        //   수정: 각 검사 후 impl->state 재확인 → MONITORING/ALERT 아니면 return
+        //  물리 탬퍼를 FW CRC(느린 콜백 가능)보다 먼저 — 골든타임 보존
+        //  각 단계 후 state 재확인 — 전이 시 본 틱 나머지 검사 생략
         // =================================================================
+
+        impl->Check_Physical_Tamper();
+        {
+            const CCTV_SecState st =
+                impl->state.load(std::memory_order_acquire);
+            if (st != CCTV_SecState::MONITORING &&
+                st != CCTV_SecState::ALERT) {
+                return;
+            }
+        }
 
         // --- Periodic firmware CRC check ---
         if ((systick_ms - impl->last_fw_check_tick) >= CCTV_FW_CHECK_INTERVAL) {
@@ -600,9 +644,13 @@ namespace ProtectedEngine {
             impl->Check_Firmware_Version();
             impl->last_fw_check_tick += CCTV_FW_CHECK_INTERVAL;
         }
-        if (impl->state != CCTV_SecState::MONITORING &&
-            impl->state != CCTV_SecState::ALERT) {
-            return;
+        {
+            const CCTV_SecState st =
+                impl->state.load(std::memory_order_acquire);
+            if (st != CCTV_SecState::MONITORING &&
+                st != CCTV_SecState::ALERT) {
+                return;
+            }
         }
 
         // --- Periodic stream integrity check ---
@@ -613,12 +661,14 @@ namespace ProtectedEngine {
             impl->last_stream_check_tick += CCTV_STREAM_CHECK_INTERVAL;
         }
 
-        // --- Physical tamper (every tick -- real-time critical) ---
-        impl->Check_Physical_Tamper();
         //  이 지점 이후의 Network/Heartbeat는 손상된 SoC와 통신 위험
-        if (impl->state != CCTV_SecState::MONITORING &&
-            impl->state != CCTV_SecState::ALERT) {
-            return;
+        {
+            const CCTV_SecState st =
+                impl->state.load(std::memory_order_acquire);
+            if (st != CCTV_SecState::MONITORING &&
+                st != CCTV_SecState::ALERT) {
+                return;
+            }
         }
 
         // --- Network intrusion (every tick) ---
@@ -641,8 +691,9 @@ namespace ProtectedEngine {
 
         // Auto-escalate to ALERT on WARNING+
         if (static_cast<uint8_t>(severity) >= static_cast<uint8_t>(CCTV_Severity::WARNING)) {
-            if ((static_cast<uint8_t>(impl->state) &
-                static_cast<uint8_t>(CCTV_SecState::MONITORING)) != 0u)
+            const uint8_t st = static_cast<uint8_t>(
+                impl->state.load(std::memory_order_acquire));
+            if ((st & static_cast<uint8_t>(CCTV_SecState::MONITORING)) != 0u)
             {
                 impl->Transition_State(CCTV_SecState::ALERT);
             }
@@ -673,22 +724,12 @@ namespace ProtectedEngine {
             return IPC_Error::CFI_VIOLATION;
         }
 
-        //  기존: LOCKDOWN 중 last_*_tick 미갱신 → 복귀 시 시간차 폭발
-        //        → += INTERVAL 반복 루프로 CPU 록업
-        //  수정: 복귀 시 모든 last_*_tick을 현재 틱으로 강제 동기화
+        //  복귀 시 주기 검사·하트비트 tick을 현재 틱에 맞춤
         impl->last_fw_check_tick = impl->current_tick;
         impl->last_stream_check_tick = impl->current_tick;
         impl->last_heartbeat_tick = impl->current_tick;
 
-        //
-        //  기존: 타이머만 동기화 → 스트림 감시 변수 과거값 유지
-        //   (1) last_stream_seq가 높은 값 → SoC 재부팅 후 seq=0 → 재생 공격 오인
-        //   (2) frozen_start_tick 잔존 → 즉시 스트림 동결 오인
-        //   (3) last_frame_counter 잔존 → 첫 프레임과 비교 → 오탐
-        //   → 락다운 해제 직후 다시 락다운 → 무한 루프
-        //
-        //  수정: 외부 SoC를 다시 신뢰하는 아키텍처적 선언
-        //        모든 외부 관측 상태를 0으로 초기화 (새 베이스라인)
+        //  스트림·동결·프레임 관측값 리셋 — SoC 재기동 후 새 베이스라인
         impl->last_stream_seq = 0u;   // 시퀀스 리셋 → 재생 탐지 재시작
         impl->last_frame_counter = 0u;   // 프레임 카운터 리셋 → 동결 탐지 재시작
         impl->frozen_start_tick = 0u;   // 동결 타이머 리셋
@@ -699,13 +740,20 @@ namespace ProtectedEngine {
         impl->prev_lens_blocked = false;
         impl->prev_accel_shock = false;
 
+        if (impl->mon_cb.get_login_fail_count != nullptr) {
+            impl->login_fail_snapshot = impl->mon_cb.get_login_fail_count();
+        } else {
+            impl->login_fail_snapshot = 0u;
+        }
+
         return IPC_Error::OK;
     }
 
     CCTV_SecState HTS_CCTV_Security::Get_State() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return CCTV_SecState::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return reinterpret_cast<const Impl*>(impl_buf_)->state.load(
+            std::memory_order_acquire);
     }
 
     uint32_t HTS_CCTV_Security::Get_Event_Count() const noexcept

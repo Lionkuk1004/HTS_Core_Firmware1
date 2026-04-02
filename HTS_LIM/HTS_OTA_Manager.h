@@ -29,13 +29,6 @@
 ///   - CRC-32 전체 검증 후에만 커밋 허용
 ///   - ABORT: 수신 중 언제든 중단 가능
 ///
-/// [양산 수정 이력]
-///  OTA-1 [HIGH] Get_Progress_Percent 나눗셈 → Q16 역수 사전 계산
-///  OTA-2 [HIGH] Shutdown 보안 소거 추가
-///  OTA-3 [MED]  생성자 memset 표준 통일
-///  OTA-4 [MED]  alignas(4) → alignas(8) 프로젝트 Pimpl 표준
-///  OTA-5 [LOW]  Verify 256B 청크 읽기
-///
 /// @warning sizeof(HTS_OTA_Manager) ~ 512B. 전역/정적 배치 권장.
 ///
 /// @author 임영준 (Lim Young-jun)
@@ -97,7 +90,7 @@ namespace ProtectedEngine {
 
     private:
         struct Impl;
-        // [OTA-4] alignas(4) → alignas(8): BB1/TensorCodec/ECCM Pimpl 표준 통일
+        // [OTA-4] alignas(8) — Pimpl impl_buf_와 동일 정렬
         alignas(8) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool>  initialized_{ false };
     };

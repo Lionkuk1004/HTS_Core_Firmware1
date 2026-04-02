@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // =========================================================================
 // AnchorEncoder.h
 // GF(2^8) Cauchy Reed-Solomon 이레이저 코딩 인코더 — 공개 인터페이스
@@ -22,12 +22,6 @@
 //      → uint16_t 벡터 → Cauchy RS 패리티 + CRC-32 부착
 //      → 앵커 비율 0% 시 빈 벡터 반환
 //      → OOM/세션 미초기화 시 빈 벡터 반환 (abort 제거)
-//
-//  [양산 수정 이력 — 세션 5: 12건]
-//   BUG-01~12 (abort 제거, dead include 8개, GF8Bit 초기화,
-//             AnchorManager 전방선언, copy/move, cstdlib,
-//             nodiscard, Self-Contained, dead extern, Doxygen,
-//             Cauchy xor_val 가드, CRC32 Zero-copy)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once

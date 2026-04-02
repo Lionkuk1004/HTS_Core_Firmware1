@@ -1,7 +1,7 @@
 // =========================================================================
 //  HTS_HMAC_KCMVP_KAT.cpp
 //
-//  [KCMVP / BUG-KAT-46-HMAC] Known Answer = 검증된 **정적** 기대값만
+//  [KCMVP KAT — HMAC] Known Answer = 검증된 **정적** 기대값만
 //  · 기대 HMAC: RFC 4231(TC1/TC2) + KAT-3는 외부 도구로 사전 계산한 32바이트 상수
 //  · MUT(HMAC_Bridge)로 런타임 캡처하여 expected를 채우면 안 됨(자기 참조/Tautology)
 //
@@ -40,7 +40,7 @@ inline bool hmac_ok(uint32_t r) noexcept { return r == HM::SECURE_TRUE; }
 } // namespace
 
 // =========================================================================
-//  유틸리티 — D-2 / X-5-1: 스택·임시 버퍼 소거는 SecureMemory::secureWipe (BUG-KAT-43)
+//  유틸리티 — D-2 / X-5-1: 스택·임시 버퍼 소거는 SecureMemory::secureWipe
 // =========================================================================
 static void SZ(void* p, size_t n) noexcept {
     ProtectedEngine::SecureMemory::secureWipe(p, n);
@@ -258,7 +258,7 @@ sizeof(KAT_TABLE) / sizeof(KAT_TABLE[0]);
 // =========================================================================
 static bool KAT_Phase() {
     std::cout << "\n==========================================\n"
-        << "  KAT 검증 — 정적 기대값 vs MUT [BUG-KAT-46-HMAC]\n"
+        << "  KAT 검증 — 정적 기대값 vs MUT [KCMVP KAT — HMAC]\n"
         << "  (런타임 캡처/자기 참조 없음)\n"
         << "==========================================\n";
 

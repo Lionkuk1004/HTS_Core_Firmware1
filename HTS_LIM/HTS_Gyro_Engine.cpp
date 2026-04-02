@@ -5,8 +5,8 @@
 //
 #include "HTS_Gyro_Engine.h"
 #include <atomic>
-#include <cstddef>      // size_t [BUG-FIX LOW Self-Contained]
-#include <cstdint>      // uint32_t [BUG-FIX LOW Self-Contained]
+#include <cstddef>      // size_t
+#include <cstdint>      // uint32_t
 #include <cstring>
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
@@ -60,8 +60,8 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Safe_Buffer_Flush — 안티포렌식 메모리 파쇄기
     //
-    //   기존: memset + asm("memory") → 레지스터 전량 Spill/Reload
-    //   수정: volatile uint32_t 워드 소거 + 경량 이스케이프("r")
+    //   memset + asm("memory") → 레지스터 전량 Spill/Reload
+    //   volatile uint32_t 워드 소거 + 경량 이스케이프("r")
     //   정책: HTS_Universal_API.cpp 확립 표준과 통일
     //
     //  [플랫폼 분기]
@@ -78,11 +78,11 @@ namespace ProtectedEngine {
 
 #if defined(__GNUC__) || defined(__clang__)
         //
-        //  기존 위험: T=uint8_t 시 buffer가 비정렬(0x20000001 등)일 수 있음
+        //  위험: T=uint8_t 시 buffer가 비정렬(0x20000001 등)일 수 있음
         //   → reinterpret_cast<volatile uint32_t*> = C++ UB (정렬 위반)
         //   → UNALIGN_TRP=1 설정 시 UsageFault/HardFault 즉사
         //
-        //  수정: volatile uint8_t 바이트 단위 소거
+        //  volatile uint8_t 바이트 단위 소거
         //   · unsigned char*는 C++ 표준 모든 타입 앨리어싱 허용 (UB 0건)
         //   · 정렬 요구사항 없음 (1바이트 = 자연정렬)
         //   · DSE 차단: volatile 쓰기 최적화 불가

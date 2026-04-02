@@ -22,14 +22,6 @@
 //   impl_buf_: 소멸자에서 SecWipe — 전체 이중 소거
 //   복사/이동: = delete (PN 시퀀스 복제 방지)
 //
-//  [양산 수정 이력]
-//   BUG-01~11 (헤더→전방선언, dead멤버 문서화, Pimpl, abort→false,
-//              copy/move, [[nodiscard]], ivdep, Self-Contained,
-//              Q16 ASR 검증+반올림, pragma O0 삭제, volatile void*)
-//   BUG-12 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//          · impl_buf_[256] alignas(8)
-//          · 소멸자 = default → 명시적 p->~Impl() + SecWipe_MF
-//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
@@ -76,9 +68,9 @@ namespace ProtectedEngine {
             int32_t* __restrict out_correlation) noexcept;
 
     private:
-        // ── [FIX-C] Pimpl In-Place Storage (zero-heap) ──────────────
+        // ── Pimpl In-Place Storage (zero-heap) ───────────────────
         // Impl = HTS_Sys_Config(≈32B) + int32_t[64](256B) + ref_len(4B) ≈ 296B
-        // vector 힙 할당 완전 제거 → 정적 배열 전환
+        // 정적 impl_buf_, 힙 0
         static constexpr size_t IMPL_BUF_SIZE = 320u;
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
 

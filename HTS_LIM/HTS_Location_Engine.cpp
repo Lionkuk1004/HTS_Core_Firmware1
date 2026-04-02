@@ -152,7 +152,7 @@ namespace ProtectedEngine {
         //        x_num(~10^9) × inv_det(~10^5) = ~10^14 >> INT32_MAX
         //        → 좌표 쓰레기값 → 구조대상자 위치 완전 붕괴
         //
-        //  수정: K12*qy3, x_num*inv_det 모두 int64_t 중간값 사용
+        //  K12*qy3, x_num*inv_det 모두 int64_t 중간값 사용
         //        Cortex-M4 SMULL: 32×32→64 곱셈 단일 사이클 (성능 영향 0)
         const int64_t x_num = static_cast<int64_t>(K12) * qy3
             - static_cast<int64_t>(K13) * qy2;
@@ -170,7 +170,7 @@ namespace ProtectedEngine {
         const int32_t inv_det =
             (static_cast<int32_t>(1) << RECIP_SHIFT) / det_full;
 
-        //  Cortex-M4: SMULL+SMLAL 조합 (~2cyc), 기존 int32_t 대비 +1cyc
+        //  Cortex-M4: SMULL+SMLAL 조합 (~2cyc), int32-only 경로 대비 +1cyc
         const int32_t x_q7 = static_cast<int32_t>(
             (x_num * static_cast<int64_t>(inv_det)) >> RECIP_SHIFT);
         const int32_t y_q7 = static_cast<int32_t>(
@@ -225,8 +225,8 @@ namespace ProtectedEngine {
         uint8_t      family_count = 0u;
         uint8_t      battery_pct = 100u;
         bool         is_moving = false;
-        //  기존: last_gasp_sent=true → Tick 빈 블록 → 전송 0회
-        //  수정: remain=3→2→1→DONE 카운터 + DONE 센티넬(재발동 영구 차단)
+        //  last_gasp_sent=true → Tick 빈 블록 → 전송 0회
+        //  remain=3→2→1→DONE 카운터 + DONE 센티넬(재발동 영구 차단)
         //
         //  상태: IDLE(0) → 배터리<5% → ACTIVE(3→2→1) → DONE(0xFF) → 영구 종료
         //  DONE 이후 Set_Battery_Percent 재호출 시 remain≠0(IDLE) → 재발동 차단
@@ -385,7 +385,7 @@ namespace ProtectedEngine {
 
         const uint32_t pm = loc_critical_enter();
 
-        // 기존 앵커 갱신
+        // 앵커 갱신
         int32_t slot = p->find_anchor(node_id);
         if (slot >= 0) {
             p->anchors[static_cast<size_t>(slot)].lat_1e4 = lat_1e4;
@@ -464,7 +464,7 @@ namespace ProtectedEngine {
                     const int32_t dlat = p->anchors[a].lat_1e4 - ref_lat;
                     const int32_t dlon = p->anchors[a].lon_1e4 - ref_lon;
                     // 1e4 → 데시미터: × MM_PER_UNIT / 100
-                    // [⑨-FIX] /100 → Q19 역수 곱셈 (2^19/100 = 5242.88 → 5243)
+                    // ⑨ /100 → Q19 역수 곱
                     //  정밀도: |x|≤2B 범위에서 오차 < 0.002%
                     //  int64_t 중간값: |1.6B × 5243| = 8.4T → int64_t 안전
                     static constexpr int32_t Q19_RECIP_100 = 5243;
@@ -475,7 +475,7 @@ namespace ProtectedEngine {
                         (static_cast<int64_t>(dlat * LAT_MM_PER_UNIT)
                             * Q19_RECIP_100) >> 19);
                     // cm → dm
-                    // [⑨-FIX] /10u → Q16 역수 곱셈 (2^16/10 = 6553.6 → 6554)
+                    // ⑨ /10u → Q16 역수 곱
                     static constexpr uint32_t Q16_RECIP_10 = 6554u;
                     const int32_t d_dm =
                         static_cast<int32_t>(
@@ -629,7 +629,7 @@ namespace ProtectedEngine {
     // =====================================================================
     //  HMAC 간이 검증 (양산 시 LSH256_Bridge::Hash_256 연동)
     //
-    //  수정: 토큰 필드로 해시 계산 → 서명과 constant-time 비교
+    //  토큰 필드로 해시 계산 → 서명과 constant-time 비교
     //  양산: LSH256_Bridge::Hash_256(token_data, len, expected)
     // =====================================================================
     static bool verify_token_signature(const AuthToken& token) noexcept {
@@ -718,9 +718,7 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // [갱신형] 하드 리밋 제거 → 하트비트 기반 무제한 갱신
-        //  수색 본부가 24시간마다 Heartbeat_Renew 전송
-        //  48시간 미수신 시 자동 만료 (잊힌 추적 방지)
+        // Heartbeat_Renew로 갱신, 48h 미수신 시 만료
 
         // Zone 확인 (내 위치가 수색 영역 안인지)
         if (!is_within_zone(p->position.lat_1e4,
@@ -901,14 +899,14 @@ namespace ProtectedEngine {
             loc_critical_exit(pm);
         }
 
-        // ── [BUG-FIX CRIT] Last Gasp: 배터리 < 5% → 즉시 3회 버스트 ──
+        // ── Last Gasp: 배터리 < 5% → 즉시 3회 버스트 ────────────────
         //
-        //   기존 goto loc_send_now: const uint32_t interval/elapsed 초기화를
+        //   goto loc_send_now: const uint32_t interval/elapsed 초기화를
         //   건너뛰어 "crosses initialization" 컴파일 에러 발생
-        //   수정: bool send_now 플래그로 interval 검사 분기 우회
+        //   bool send_now 플래그로 interval 검사 분기 우회
         //
-        //   기존: remain 0→3 재충전 무한 반복 (배터리 즉시 탕진)
-        //   수정: 3→2→1→DONE(0xFF) → Set_Battery_Percent에서 재발동 불가
+        //   remain 0→3 재충전 무한 반복 (배터리 즉시 탕진)
+        //   3→2→1→DONE(0xFF) → Set_Battery_Percent에서 재발동 불가
         //
         //  흐름: Set_Battery_Percent(pct<5) → remain=3
         //        Tick#1 → send_now=true, remain=2

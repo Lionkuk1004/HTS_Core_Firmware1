@@ -9,10 +9,6 @@
 /// @file  HTS_API.h
 /// @brief 외부 파트너사 연동 API 인터페이스
 /// @target STM32F407VGT6 (Cortex-M4F)
-///
-/// [양산 수정 이력 — 19건]
-///  BUG-18 [HIGH] DCLP Fast-Path 추가 (CAS 병목 제거)
-///  BUG-19 [CRIT] extern "C" + enum class ABI 불일치 → extern "C" 삭제
 // =========================================================================
 #pragma once
 // ─────────────────────────────────────────────────────────

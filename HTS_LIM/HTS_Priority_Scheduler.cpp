@@ -352,8 +352,8 @@ namespace ProtectedEngine {
         p->last_nf = current_nf;
         p->data_suppressed = (current_nf > NF_SUPPRESS_TH);
 
-        //  기존: pop 먼저 → VOICE 풀 시 tail 재삽입 → FIFO 역전
-        //  수정: peek으로 조건 확인 → VOICE 빈칸 있을 때만 pop+push
+        //  pop 먼저 → VOICE 풀 시 tail 재삽입 → FIFO 역전
+        //  peek으로 조건 확인 → VOICE 빈칸 있을 때만 pop+push
         const QueueItem* peek =
             ring_peek(p->q_data.items, p->q_data.head, p->q_data.count);
 

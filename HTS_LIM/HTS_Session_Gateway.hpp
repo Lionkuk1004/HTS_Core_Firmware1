@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Session_Gateway.hpp
 // 최상위 보안 세션 컨트롤러
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -17,11 +17,6 @@
 //   uint8_t buf[MAX_SEED_SIZE];
 //   size_t n = Session_Gateway::Get_Master_Seed_Raw(buf, sizeof(buf));
 //   Session_Gateway::Close_Session();
-//
-//  [양산 수정 이력 — 32건]
-//   BUG-30 [HIGH] #define HTS_PLATFORM_ARM 하드코딩 → 컴파일러 감지 매크로
-//   BUG-31 [CRIT] ⑭ PC 코드 물리삭제: mutex/vector/string/socket/try-catch
-//   BUG-32 [LOW]  주석 정합: "/ PC / Server" 제거
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once

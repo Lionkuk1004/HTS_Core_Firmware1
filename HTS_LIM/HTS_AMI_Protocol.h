@@ -115,7 +115,7 @@ namespace ProtectedEngine {
         struct Impl;
         /// Tick / Send_Periodic_Report 공용 (free 함수는 private Impl 접근 불가)
         static IPC_Error ami_send_periodic_report_impl(Impl* impl) noexcept;
-        // [AMI-4] alignas(4) → alignas(8) 프로젝트 Pimpl 표준
+        // [AMI-4] alignas(8) — Pimpl impl_buf_ 정렬
         alignas(8) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool>  initialized_{ false };
         /// A-5: 공개 API fail-close 배타 (OTA_Busy_Guard 동일 패턴)

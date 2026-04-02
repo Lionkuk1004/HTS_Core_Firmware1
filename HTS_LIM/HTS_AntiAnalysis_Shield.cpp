@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_AntiAnalysis_Shield.cpp
 // 실행 속도 기반 디버거/에뮬레이터 탐지 + 기만적 붕괴 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz) / PC
@@ -45,9 +45,9 @@ namespace ProtectedEngine {
     //  타이밍 프로브 — 고정 연산량 실행 후 소요 틱 측정
     // =====================================================================
     static uint32_t Run_Timing_Probe() noexcept {
-        //  기존: start/end 사이 ISR 발생 → 수백 사이클 뻥튀기
+        //  start/end 사이 ISR 발생 → 수백 사이클 뻥튀기
         //        → baseline × 10 초과 → 디버거 오탐 → 정상 펌웨어 자폭
-        //  수정: PRIMASK로 start~end 구간 인터럽트 완전 차단
+        //  PRIMASK로 start~end 구간 인터럽트 완전 차단
         //  영향: ~200사이클 (PROBE_ITERATIONS=100) ≈ 1.2µs@168MHz
         //        ISR 지연 1.2µs → 통신 영향 없음 (UART 바이트 간격 ~60µs)
 
@@ -92,10 +92,10 @@ namespace ProtectedEngine {
     //  [1] 캘리브레이션 — 부팅 직후 정상 속도 측정
     //
     //
-    //  기존: is_calibrated(bool) CAS(false→true) 후 측정 시작
+    //  is_calibrated(bool) CAS(false→true) 후 측정 시작
     //    → 후발 스레드가 true를 보고 baseline을 읽지만, 아직 쓰레기값!
     //
-    //  수정: cal_state 3상 (UNINIT → IN_PROGRESS → DONE)
+    //  cal_state 3상 (UNINIT → IN_PROGRESS → DONE)
     //    선발: CAS(0→1) 성공 → 측정 → store(baseline) → store(2)
     //    후발: CAS(0→1) 실패 → 상태가 2(DONE)일 때까지 spin-wait
     //          50회 spin 후에도 미완료 → DEFAULT_BASELINE 폴백 (안전)
@@ -237,7 +237,7 @@ namespace ProtectedEngine {
 #else
             //
             // T=uint64_t일 때 shift_right=61 → unsigned int(32비트) >> 61 = UB
-            // 수정: T 자체 너비의 정수형으로 연산
+            // T 자체 너비의 정수형으로 연산
             constexpr T type_mask = static_cast<T>(~T(0));
             const T val = tensor_data[i] & type_mask;
             tensor_data[i] = static_cast<T>(

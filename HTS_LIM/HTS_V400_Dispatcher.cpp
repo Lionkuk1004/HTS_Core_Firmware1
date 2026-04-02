@@ -1,23 +1,10 @@
-﻿// =============================================================================
+// =============================================================================
 // HTS_V400_Dispatcher.cpp — V400 동적 모뎀 디스패처 + 3층 항재밍 통합
 //
-// [세션 10 수정]
-//  BUG-44 [CRIT] cw_cancel_64_()에서 AJC 프로파일 직접 시딩
-//         CW 17~19dB 닭-달걀 문제 해소:
-//         - ja_I/ja_Q 추정 후 ajc_.Seed_CW_Profile() 호출
-//         - AJC가 sym 판정 없이 첫 심볼부터 CW 제거 작동
-//         - ajc_enabled_ 체크로 벤치마크 OFF 모드와 분리
-//
-// [추가 수정]
-//  BUG-FIX-V1 [FATAL] try_decode_() Q채널 HARQ 포인터 캐스팅 오류
-//         기존: &harq_Q_[0][0]
-//           harq_Q_: int32_t(*)[C64] (배열 포인터)
-//           harq_Q_[0][0] = 첫 번째 int32_t 값(초기=0)을 포인터 역참조
-//           → Null Pointer Dereference / MPU HardFault
-//         수정: harq_Q_[0]
-//           배열 포인터 첫 행 → int32_t*로 decay
-//           Decode_Core_Split const int32_t* 파라미터와 타입 정확 일치
-//           평탄화 [NSYM64][C64] CCM 배열 시작 주소 직접 전달
+// [동작 메모]
+//  cw_cancel_64_: ja_I/ja_Q 추정 후 ajc_.Seed_CW_Profile — 첫 심볼부터 CW 제거
+//  try_decode_: Q채널 HARQ는 harq_Q_[0] (행 포인터)로 Decode_Core_Split에 전달
+//               (&harq_Q_[0][0] 금지 — 2차원 배열 타입과 혼동 시 HardFault)
 //
 #include "HTS_V400_Dispatcher.hpp"
 #include "HTS_RF_Metrics.h"   // Tick_Adaptive_BPS 용
@@ -27,10 +14,10 @@
 
 namespace ProtectedEngine {
 
-    // ── [BUG-54] HARQ Q채널 — CCM 배치 file-scope 배열 ──
+    // ── HARQ Q채널 — CCM 배치 file-scope 배열 ───────────────────
     //  sizeof(HTS_V400_Dispatcher)에서 제외하기 위해 클래스 외부 정의.
     //  생성자에서 harq_Q_ 포인터를 이 배열에 연결.
-    //  = {} 제거 → .bss 배치 (startup zero-fill + full_reset_ memset 이중 보장)
+    //  초기화 생략: .bss zero-fill + full_reset_에서 memset
     //  PC: 일반 BSS (.bss) — 테스트 시 제약 없음
     HTS_CCM_SECTION
         static int32_t g_harq_Q_ccm[FEC_HARQ::NSYM64][FEC_HARQ::C64];
@@ -214,27 +201,8 @@ namespace ProtectedEngine {
     // =====================================================================
     //  soft_clip_iq — 아웃라이어 소프트 클리핑
     //
-    //
-    //  [문제]
-    //   기존: (int64_t(I[i]) * clip) / m → __aeabi_ldivmod (~200cyc × 2)
-    //   칩당 400사이클, 아웃라이어 10개 → 4,000사이클 낭비
-    //
-    //  [증명: Q8 역수가 안전한 이유]
-    //   Guard: mags[i] > clip << 1 → m > 2 × clip → clip/m < 0.5
-    //
-    //   ① ratio_q8 = (clip << 8) / m
-    //      clip max = 262140 (= 65535 << 2)
-    //      clip << 8 = 67,107,840 < UINT32_MAX(4.29B) → 32비트 UDIV 안전
-    //
-    //   ② ratio_q8 상한: clip×256 / (2×clip+1) < 128 (모든 clip ≥ 1)
-    //
-    //   ③ I[i] × ratio_q8: |32768| × 127 = 4,161,536 < INT32_MAX
-    //      → 32비트 MUL 안전, 64비트 연산 0회
-    //
-    //   ④ 결과: (I[i] × ratio_q8) >> 8 → int16_t 범위 내 (≤ 16384)
-    //
-    //  [성능] UDIV(12) + MUL×2(2) = 14cyc (기존 400cyc → 28× 가속)
-    //  [오차] ±1/256 ≈ 0.4% (소프트 클리퍼 근사 특성상 무해)
+    //  64비트 나눗셈 대신 Q8 비율: ratio_q8=(clip<<8)/m, (I·ratio_q8)>>8 등 32비트 경로
+    //  clip 상한은 아래 static_assert 및 루프 가드와 일치
     // =====================================================================
     static void soft_clip_iq(int16_t* I, int16_t* Q, int nc,
         uint32_t* mags, uint32_t* sorted) noexcept {
@@ -325,7 +293,7 @@ namespace ProtectedEngine {
     //   1) 상관 계산: corr = Σ r[i] × lut[i%8]
     //   2) 진폭 추정: ja = corr >> 13
     //   3) 가드 체크: |ja_I| + |ja_Q| < 30 이면 조기 반환 (무간섭)
-    //   4) [BUG-44] AJC 시딩: ajc_.Seed_CW_Profile(ja_I, ja_Q)
+    //   4) AJC 시딩: ajc_.Seed_CW_Profile(ja_I, ja_Q)
     //   5) CW 제거: r[i] -= (ja × lut[i%8]) >> 8
     // =====================================================================
     void HTS_V400_Dispatcher::cw_cancel_64_(int16_t* I, int16_t* Q) noexcept {
@@ -344,7 +312,7 @@ namespace ProtectedEngine {
         const int32_t ja_I = corr_I >> 13;
         const int32_t ja_Q = corr_Q >> 13;
 
-        // Step 3: [FIX-BRANCHLESS] 노이즈 가드 — 비트마스크 (조기 반환 제거)
+        // Step 3: 노이즈 가드 — 비트마스크 (조기 반환 제거)
         static constexpr int32_t CW_CANCEL_NOISE_TH = 30;
         const uint32_t ja_sum = fast_abs(ja_I) + fast_abs(ja_Q);
         // active = 0xFFFFFFFF if ja_sum >= TH, 0 if below (branchless)
@@ -355,7 +323,7 @@ namespace ProtectedEngine {
         const int32_t m_ja_I = ja_I & active;
         const int32_t m_ja_Q = ja_Q & active;
 
-        // Step 4: [BUG-44] AJC 프로파일 시딩 (active 시에만 유효 값 전달)
+        // Step 4: AJC 프로파일 시딩 (active 시에만 유효 값 전달)
         if (ajc_enabled_) {
             ajc_.Seed_CW_Profile(m_ja_I, m_ja_Q);
         }
@@ -399,8 +367,8 @@ namespace ProtectedEngine {
         , vid_fail_(0), vid_succ_(0)
         , v1_rx_{}, v1_idx_(0)
         , rx_{}, sym_idx_(0), harq_inited_(false)
-        , harq_Q_(g_harq_Q_ccm)          // [BUG-54] CCM 배열 포인터 연결
-        , wb_{}                         // [BUG-52] wb_tx_+wb_rx_ → wb_
+        , harq_Q_(g_harq_Q_ccm)          // CCM 배열 포인터 연결
+        , wb_{}                         // wb 유니온 (반이중 TDM)
         , ajc_(), ajc_last_nc_(0)
         , orig_acc_{}
         , orig_I_{}, orig_Q_{}
@@ -548,7 +516,7 @@ namespace ProtectedEngine {
         SecureMemory::secureWipe(static_cast<void*>(orig_I_), sizeof(orig_I_));
         SecureMemory::secureWipe(static_cast<void*>(orig_Q_), sizeof(orig_Q_));
         SecureMemory::secureWipe(static_cast<void*>(&orig_acc_), sizeof(orig_acc_));
-        SecureMemory::secureWipe(static_cast<void*>(&wb_), sizeof(wb_));  // [BUG-52]
+        SecureMemory::secureWipe(static_cast<void*>(&wb_), sizeof(wb_));
         if (harq_Q_ != nullptr) {
             SecureMemory::secureWipe(
                 static_cast<void*>(harq_Q_), sizeof(g_harq_Q_ccm));
@@ -739,36 +707,19 @@ namespace ProtectedEngine {
                 // I/Q 독립: 각 채널 분리 FWHT → 2심볼 디코딩
                 SymDecResultSplit rs = walsh_dec_split_(buf_I_, buf_Q_, nc);
                 if (ajc_enabled_) {
-                    //
-                    //  기존 문제:
-                    //    ajc_.Update_AJC(orig_I_, orig_Q_,
-                    //        rs.sym_I, rs.best_eI, rs.second_eI, nc)
-                    //    → I 채널 심볼/에너지 지표만 전달, Q 채널 정보 완전 소멸
-                    //    → AJC LMS 필터가 Q 채널 재밍 패턴을 전혀 학습 못함
-                    //    → I/Q 독립 모드에서 Q 채널이 재밍에 완전 무방비
-                    //
-                    //  수정 설계:
-                    //    I 채널, Q 채널 각각 독립 Update_AJC 호출
-                    //    ① I 채널: rs.sym_I, rs.best_eI, rs.second_eI
-                    //    ② Q 채널: rs.sym_Q, rs.best_eQ, rs.second_eQ
-                    //
-                    //    두 채널 모두 orig_I_, orig_Q_ 원본 신호를 전달
-                    //    (AJC 내부의 오차 계산은 원본 신호 기반)
-                    //
-                    //    Q 채널 업데이트 시 sym_Q=-1이면 Update_AJC 내부에서
-                    //    가중치 갱신 스킵 → 실패 프레임 오염 없음 (기존 동작 유지)
+                    // I/Q 독립: 채널별 Update_AJC (sym_Q=-1이면 내부에서 갱신 스킵 가능)
 
                     // ① I 채널 AJC 갱신
                     ajc_.Update_AJC(orig_I_, orig_Q_,
                         rs.sym_I, rs.best_eI, rs.second_eI, nc);
 
-                    // ② Q 채널 AJC 갱신 (기존 누락 경로 복구)
+                    // ② Q 채널 AJC 갱신
                     ajc_.Update_AJC(orig_I_, orig_Q_,
                         rs.sym_Q, rs.best_eQ, rs.second_eQ, nc);
                 }
             }
             else {
-                // I=Q 동일: 기존 결합 FWHT
+                // I=Q 동일: 결합 FWHT
                 SymDecResult r = walsh_dec_full_(buf_I_, buf_Q_, nc);
                 if (ajc_enabled_) {
                     ajc_.Update_AJC(orig_I_, orig_Q_,
@@ -798,7 +749,7 @@ namespace ProtectedEngine {
             FEC_HARQ::Advance_Round_16(rx_.m16);
             harq_round_++;
             pkt.success = FEC_HARQ::Decode16(rx_.m16, pkt.data,
-                &pkt.data_len, il, wb_);   // [BUG-52] wb_rx_ → wb_
+                &pkt.data_len, il, wb_);
             pkt.harq_k = harq_round_;
             if (pkt.success || harq_round_ >= max_harq_) {
                 if (pkt.success) harq_feedback_seed_(pkt.data, pkt.data_len, 16, il);
@@ -817,7 +768,7 @@ namespace ProtectedEngine {
                 const int bps = cur_bps64_;
                 if (bps >= FEC_HARQ::BPS64_MIN && bps <= FEC_HARQ::BPS64_MAX) {
                     const int nsym = FEC_HARQ::nsym_for_bps(bps);
-                    //  기존: &harq_Q_[0][0]
+                    //  &harq_Q_[0][0]
                     //    harq_Q_의 타입은 int32_t(*)[C64] (배열 포인터).
                     //    harq_Q_[0]은 int32_t[C64] 배열을 역참조한 결과이고,
                     //    harq_Q_[0][0]은 그 배열의 첫 int32_t 원소(값).
@@ -825,14 +776,14 @@ namespace ProtectedEngine {
                     //    컴파일러에 따라 포인터 배열 이중 인덱싱으로 오해하여
                     //    harq_Q_[0]을 또 하나의 포인터로 취급 → 0번째 int32_t 값
                     //    (= 초기화 직후 0)을 주소로 역참조 → Null Dereference/HardFault.
-                    //  수정: harq_Q_[0]
+                    //  harq_Q_[0]
                     //    배열 포인터에서 첫 행(int32_t[C64])을 역참조하면
                     //    int32_t* 로 decay → Decode_Core_Split의 const int32_t* 파라미터와
                     //    타입 일치. 평탄화된 [NSYM64][C64] CCM 배열 시작 주소 직접 전달.
                     //    Decode_Core 내부의 accQ[sym*nc+c] 인덱싱과 완전 호환.
                     pkt.success = FEC_HARQ::Decode_Core_Split(
-                        &rx_.m64_I.aI[0][0],  // I → SRAM (기존 정상)
-                        harq_Q_[0],            // Q → CCM (배열 포인터 → int32_t* decay)
+                        &rx_.m64_I.aI[0][0],  // I: SRAM
+                        harq_Q_[0],            // Q: CCM 행 포인터 (int32_t*)
                         nsym, FEC_HARQ::C64, bps,
                         pkt.data, &pkt.data_len, il, wb_);
                 }
@@ -840,7 +791,7 @@ namespace ProtectedEngine {
             pkt.harq_k = harq_round_;
             if (pkt.success || harq_round_ >= max_harq_) {
                 if (pkt.success) {
-                    rx_.m64_I.ok = true;  // [BUG-54] 디코드 성공 플래그
+                    rx_.m64_I.ok = true;  // 디코드 성공 플래그
                     harq_feedback_seed_(pkt.data, pkt.data_len, 64, il);
                 }
                 if (on_pkt_) on_pkt_(pkt);
@@ -856,7 +807,7 @@ namespace ProtectedEngine {
         if (nc == 16) {
             uint8_t correct_syms[FEC_HARQ::NSYM16] = {};
             const int enc_n = FEC_HARQ::Encode16(
-                data, data_len, correct_syms, il, wb_);  // [BUG-52]
+                data, data_len, correct_syms, il, wb_);
             if (enc_n <= 0) return;
             const int nsym = (sym_idx_ < FEC_HARQ::NSYM16)
                 ? sym_idx_ : FEC_HARQ::NSYM16;
@@ -882,7 +833,7 @@ namespace ProtectedEngine {
             const int nsym64 = cur_nsym64_();
             uint8_t correct_syms[FEC_HARQ::NSYM64] = {};
             const int enc_n = FEC_HARQ::Encode64_A(
-                data, data_len, correct_syms, il, cur_bps64_, wb_);  // [BUG-52]
+                data, data_len, correct_syms, il, cur_bps64_, wb_);
             if (enc_n <= 0) return;
             const int nsym = (sym_idx_ < nsym64) ? sym_idx_ : nsym64;
             for (int s = 0; s < nsym; ++s) {
@@ -969,7 +920,7 @@ namespace ProtectedEngine {
         }
         else if (mode == PayloadMode::VIDEO_16 || mode == PayloadMode::VOICE) {
             uint8_t syms[FEC_HARQ::NSYM16] = {};
-            const int enc_n = FEC_HARQ::Encode16(info, ilen, syms, il, wb_);  // [BUG-52]
+            const int enc_n = FEC_HARQ::Encode16(info, ilen, syms, il, wb_);
             if (enc_n <= 0) return 0;
             for (int s = 0; s < FEC_HARQ::NSYM16; ++s) {
                 if (pos + 16 > max_c) return 0;
@@ -1091,8 +1042,8 @@ namespace ProtectedEngine {
                             : FEC_HARQ::DATA_K;
                         set_phase_(RxPhase::READ_PAYLOAD); buf_idx_ = 0;
 
-                        //  기존: try_decode_ 내부에서 Init → Feed 이후라 데이터 파괴
-                        //  수정: READ_PAYLOAD 진입 시 첫 라운드만 Init
+                        //  try_decode_ 내부에서 Init → Feed 이후라 데이터 파괴
+                        //  READ_PAYLOAD 진입 시 첫 라운드만 Init
                         if (!harq_inited_) {
                             if (mode == PayloadMode::VIDEO_16 ||
                                 mode == PayloadMode::VOICE) {

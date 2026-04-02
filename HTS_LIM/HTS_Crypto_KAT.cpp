@@ -142,27 +142,26 @@ namespace ProtectedEngine {
         };
 
         // ── 암호화 ───────────────────────────────────────────────
-        alignas(4) uint8_t work[16] = {};
+        uint32_t work[4] = {};
         std::memcpy(work, pt, 16);
         {
             LEA_Bridge bridge;
             if (bridge.Initialize(key, 16u, iv) != LEA_Bridge::SECURE_TRUE) return false;
-            if (bridge.Encrypt_Payload(
-                reinterpret_cast<uint32_t*>(work), 4u) != LEA_Bridge::SECURE_TRUE) {
+            if (bridge.Encrypt_Payload(work, 4u) != LEA_Bridge::SECURE_TRUE) {
                 KAT_Wipe(work, sizeof(work));
                 return false;
             }
         }
 
         // CT가 PT와 달라야 함 (CTR 스트림 XOR 적용 확인)
-        if (KAT_CT_Eq(work, pt, 16)) {
+        if (KAT_CT_Eq(reinterpret_cast<const uint8_t*>(work), pt, 16)) {
             // 암호화 후에도 평문과 동일 = 암호화 미적용
             KAT_Wipe(work, sizeof(work));
             return false;
         }
 
         // ── 복호화 역방향 검증 ───────────────────────────────────
-        alignas(4) uint8_t dec[16] = {};
+        uint32_t dec[4] = {};
         std::memcpy(dec, work, 16);
         {
             LEA_Bridge bridge;
@@ -170,15 +169,14 @@ namespace ProtectedEngine {
                 KAT_Wipe(work, sizeof(work));
                 return false;
             }
-            if (bridge.Decrypt_Payload(
-                reinterpret_cast<uint32_t*>(dec), 4u) != LEA_Bridge::SECURE_TRUE) {
+            if (bridge.Decrypt_Payload(dec, 4u) != LEA_Bridge::SECURE_TRUE) {
                 KAT_Wipe(work, sizeof(work));
                 KAT_Wipe(dec, sizeof(dec));
                 return false;
             }
         }
 
-        bool ok = KAT_CT_Eq(dec, pt, 16);
+        bool ok = KAT_CT_Eq(reinterpret_cast<const uint8_t*>(dec), pt, 16);
 
         KAT_Wipe(work, sizeof(work));
         KAT_Wipe(dec, sizeof(dec));

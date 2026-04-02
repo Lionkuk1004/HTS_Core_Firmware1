@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Anti_Debug.h
 // 디버거/JTAG 연결 탐지 및 강제 시스템 정지
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -19,11 +19,6 @@
 //   → 탐지 시 forceHalt() 호출 — 반환하지 않음 ([[noreturn]])
 //   → 모든 함수 static — 인스턴스 생성 불필요/불가
 //
-//  [양산 수정 이력 — 27건]
-//   BUG-25 [LOW] 주석 정합: PC/Server/Windows/Linux 탐지 설명 제거 (ARM 전용)
-//   BUG-26 [MED] DBGMCU_APB1_FZ: RM0090 비트·식별자 정합 (bit11=WWDG, bit12=IWDG)
-//   S-1 [HIGH] Phase3 DBGMCU 직후 dsb sy/isb (cpp); trustedHalt 공개 (AntiGlitch 등)
-//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
@@ -31,13 +26,13 @@
 
 namespace ProtectedEngine {
 
-    // ── [BUG-17] ARM Cortex-M4 MMIO 주소 상수 (매직 넘버 근절) ──
+    // ── ARM Cortex-M4 MMIO 주소 상수 (J-3) ─────────────────────
     // ARM DDI 0403E (ARMv7-M Architecture Reference Manual) 기준
     static constexpr uint32_t ADDR_DHCSR = 0xE000EDF0u;  ///< Debug Halting Control/Status
     static constexpr uint32_t ADDR_AIRCR = 0xE000ED0Cu;  ///< App Interrupt/Reset Control
     static constexpr uint32_t ADDR_DBGMCU_FZ = 0xE0042008u;  ///< DBGMCU APB1 Freeze (STM32F4)
 
-    // ── [BUG-16] DHCSR 비트 필드 상수 ──
+    // ── DHCSR 비트 필드 상수 ───────────────────────────────────
     static constexpr uint32_t DHCSR_C_DEBUGEN = 0x00000001u;  ///< bit 0:  디버거 활성화
     static constexpr uint32_t DHCSR_C_HALT = 0x00000002u;  ///< bit 1:  코어 정지
     static constexpr uint32_t DHCSR_S_HALT = 0x00020000u;  ///< bit 17: 정지 상태
@@ -54,7 +49,7 @@ namespace ProtectedEngine {
     static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);  ///< DBG_WWDG_STOP
     static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12); ///< DBG_IWDG_STOP
 
-    // ── [BUG-19] 빌드 타임 정합성 검증 ──
+    // ── 빌드 타임 정합성 검증 ───────────────────────────────────
     static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
     static_assert(ADDR_DHCSR >= 0xE0000000u && ADDR_DHCSR < 0xF0000000u,
         "DHCSR address out of Cortex-M PPB range");

@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Entropy_Monitor.cpp
 // TRNG 건강성 감시 구현부 — NIST SP 800-90B RCT + APT
 // Target: STM32F407 (Cortex-M4)
@@ -42,7 +42,7 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Entropy Fault 처리 — RCT/APT 공통
     // =====================================================================
-    // Execute_Self_Healing 은 [[noreturn]] — 진입 후 반환 없음(BUG-10).
+    // Execute_Self_Healing 은 [[noreturn]] — 진입 후 반환 없음.
     // PC/ARM 공통: 엔트로피 Fault 는 중앙 집행점으로 위임만 수행.
     [[noreturn]] static void Entropy_Fault_Handler(uint32_t fault_code) noexcept {
         Auto_Rollback_Manager::Execute_Self_Healing(fault_code);
@@ -88,7 +88,7 @@ namespace ProtectedEngine {
         }
 
         // ══════════════════════════════════════════════════════════
-        //  [1] RCT — 브랜치리스 카운터 (BUG-07)
+        //  [1] RCT — 브랜치리스 카운터
         // ══════════════════════════════════════════════════════════
         const uint32_t is_same = static_cast<uint32_t>(
             generatedByte == last_byte);
@@ -101,7 +101,7 @@ namespace ProtectedEngine {
         last_byte = generatedByte;
 
         // ══════════════════════════════════════════════════════════
-        //  [2] APT — 윈도우 내 편향 감지 (BUG-09)
+        //  [2] APT — 윈도우 내 편향 감지
         // ══════════════════════════════════════════════════════════
         if (apt_window_pos == 0u) {
             // 새 윈도우 시작: 첫 샘플 기록

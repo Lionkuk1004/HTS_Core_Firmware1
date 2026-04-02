@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Anti_Glitch.cpp
 // 전압 글리칭 / 명령어 스킵 공격 방어 쉴드 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -61,24 +61,7 @@ namespace ProtectedEngine {
     //  3. 불규칙 NOP 삽입 (타이밍 동기화 교란)
     //
     //
-    //    기존: if (check1 != UNLOCKED || check2 != UNLOCKED || ...)
-    //    → 컴파일러가 4개의 개별 BNE 분기문을 생성!
-    //    → 공격자가 BNE 1개만 NOP화(스킵)하면 방어막 통과!
-    //
-    //    수정: 비트 OR(|) 누적 → 단일 분기(BNE) 1개만 생성
-    //    → 분기가 1개이므로 스킵하면 즉시 halt 경로에 진입
-    //    → 공격 포인트 4개 → 1개로 축소 (75% 공격면 제거)
-    //
-    //    어셈블리 비교:
-    //    기존 (4개 BNE):          수정 (1개 BNE):
-    //      CMP check1, UNLOCKED     XOR check1, UNLOCKED → acc
-    //      BNE .halt  ← 공격①     XOR check2, UNLOCKED → acc |=
-    //      CMP check2, UNLOCKED     XOR check3, UNLOCKED → acc |=
-    //      BNE .halt  ← 공격②     XOR dummy, CANARY    → acc |=
-    //      CMP check3, UNLOCKED     CMP acc, #0
-    //      BNE .halt  ← 공격③     BNE .halt  ← 유일한 분기
-    //      CMP dummy, CANARY
-    //      BNE .halt  ← 공격④
+    //    XOR/OR 누적 후 단일 분기 — 다중 BNE 스킵 면 축소
     // =====================================================================
     void AntiGlitchShield::verifyCriticalExecution() const noexcept {
         volatile uint32_t check1 = systemState.load(std::memory_order_acquire);
@@ -95,18 +78,7 @@ namespace ProtectedEngine {
 
         volatile uint32_t check3 = systemState.load(std::memory_order_acquire);
 
-        //
-        //  기존: volatile uint32_t fail_acc → 매 |= 마다 STR(SRAM 쓰기) 강제
-        //  → 공격자가 STR 타이밍에 전압 글리치 → Write Suppression
-        //  → fail_acc가 SRAM에서 영원히 0 → 방어막 통과!
-        //
-        //  수정: uint32_t fail_acc → 순수 레지스터(R0 등)에만 존재
-        //  → ORR R0, R0, R1 연속 수행 (SRAM 접근 0회)
-        //  → 메모리 쓰기 억제 공격 원천 불가
-        //
-        //  안전성: check1/2/3은 volatile, dummy는 volatile
-        //  → 입력 읽기는 컴파일러가 절대 제거/재배치 불가
-        //  → fail_acc 자체만 레지스터에 격리 → 최적의 방어 구조
+        //  fail_acc는 레지스터 누적(입력만 volatile) — STR write-suppression 면 축소
         uint32_t fail_acc = 0u;
         fail_acc |= (check1 ^ UNLOCKED);   // 정상이면 0
         HW_NOP();
@@ -116,20 +88,9 @@ namespace ProtectedEngine {
         HW_NOP();
         fail_acc |= (dummy ^ ALU_CANARY);  // 정상이면 0
 
-        // ★ [BUG-FIX FATAL] 3중 방어 + VRP 차단 Permission Gate ★
+        // permission 게이트 + asm 레지스터 세탁(VRP·데드코드 제거 방지)
         //
-        //  1차 수정: 3중 분기 (permission + fail_acc 재검증)
-        //  문제: 컴파일러 VRP(Value Range Propagation)가 Path A에서
-        //        fail_acc==0 확정 → Gate 3(fail_acc!=0) 데드코드 삭제
-        //        → 단일 BNE 글리치로 3중 방어 전부 무력화
-        //
-        //  최종 수정:
-        //   (a) Gate 3 앞에 asm volatile "+r" (레지스터 세탁)
-        //       → 컴파일러가 fail_acc 값을 추적 불가 → Gate 3 삭제 불가
-        //   (b) permission은 volatile → VRP가 UNLOCKED 전파 불가
-        //   (c) HW_NOP 분산 → 글리치 타이밍 윈도우 분리
-        //
-        //  [분기 1] fail_acc → permission 게이트 설정
+        //  [분기 1] fail_acc → permission
         volatile uint32_t permission = LOCKED;  // 기본: 차단 (Fall-through=HALT)
         if (fail_acc == 0u) {
             permission = UNLOCKED;  // 통과 시에만 해제

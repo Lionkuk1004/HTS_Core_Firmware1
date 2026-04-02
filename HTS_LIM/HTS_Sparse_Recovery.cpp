@@ -1,10 +1,10 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Sparse_Recovery.cpp
 // L1 스파스 하이브리드 복구 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
 // =========================================================================
 #include "HTS_Sparse_Recovery.h"
-#include <climits>       // INT32_MAX (BUG-12 static_assert)
+#include <climits>       // INT32_MAX
 #include <cstdint>       // uintptr_t (B-2 정렬 검증)
 #include <type_traits>   // std::is_unsigned (Safe_Obfuscate static_assert)
 
@@ -76,15 +76,7 @@ namespace ProtectedEngine {
     //   · Cortex-M4 MUL 1사이클 추가 (무시 가능)
     //
     //
-    //   문제: 출력단 y^=1 이격 시 INV3 곱셈 나비효과
-    //     0xFFFE × INV3(0xAAAB) mod 2^16 = 0xAAAA (21845 오차 = 33%!)
-    //     → "1-LSB 오차" 주장 완전 붕괴
-    //
-    //   수정: 평문(x) 자체를 사전에 1-LSB 이격
-    //     · 위험 평문(bad_x) = obfuscate 결과가 MARKER인 유일한 x를 사전 계산
-    //     · bad_x 감지 시 x ^= 1 (평문 도메인 이격)
-    //     · RX에서 INV3 역변환 후 평문이 정확히 1-LSB 차이만 발생
-    //     · UDIV 0회, MUL 0회 추가 (비교 + XOR만)
+    //   INV3 경로에서 MARKER·bad_plaintext 충돌 시 평문 도메인에서 1-LSB(또는 2-LSB) 이격
     //
     //   추가: plaintext == MARKER 자체도 방어 (RX 파손 오인 차단)
     // =====================================================================
@@ -129,7 +121,7 @@ namespace ProtectedEngine {
             static_cast<T>(obfuscated * INV3) ^ interference);
     }
 
-    // [④-FIX] noise_ratio: double → uint32_t Q16 (0~65536 = 0.0~1.0)
+    // ④ noise_ratio: uint32_t Q16 (0~65536 = 0.0~1.0)
     //  ARM/A55: double 연산 0회 (기존 동일)
     //  PC: (destroyed << 16) / total (정수 연산, double 제거)
     static uint32_t compute_noise_ratio_q16(
@@ -412,19 +404,7 @@ namespace ProtectedEngine {
 
                         // 3. 중력 가중치 연산
                         //
-                        // 기존: int64_t / int64_t → __aeabi_ldivmod (~200cyc/칩)
-                        //       파괴 칩 100개 → 20,000사이클 낭비
-                        //
-                        // 수정 A (sizeof(T) ≤ 2):
-                        //   mass 최대 65535, dist 최대 20
-                        //   → numerator = 65535 × 20 = 1,310,700 ≪ INT32_MAX
-                        //   → int32_t SDIV 1회 (2~12cyc), 64비트 연산 0회
-                        //
-                        // 수정 B (sizeof(T) > 2):
-                        //   역수 Q16 곱셈: recip = 65536/sum_dist (UDIV 12cyc)
-                        //   gravity = numerator × recip >> 16 (SMULL 1cyc)
-                        //   합계 ~13cyc, 기존 대비 15× 가속
-                        //   반올림 오차 ≤ 1LSB (아날로그 보간 특성상 무해)
+                        // 중력 가중: 64비트 나눗셈 회피 — int32·Q16 역수 경로(타입·크기별 분기)
                         if (found_L && found_R) {
                             // dist는 블록 내 거리: 최대 anchor_interval (~20)
                             // uint32_t로 충분 (기존 uint64_t는 불필요한 64비트 유발)

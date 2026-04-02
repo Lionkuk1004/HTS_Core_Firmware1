@@ -10,15 +10,6 @@
 /// @warning allocate()는 ::operator new(nothrow) 사용. nullptr을 vector에 넘기면
 ///          표준 컨테이너가 역참조하여 UB — 오버플로·OOM 시 std::abort()로 Fail-Safe 종료.
 ///
-/// [양산 수정 이력 — 12건]
-///  BUG-06 [CRIT] MSVC 환경 DSE 방어 추가
-///  BUG-07 [HIGH] <new> 필수 표준 헤더 누락 교정
-///  BUG-08 [MED]  MSVC volatile cast → void* 경유 static_cast
-///  BUG-09 [HIGH] ⑭ ARM 빌드 차단 가드 추가
-///  BUG-10 [HIGH] C-2: ::operator new → nothrow (-fno-exceptions 준수)
-///  BUG-11 [MED]  D-2: release fence 누락 → delete 직전 배리어 추가
-///  BUG-12 [LOW]  M-14: DRY TODO 잔류 제거 (HTS_Secure_Memory.h BUG-02에서 이미 해소)
-///  BUG-13 [CRIT] allocate nullptr → vector UB 방지: 오버플로/OOM 시 std::abort()
 // =========================================================================
 #pragma once
 // ─────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Anti_Debug.cpp
 // 디버거/JTAG 연결 탐지 및 강제 시스템 정지 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -15,32 +15,17 @@
 
 namespace ProtectedEngine {
 
-    // 원래 의도: 0xDEAD_DEBUG → 'G'는 16진수 아님
-    // 수정: 0xDEAD0DB6u (DEAD + 0xDB6 = 3510)
+    // 힐 코드: 0xDEAD0DB6u (16진수 유효 문자만)
     static constexpr uint32_t k_HEAL_CODE_DEBUG = 0xDEAD0DB6u;
 
     // =====================================================================
     //  forceHalt — 궁극의 안티포렌식 자가 파괴
     //
     //
-    //  [기존 순서 — 데드락!]
-    //    Phase 1: cpsid i (인터럽트 차단)
-    //    Phase 2: DBGMCU WDT
-    //    Phase 3: SecureLogger + Self_Healing ← 인터럽트 필요! → 데드락!
-    //    Phase 4: AIRCR 리셋 ← 영원히 도달 불가!
+    //  순서: 로깅·Self_Healing(인터럽트 허용) → cpsid i → DBGMCU → AIRCR
+    //  (먼저 인터럽트를 끄면 로깅/힐링 경로가 막히지 않도록)
     //
-    //  [수정 순서 — 데드락 해소]
-    //    Phase 1: SecureLogger + Self_Healing (인터럽트 살아있는 상태)
-    //    Phase 2: cpsid i (로깅 완료 후 인터럽트 전면 차단)
-    //    Phase 3: DBGMCU WDT 프리즈 해제
-    //    Phase 4: AIRCR 리셋 → 레지스터 분쇄 → MSP/PSP 파괴
-    //
-    //  [보안 분석]
-    //    Phase 1에서 로깅하는 수 ms 동안 해커가 SRAM을 덤프할 수 있으나,
-    //    이 시점에는 아직 forceHalt 진입 직전이므로 정상 실행 중과 동일.
-    //    로깅 완료 즉시 cpsid i → AIRCR까지 수 사이클 이내 도달 보장.
-    //    기존 설계는 Phase 4에 영원히 도달 못해 SRAM이 무한 노출되므로
-    //    수정 후가 보안상 압도적으로 우수함.
+    //  로깅 구간은 짧고, 이후 cpsid i로 전환·리셋까지 고정 지연.
     // =====================================================================
     [[noreturn]] void AntiDebugManager::forceHalt(
         const char* message) noexcept {
@@ -132,7 +117,7 @@ namespace ProtectedEngine {
         const uint32_t val = *dhcsr;
 
         // [교차검수 패치] "Attach 탐지"와 구현 정합
-        //  기존 구현은 Halt 동반시에만 탐지되어 Attach(실행중 디버그) 우회 가능.
+        //  구현은 Halt 동반시에만 탐지되어 Attach(실행중 디버그) 우회 가능.
         //  오탐 방어를 위해 2회 샘플 모두 C_DEBUGEN=1일 때만 Attach로 판정.
         const bool c_debugen_1 = (val & DHCSR_C_DEBUGEN) != 0u;
         const bool halted_1 = (val & (DHCSR_C_HALT | DHCSR_S_HALT)) != 0u;

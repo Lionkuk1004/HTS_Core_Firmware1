@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_AEAD_Integrity.hpp
 // AEAD 태그 상수 시간 무결성 검증 (헤더 전용)
 // Target: STM32F407 (Cortex-M4)
@@ -18,12 +18,6 @@
 //   ⚠ 금지 패턴: if (Constant_Time_Compare(...))
 //     → bool 강제 변환으로 Boolean Coercion FI 취약점 재발
 //     → 반드시 == 0u 또는 != 0u로 비교할 것
-//
-//  [양산 수정 이력 — 8건]
-//   기존 01~03: noexcept, [[nodiscard]], 비트 축소 강화
-//   세션8 04~08: volatile 제거(Write Suppression 차단),
-//                static_assert, 인스턴스화 차단,
-//                bool→uint32_t 반환(Boolean Coercion FI 차단)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -57,11 +51,8 @@ namespace ProtectedEngine {
         //    SRAM Store 0회 → Write Suppression 공격 불가
         //
         //
-        //    문제: bool 반환 시 컴파일러가 CMP + MOVEQ/MOVNE 생성
-        //      → 글리치로 MOVNE(R0=0) 스킵 → R0에 쓰레기값 잔류
-        //      → C++ "0이 아닌 값 = true" → 위조 패킷이 true로 통과!
-        //
-        //    수정: uint32_t 반환 — 0이면 일치, 0이 아니면 불일치
+        //    bool 반환은 CMP/MOV 경로가 생길 수 있음 → uint32_t reduced 직접 반환
+        //      0 = 일치, 0이 아니면 불일치 (호출부는 == 0u / != 0u만 사용)
         //      → R0에 reduced 값이 그대로 반환 (CMP/MOV 없음!)
         //      → 글리치로 R0를 조작해도 0을 만들어야 함
         //        (32비트 전체를 0으로 만드는 글리치 = 사실상 불가능)

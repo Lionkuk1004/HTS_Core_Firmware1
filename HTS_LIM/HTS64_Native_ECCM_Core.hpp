@@ -10,34 +10,11 @@
 ///   ③ Fast Walsh-Hadamard Transform (FWHT, 64점)
 ///   ④ 32비트 argmax → 에너지 임계 판정 (NF 기반 적응형)
 ///
-/// @par 양산 수정 이력 — 30건
-///  - BUG-16 @b [CRIT] unique_ptr Pimpl → placement new (zero-heap)
-///  - BUG-17 @b [HIGH] decode_core 핫패스 32비트 argmax 최적화
-///  - BUG-18 @b [MED]  is_barrage 자살 스위치 제거 → !is_clean 단일 조건
-///  - BUG-19 @b [HIGH] CW 15dB 사각지대 해소\n
-///           Q75/Q25 비율로 CW형 간섭을 감지하고,\n
-///           clip을 Q75×4로 상향하여 소프트 클리핑 유발 고조파를 차단.\n
-///           Barrage 경로는 clip=Q25×4 유지 → 기존 성능 퇴행 없음.
-///  - BUG-22 @b [MED]  U-A: sizeof(Impl) ≈ 1040B (BUG-32 수치 수정)
-///  - BUG-23 @b [MED]  U-B: sizeof ≤ 4096 static_assert SRAM 예산 검증
-///  - BUG-24 @b [LOW]  D-2: SecWipe → SecureMemory (BUG-36 최종 통일)
-///  - BUG-27 @b [HIGH] N % 4 == 0 static_assert 추가
-///  - BUG-28 @b [HIGH] Calibrate() CAS 가드 (TOCTOU 방지)
-///  - BUG-29 @b [MED]  소프트 클리핑 중복 static_cast 제거
-///  - BUG-30 @b [LOW]  Calibrate() @pre 사전조건 문서화
-///  - BUG-31 @b [LOW]  스레드 안전성 문서 보강
-///  - BUG-32 @b [LOW]  sizeof(Impl) 수치 재검증 (2056B → 약 1040B)
-///  - BUG-36 @b [CRIT] SecWipe → SecureMemory::secureWipe (D-2), impl_valid_ atomic
-///  - BUG-41 @b [CRIT] D-2 소거 구현 정합 — HTS_Secure_Memory.cpp Force_Secure_Wipe
-///           (GCC/Clang memory clobber + MSVC _ReadWriteBarrier + release fence)
-///  - BUG-37 @b [HIGH] impl_buf_ alignas(64) — placement new 정렬 여유(SIMD/DMA/캐시라인)
-///  - BUG-38 @b [MED]  p_metrics_ std::atomic — Set vs Decode 핫패스 레이스 제거
-///
 /// @warning sizeof(HTS64_Native_ECCM_Core) ≈ 2056B (impl_buf_[2048] 내장)
 ///          sizeof(Impl) ≈ 1040B (impl_buf_ 내부에 placement new)
 ///          전역/정적 변수로 배치 권장 — 스택 선언 시 Cortex-M4 여유 주의
 ///
-/// @par 스레드 안전성 [BUG-31]
+/// @par 스레드 안전성
 ///  인스턴스당 1스레드 전용입니다.
 ///  PRNG CAS(next_prng)는 원자적이나, kH/kL 키 쌍 일관성은 보장하지 않습니다.
 ///  동일 인스턴스에 대해 Decode_BareMetal_IQ / Decode_Soft_IQ를
@@ -93,7 +70,7 @@ namespace ProtectedEngine {
         /// @brief 노이즈 캘리브레이션 — NF IIR 필터 초기화
         /// @pre noise_I, noise_Q: 각각 CHIPS(64)개 이상, int16_t 2바이트 정렬 필수 (Cortex-M 비정렬 UsageFault 방지)
         /// @note n_frames>1 은 OOB 방지를 위해 내부에서 1로 클램프 — 실질 단일 64칩 프레임만 사용
-        /// @note [BUG-28] CAS 가드: 동시 호출 시 1스레드만 진입, 나머지 즉시 true 반환
+        /// @note  CAS 가드: 동시 호출 시 1스레드만 진입, 나머지 즉시 true 반환
         [[nodiscard]]
         bool Calibrate(const int16_t* noise_I, const int16_t* noise_Q,
             uint32_t n_frames = 72u) noexcept;

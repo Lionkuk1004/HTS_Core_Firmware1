@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // =========================================================================
 // AnchorManager.h
 // 적응형 앵커 비율 관리자 (AMC: Adaptive Modulation and Coding)
@@ -25,10 +25,6 @@
 //   AnchorManager는 전역 네임스페이스에 정의됨
 //   (AnchorEncoder/Decoder가 ProtectedEngine 안에서 ::AnchorManager& 참조)
 //   변경 시 Encoder/Decoder/TensorCodec 연쇄 빌드 에러 → 유지
-//
-//  [양산 수정 이력 — 세션 5: 8건]
-//   BUG-01~08 (abort 클램핑, string ARM 가드, getStatusMessage,
-//             copy/move, iostream/cstdlib, nodiscard, cstddef, Doxygen)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once

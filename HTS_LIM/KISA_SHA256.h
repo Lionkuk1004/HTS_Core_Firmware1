@@ -12,8 +12,8 @@
 // ─────────────────────────────────────────────────────────
 
 /**
-@file KISA_SHA_256.h
-@brief SHA256 ��ȣ �˰����
+@file KISA_SHA256.h
+@brief SHA256 암호 알고리즘 (KISA 참조 구현)
 @author Copyright (c) 2013 by KISA
 @remarks http://seed.kisa.or.kr/
 */

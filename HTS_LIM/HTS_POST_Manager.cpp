@@ -1,30 +1,13 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_POST_Manager.cpp
 // FIPS 140-3 / KCMVP Power-On Self-Test (POST) - KAT Validation Manager
 // Target: STM32F407 (Cortex-M4)
 //
-// [Revision - 12 fixes]
-//  01~05: iostream removal, namespace, while barrier, noexcept, namespace
-//
-//  06~10 (Session 8):
-//  BUG-06 [CRIT] Execute_Self_Healing( uint64_t) -> (uint32_t)
-//  BUG-07 [HIGH] while(true) after [[noreturn]] = dead code -> removed
-//  BUG-08 [HIGH] vector<uint32_t> -> fixed array (heap 0, ARM safe)
-//  BUG-09 [HIGH] try-catch removed (ARM -fno-exceptions)
-//  BUG-10 [MED]  magic numbers -> constexpr
-//
-//  11~12 (Session 14 — KCMVP/FIPS 이중 인증):
-//  BUG-11 [CRIT] 암호 알고리즘 KAT POST 체인 통합
-//         · 기존: Parity/Gravity KAT만 실행 → 암호 KAT 0개
-//         · 수정: Crypto_KAT::Run_All_Crypto_KAT() 호출 추가
-//         · KCMVP: ARIA + LEA + HMAC + LSH KAT
-//         · FIPS:  AES + SHA-256 KAT (빌드 프리셋 조건부)
-//  BUG-12 [MED]  g_isOperational atomic 이동 (헤더 → cpp 스코프)
-//
 // [Constraints] try-catch 0, float/double 0, heap 0 (KAT functions)
+//  POST → Crypto_KAT::Run_All_Crypto_KAT (KCMVP/FIPS 프리셋)
 // =========================================================================
 #include "HTS_POST_Manager.h"
-#include "HTS_Crypto_KAT.h"     // [BUG-11] 암호 KAT POST 체인 통합
+#include "HTS_Crypto_KAT.h"     // 암호 KAT POST 체인
 #include "HTS_Sparse_Recovery.h"
 #include "HTS_Secure_Logger.h"
 #include "HTS_Secure_Memory.h"

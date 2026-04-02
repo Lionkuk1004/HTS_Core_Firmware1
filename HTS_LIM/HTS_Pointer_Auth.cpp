@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Pointer_Auth.cpp
 // 포인터 인증 코드(PAC) 구현부 — Murmur3 비가역 해시 + 런타임 키
 // Target: STM32F407 (Cortex-M4)
@@ -11,12 +11,12 @@
 
 namespace ProtectedEngine {
 
-    // ── [BUG-09] 매직 넘버 상수화 ──
+    // ── 매직 넘버 상수화 (J-3) ───────────────────────────────────
     namespace {
         /// 0 키 방어용 도메인 분리 상수 ("HTS_PAC!" ASCII)
         constexpr uint64_t PAC_FALLBACK_KEY = 0x4854535F50414321ULL;
 
-        /// Murmur3 fmix64 상수 → BUG-15에서 32비트로 전환 (삭제)
+        /// Murmur3 fmix — 32비트 경로 사용
 
         /// 자가 치유 코드
         constexpr uint32_t HEAL_PAC_TAMPER = 0xDEAD0BA0u;  ///< PAC 변조 코드
@@ -27,28 +27,14 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //
-    //  문제: uint64_t은 ARM 32비트에서 원자적 읽기/쓰기 불가
-    //    → 소유권 스레드(D)와 타임아웃 스레드(B)가 동시에 쓰면
-    //    → 상위 32비트=D, 하위 32비트=B → Tearing → PAC 전면 붕괴
-    //
-    //  수정: atomic<uint32_t> 2개로 분할
-    //    → ARM LDREX/STREX 단일 사이클 lock-free
-    //    → 어떤 스레드가 쓰든 각 32비트는 원자적 → Tearing 불가
+    //  PAC 키: 64비트 tearing 방지 — hi/lo를 atomic<uint32_t>로 분리
     // =====================================================================
     static std::atomic<uint32_t> g_pac_init_state{ PAC_UNINIT };
     static std::atomic<uint32_t> g_pac_key_hi{ 0u };
     static std::atomic<uint32_t> g_pac_key_lo{ 0u };
 
     // =====================================================================
-    //
-    //  문제: hi load → ISR → Store(hi+lo) → ISR 복귀 → lo load
-    //        = hi_new + lo_old (찢어진 키 → PAC 전면 붕괴)
-    //
-    //  수정: 버전 카운터 기반 Seqlock
-    //    Writer: ver++ (홀수=쓰기중) → hi/lo 쓰기 → ver++ (짝수=완료)
-    //    Reader: ver 읽기 → hi/lo 읽기 → ver 재읽기 → 불일치/홀수면 재시도
-    //    ARM 단일코어: ISR 재진입 시 홀수 감지 → 즉시 재시도
+    //  키 읽기: seqlock(g_pac_key_ver)로 hi/lo 일관성
     // =====================================================================
     static std::atomic<uint32_t> g_pac_key_ver{ 0u };  // 짝수=안정, 홀수=쓰기중
 
@@ -91,13 +77,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //
-    //  기존: Mix_Key_64 × uint64_t 곱셈 2회 → __aeabi_lmul ~60cyc
-    //  수정: fmix32 × 2 독립 실행 → ARM MUL 1cyc × 4 = 4cyc
-    //
-    //  lo_half: 하위 32비트 혼합 (주소 비트)
-    //  hi_half: 상위 32비트 혼합 (키 비트)
-    //  XOR 결합: 독립 해시 → 충돌 확률 1/2^32 유지
+    //  Murmur3 fmix32를 lo/hi에 각각 적용 — 64비트 곱셈·lmul 회피
     // =====================================================================
     static uint32_t Murmur3_Fmix32(uint32_t lo_half,
         uint32_t hi_half) noexcept {
@@ -127,9 +107,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //
-    //  기존: std::abort() → ARM에서 _exit() → 시스템 멈춤 (로그 없음)
-    //  수정: SecureLogger → Self_Healing → 무한 루프 (WDT 리셋)
+    //  위반 시 로그 후 Self_Healing → WFI 루프
     // =====================================================================
     [[noreturn]] void PAC_Manager::Halt_PAC_Violation(
         const char* reason) noexcept {
@@ -153,15 +131,7 @@ namespace ProtectedEngine {
     //  Initialize_Runtime_Key — 부팅 시 명시적 PUF 엔트로피 주입
     //
     //
-    //  기존 문제:
-    //    1. ISR에서 Sign_Pointer 선호출 → Ensure_Key → 랜덤키 PAC_DONE
-    //    2. 이후 Initialize_Runtime_Key(puf) → PAC_DONE 위에 덮어쓰기
-    //    3. 1단계 서명 포인터 전부 무효 → Authenticate에서 전면 Halt
-    //
-    //  수정:
-    //    IN_PROGRESS 전이 → seqlock 보호 키 교체 → PAC_DONE
-    //    Ensure_Key_Initialized가 IN_PROGRESS를 보면 spin-wait
-    //    → 키 교체 완료 후 새 키로 읽기 보장
+    //  IN_PROGRESS → 키 교체(seqlock) → DONE. 호출자는 초기화 순서 계약 준수.
     //
     //  [⚠ 호출 계약]
     //    이 함수 호출 전에 서명된 포인터는 새 키로 재서명 필수
@@ -199,16 +169,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //
-    //  기존 문제 (지연 초기화 우회):
-    //    Sign_Pointer → Ensure_Key → 자동 키 생성 → PAC_DONE
-    //    → Initialize_Runtime_Key(puf) → 키 덮어쓰기
-    //    → 기존 서명 포인터 전면 무효 → Halt
-    //
-    //  근본 수정: 자동 키 생성 경로 전면 제거
-    //    DONE이 아니면 → Initialize_Runtime_Key 미호출로 간주 → Halt
-    //    부팅 시퀀스에서 반드시 Initialize_Runtime_Key를 먼저 호출해야 함
-    //    IN_PROGRESS면 → Initialize_Runtime_Key 진행 중 → 짧은 spin 후 확인
+    //  자동 키 생성 없음 — DONE 전이는 Initialize_Runtime_Key만
     // =====================================================================
     void PAC_Manager::Ensure_Key_Initialized() noexcept {
         // Fast path: 이미 초기화 완료

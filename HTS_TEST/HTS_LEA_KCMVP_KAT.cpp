@@ -4,7 +4,7 @@
 
 //
 
-//  [KCMVP / BUG-KAT-46-LEA] Known Answer = 검증된 **정적** 기대암호문만
+//  [KCMVP KAT — LEA] Known Answer = 검증된 **정적** 기대암호문만
 
 //  · CTR 기대값: KISA lea_ctr_enc와 동일 구현(MSVC로 1회 산출) 상수 하드코딩
 
@@ -306,7 +306,7 @@ static bool KAT_Phase() {
 
     std::cout << "\n==========================================\n"
 
-        << "  KAT 검증 — 정적 기대암호문 vs MUT [BUG-KAT-46-LEA]\n"
+        << "  KAT 검증 — 정적 기대암호문 vs MUT [KCMVP KAT — LEA]\n"
 
         << "  (런타임 캡처/자기 참조 없음)\n"
 

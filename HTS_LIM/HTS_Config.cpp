@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Config.cpp
 // HTS-32 PHY Engine 정적 메모리 스케일링 — 컴파일 검증 유닛
 // Target: STM32F407VGT6 (Cortex-M4F, 168MHz)
@@ -9,7 +9,7 @@ namespace ProtectedEngine {
 
     using C = HTS_Static_Config;
 
-    // ── [BUG-16] 교차 검증: 파생 체인 (시프트 연산 통일) ─────────
+    // ── 교차 검증: 파생 체인 (시프트 연산 통일) ─────────────────
     static_assert(C::DMA_RAM_BYTES ==
         (static_cast<size_t>(C::MCU_DMA_SRAM_KB) << 10u),
         "DMA_RAM_BYTES derivation mismatch (KB << 10)");

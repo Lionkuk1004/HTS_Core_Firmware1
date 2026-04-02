@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 /// @file  HTS_V400_Dispatcher.hpp
 /// @brief V400 동적 모뎀 디스패처 + 3층 항재밍 엔진 통합
 /// @target ARM Cortex-M4 (STM32F407, 168MHz, SRAM 192KB)
@@ -45,28 +45,13 @@
 //   ③ soft_clip_iq()   아웃라이어 소프트 클립
 //   ④ HARQ 즉시 누적 + walsh_dec_full_ → ajc_.Update_AJC
 //
-//  [SRAM 최적화 이력 — BUG-51~54]
-//   BUG-51: sI/sQ 중간 버퍼 제거 (HARQ 스트리밍 직접 누적) −58KB
-//   BUG-52: wb_tx_+wb_rx_ → wb_ 유니온 (반이중 TDM)     −45KB
-//   BUG-53: orig_acc_ int16→int8 양자화 (AJC LMS 안전)   −29KB
-//   BUG-54: harq I/Q 분리 (aQ → CCM 배치)                 배치 변경
-//
 //  [최종 메모리 배치]
 //   SRAM1+2 (128KB): harq_I_(58KB) + wb_(15KB) + orig_acc_(29KB) + etc
 //   CCM     (64KB):  harq_Q_(58KB) + MSP 스택(4KB)
 //   총 사용 ~178KB / 192KB (14.3KB = 7.4% 마진)
 //
 //  [제약]    fp32 0, fp64 0, try-catch 0, 힙 0
-//
-//  [양산 수정 이력 — 54건]
-//   BUG-51 [CRIT] sI/sQ 제거 → Feed16_1sym/Feed64_1sym 스트리밍 전환
-//   BUG-52 [CRIT] wb_ 유니온화 (반이중 증명: TX/RX 동시 접근 불가)
-//   BUG-53 [HIGH] orig_acc_ int8_t 양자화 (AJC LMS σq << σth 검증)
-//   BUG-54 [HIGH] harq I/Q → RxAccum_I(SRAM) + RxAccum_Q(CCM) 분리
-//   BUG-41 [CRIT] SecureMemory::secureWipe — D-2/X-5-1 구현은 HTS_Secure_Memory.cpp
-//          (호스트·타깃 동일 3중 방어; 본 모듈은 호출부만)
-//   BUG-55 [검수 KB] static_assert 실측: sizeof(HTS_V400_Dispatcher) < 128*1024;
-//          NSYM16/NSYM64 ≤ 256 (orig_acc_); harq_Q_는 CCM 외부 배열
+//  [보안 소거] D-2/X-5-1 구현은 HTS_Secure_Memory.cpp — 본 모듈은 호출부
 //
 /// @warning sizeof(HTS_V400_Dispatcher) ≈ 120KB (SRAM 부분만)
 ///          harq_Q_는 CCM에 별도 배치. 반드시 전역/정적 변수로 배치할 것.
@@ -118,7 +103,7 @@ namespace ProtectedEngine {
         bool success;           ///< CRC 검증 통과 여부
     };
 
-    // ── [BUG-54] CCM 섹션 매크로 ──
+    // ── CCM 섹션 매크로 ─────────────────────────────────────────
     //  STM32F407 CCM (0x10000000, 64KB): DMA 불가, CPU만 접근
     //  HARQ 누적은 CPU 연산 전용 → CCM 배치 안전
     //
@@ -263,13 +248,13 @@ namespace ProtectedEngine {
         int16_t v1_rx_[80] = {};        ///< 1칩 BPSK 수신 버퍼
         int     v1_idx_;                ///< 1칩 버퍼 인덱스
 
-        // ── [BUG-51] HARQ 누적 상태 (sI/sQ 중간 버퍼 제거) ──
+        // ── HARQ 누적 상태 (스트리밍 직접 누적) ───────────────────
         //
-        //  기존: rx_ union { m16{harq,sI,sQ}, m64{harq,sI,sQ} }
+        //  rx_ union { m16{harq,sI,sQ}, m64{harq,sI,sQ} }
         //   → sI/sQ는 on_sym_()에서 저장 후 try_decode_()에서 Feed로 일괄 누적
         //   → sI/sQ 57.5KB 낭비 (Feed = 단순 덧셈, 스트리밍과 결과 동일)
         //
-        //  수정: rx_ union { m16{harq}, m64_I{harq_I_} }
+        //  rx_ union { m16{harq}, m64_I{harq_I_} }
         //   → on_sym_()에서 Feed16_1sym/Feed64_1sym으로 즉시 누적
         //   → sI/sQ 배열 완전 제거 (−58,880B)
         //
@@ -282,7 +267,7 @@ namespace ProtectedEngine {
             } m64_I;
         } rx_;
 
-        // ── [BUG-54] HARQ Q채널 — CCM 배치 (DMA 불가, CPU 연산 전용) ──
+        // ── HARQ Q채널 — CCM 배치 (DMA 불가, CPU 연산 전용) ───────
         //
         //  harq.aQ[230][64] = 58,880B → CCM(64KB)에 별도 배치
         //  실제 배열은 .cpp에 file-scope static으로 정의 (sizeof 제외)
@@ -296,7 +281,7 @@ namespace ProtectedEngine {
         int  sym_idx_;                  ///< 현재 심볼 인덱스
         bool harq_inited_;              ///< HARQ 상태 초기화 완료 여부
 
-        // ── [BUG-52] WorkBuf 유니온화 (반이중 TDM) ──
+        // ── WorkBuf 유니온 (반이중 TDM) ───────────────────────────
         //
         //  [반이중 증명]
         //   B-CDMA = 반이중(Half-Duplex): TX/RX 동시 실행 불가
@@ -342,7 +327,7 @@ namespace ProtectedEngine {
         //  프리앰블+헤더: 항상 I=Q 고정 (블라인드 딜레마 해결)
         static constexpr uint16_t HDR_IQ_BIT = (1u << 9u);  ///< bit9 = IQ 모드
 
-        // ── [BUG-53] 원본 심볼 누적 (AJC 결정지향 피드백용) ──
+        // ── 원본 심볼 누적 (AJC 결정지향 피드백용) ─────────────────
         //
         //  [8비트 양자화 안전성 증명]
         //   STM32F407 ADC = 12비트 유효. 하위 4~5비트 = 열잡음(σth ≈ ±16)
@@ -373,7 +358,7 @@ namespace ProtectedEngine {
         /// @brief RF 측정값 (비소유 포인터, nullptr 허용)
         HTS_RF_Metrics* p_metrics_{ nullptr };
 
-        // ── [BUG-44] CFI 상태 전이 검증 (항목⑬) ──────────────────
+        // ── CFI 상태 전이 검증 (항목⑬) ───────────────────────────
         //
         //  합법 전이 테이블 (비트마스크 인코딩):
         //   key = (from << 2) | to  →  4비트 인덱스
@@ -439,7 +424,7 @@ namespace ProtectedEngine {
         void cw_cancel_64_(int16_t* I, int16_t* Q) noexcept;
     };
 
-    // ── [BUG-54] SRAM 예산 정적 검증 ──
+    // ── SRAM 예산 정적 검증 ─────────────────────────────────────
     //  harq_Q_ (CCM)는 V400_Dispatcher 외부 배치이므로 sizeof에 미포함
     //  sizeof(V400_Dispatcher) = SRAM 부분만 = ~120KB
     //

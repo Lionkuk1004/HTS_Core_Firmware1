@@ -1,7 +1,6 @@
-#if __cplusplus >= 202002L || \\
-    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_LIKELY   HTS_LIKELY
-#define HTS_UNLIKELY HTS_UNLIKELY
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   [[likely]]
+#define HTS_UNLIKELY [[unlikely]]
 #else
 #define HTS_LIKELY
 #define HTS_UNLIKELY
@@ -29,19 +28,10 @@
 #include <bit>
 #endif
 
-// =========================================================================
-//  HTS_UNLIKELY C++20 가드
-// =========================================================================
-#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_UNLIKELY HTS_UNLIKELY
-#else
-#define HTS_UNLIKELY
-#endif
-
 namespace ProtectedEngine {
 
     // =====================================================================
-    //  Fast_RotL64 — 비트 좌회전 (BUG-03: 시프트 가드)
+    //  Fast_RotL64 — 비트 좌회전 (시프트 가드)
     // =====================================================================
     static inline uint64_t Fast_RotL64(uint64_t x, unsigned k) noexcept {
         k &= 63u;
@@ -66,33 +56,40 @@ namespace ProtectedEngine {
         return static_cast<uint32_t>(
             Hardware_Bridge::Get_Physical_CPU_Tick() & 0xFFFFFFFFu);
     }
+
+    struct Entropy_Primask_Guard {
+        uint32_t saved_;
+        Entropy_Primask_Guard() noexcept {
+            __asm__ __volatile__("mrs %0, primask\n\tcpsid i" : "=r"(saved_) :: "memory");
+        }
+        ~Entropy_Primask_Guard() noexcept {
+            __asm__ __volatile__("msr primask, %0" :: "r"(saved_) : "memory");
+        }
+        Entropy_Primask_Guard(const Entropy_Primask_Guard&) = delete;
+        Entropy_Primask_Guard& operator=(const Entropy_Primask_Guard&) = delete;
+    };
 #endif
 
     // =====================================================================
-    //  생성자
-    //
-    //  double → uint64_t 변환 시 오버플로 방지
-    //  최대 수명: 30일(2,592,000초) — 그 이상은 키 갱신 정책으로 처리
+    //  생성자 — uint32_t(밀리초) 정수 기반
+    //  최대 수명: 30일(2,592,000,000ms)
     // =====================================================================
-    Entropy_Time_Arrow::Entropy_Time_Arrow(double lifespan_seconds) noexcept
-        : is_collapsed(false) {
+    Entropy_Time_Arrow::Entropy_Time_Arrow(uint32_t lifespan_ms) noexcept {
 
-        // 음수/NaN/극대 방어
-        if (lifespan_seconds <= 0.0 || lifespan_seconds != lifespan_seconds) {
-            lifespan_seconds = 1.0;  // 최소 1초
+        if (lifespan_ms == 0u) {
+            lifespan_ms = 1000u;  // 최소 1초
         }
-        if (lifespan_seconds > 2592000.0) {
-            lifespan_seconds = 2592000.0;  // 최대 30일
+        else if (lifespan_ms > 2592000000u) {
+            lifespan_ms = 2592000000u;  // 최대 30일
         }
 
-#ifdef HTS_ENTROPY_ARROW_ARM
-        max_lifespan_ticks = static_cast<uint64_t>(lifespan_seconds * 1000.0)
-            * TICKS_PER_MS;
+#ifdef HTS_PLATFORM_ARM
+        max_lifespan_ticks = static_cast<uint64_t>(lifespan_ms) * TICKS_PER_MS;
         last_tick = Read_DWT_Tick();
         total_elapsed_ticks = 0;
 #else
         // A55 Linux / PC: steady_clock 기반
-        max_lifespan_ms = static_cast<uint64_t>(lifespan_seconds * 1000.0);
+        max_lifespan_ms = static_cast<uint64_t>(lifespan_ms);
         creation_time = std::chrono::steady_clock::now();
 #endif
     }
@@ -100,17 +97,10 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Validate_Or_Destroy — 수명 검증 + 만료 시 키 파쇄
     //
-    //   기존: "래핑 1회 누락 → 수명 단축 = fail-safe" (착각)
-    //   실제: 30초 미호출 시 delta = 4.4초(래핑) → 수명 연장 = fail-OPEN
-    //   수정: MAX_SILENT_TICKS(15초) 초과 delta → 즉시 자폭 (fail-safe)
-    //         · 정상 호출(<15초): delta 정확 → 정상 누적
-    //         · 지연 호출(15~25초): delta > MAX_SILENT → 즉시 자폭 ✓
-    //         · 래핑 공격(25~40초): delta 왜곡되더라도 아키텍처 명세에 의해
-    //           감시 태스크가 15초 이내 폴링 강제 → 이 경로 진입 불가
+    //   미호출 시 틱 래핑만으로는 수명이 줄지 않을 수 있음 → MAX_SILENT_TICKS
+    //   초과 시 즉시 파쇄(fail-safe). 정상·지연 호출은 아래 분기 참고.
     //
-    //   Cortex-M4: uint64_t RMW는 LDR+ADDS+ADC+STR 4명령어
-    //   ISR 선점 시 상위/하위 32비트 엇갈림 → 수백 시간 뻥튀기 → 즉시 자폭
-    //   수정: PRIMASK 크리티컬 섹션으로 원자적 갱신
+    //   Cortex-M: uint64_t 누적은 torn RMW 위험 → PRIMASK로 원자 갱신
     //
     //  [아키텍처 전제] 호출 간격 < 15초 필수 (BB1_Core_Engine: 매 프레임)
     // =====================================================================
@@ -118,7 +108,7 @@ namespace ProtectedEngine {
         uint64_t current_session_id) noexcept {
 
         // 이미 붕괴 상태
-        if (is_collapsed.load(std::memory_order_acquire)) HTS_UNLIKELY{
+        if (is_collapsed.load(std::memory_order_acquire)) HTS_UNLIKELY {
             return Generate_Chaos_Seed(current_session_id);
         }
 
@@ -127,26 +117,24 @@ namespace ProtectedEngine {
             //  15초 임계 → 래핑 공격 윈도우를 40.5초 이상으로 밀어냄
         static constexpr uint32_t MAX_SILENT_TICKS = 2520000000u;  // 15초 @168MHz
 
-        uint32_t primask;
-        __asm__ __volatile__("mrs %0, primask\n\tcpsid i"
-            : "=r"(primask) : : "memory");
+        bool collapse_now = false;
+        bool expired = false;
+        {
+            Entropy_Primask_Guard irq_guard;
+            const uint32_t now_tick = Read_DWT_Tick();
+            const uint32_t delta = now_tick - last_tick;
+            last_tick = now_tick;
 
-        const uint32_t now_tick = Read_DWT_Tick();
-        const uint32_t delta = now_tick - last_tick;
-        last_tick = now_tick;
+            collapse_now = (delta > MAX_SILENT_TICKS);
+            total_elapsed_ticks += static_cast<uint64_t>(delta);
+            expired = (total_elapsed_ticks > max_lifespan_ticks);
+        }
 
-        const bool collapse_now = (delta > MAX_SILENT_TICKS);
-        total_elapsed_ticks += static_cast<uint64_t>(delta);
-        const bool expired = (total_elapsed_ticks > max_lifespan_ticks);
-
-        // 모든 반환 경로에서 인터럽트 상태를 반드시 복원한다.
-        __asm__ __volatile__("msr primask, %0" : : "r"(primask) : "memory");
-
-        if (collapse_now) HTS_UNLIKELY{
+        if (collapse_now) HTS_UNLIKELY {
             is_collapsed.store(true, std::memory_order_release);
             return Generate_Chaos_Seed(current_session_id);
         }
-        if (expired) HTS_UNLIKELY{
+        if (expired) HTS_UNLIKELY {
             is_collapsed.store(true, std::memory_order_release);
             return Generate_Chaos_Seed(current_session_id);
         }
@@ -157,7 +145,7 @@ namespace ProtectedEngine {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - creation_time).count());
 
-        if (elapsed_ms > max_lifespan_ms) HTS_UNLIKELY{
+        if (elapsed_ms > max_lifespan_ms) HTS_UNLIKELY {
             is_collapsed.store(true, std::memory_order_release);
             return Generate_Chaos_Seed(current_session_id);
         }
@@ -166,7 +154,7 @@ namespace ProtectedEngine {
         // Force_Collapse()와의 경합 창구 차단:
         // 함수 진입 후 붕괴 플래그가 set된 경우라도 정상 세션 ID가
         // 1회 반환되지 않도록 반환 직전 재확인한다.
-        if (is_collapsed.load(std::memory_order_acquire)) HTS_UNLIKELY{
+        if (is_collapsed.load(std::memory_order_acquire)) HTS_UNLIKELY {
             return Generate_Chaos_Seed(current_session_id);
         }
         return current_session_id;

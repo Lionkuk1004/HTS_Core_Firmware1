@@ -29,7 +29,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  state_map 범위 검증 [BUG-05]
+    //  state_map 범위 검증
     // =====================================================================
 #if (HTS_ORBITAL_MAPPER_ARM == 0)
     static bool Validate_State_Map(
@@ -101,7 +101,7 @@ namespace ProtectedEngine {
         static constexpr size_t BITMAP_WORDS = MAX_PERM_N / 32u;  // 256
 
         static inline void bmp_clear(uint32_t* bmp, size_t n_bits) noexcept {
-            // [⑨-FIX] /32u → >>5u (2의제곱 시프트 전환)
+            // ⑨ /32u → >>5u
             const size_t words = (n_bits + 31u) >> 5u;
             std::memset(bmp, 0, words * sizeof(uint32_t));
         }
@@ -211,9 +211,7 @@ namespace ProtectedEngine {
         const uint32_t H = static_cast<uint32_t>(
             (tensor_size + W - 1u) / W);
         if (H > MAX_H) {
-            //  기존: return state_map (= 0으로 초기화 → 모든 인덱스→0 매핑)
-            //  → 호출부에서 사용 시 데이터 전체가 index[0] 값으로 붕괴
-            //  수정: 항등 치환(identity permutation) 채운 후 반환
+            //  state_map은 항등 순열로 채운 뒤 반환 (영벡터 매핑 붕괴 방지)
             for (size_t i = 0u; i < tensor_size; ++i) {
                 state_map[i] = static_cast<uint32_t>(i);
             }
@@ -297,8 +295,8 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존 vector API는 하위 호환을 위해 유지.
-    //  raw 포인터 API는 BB1_Core_Engine BUG-52에서 vector → 정적 배열
+    //  vector API는 하위 호환을 위해 유지.
+    //  raw 포인터 API는 BB1_Core_Engine 정적 배열 경로와 일치
     //  전환에 따라 vector 래핑 없이 inplace_scatter/gather 직접 호출.
     //
     //  Fail-Closed: 실패 시 memset(0) 보안 소거 (vector.clear() 불필요)

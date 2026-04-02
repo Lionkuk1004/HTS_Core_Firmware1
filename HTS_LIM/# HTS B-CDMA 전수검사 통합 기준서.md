@@ -339,698 +339,102 @@ Layer 18 — 테스트 [전체 SKIP — PC 전용]
 
 ## 5. 전체 검사 항목 281개
 
-### [필수 17항] ①~⑰
-
-**① memory_order 배리어**
-```
-- seq_cst 사용 위치 전수 확인
-- 생산자-소비자: acquire/release 쌍 일치
-- 독립 카운터: relaxed 사용
-- DMA/ISR 공유 영역: atomic_thread_fence + volatile 병행
-FAIL: seq_cst가 불필요한 경로에 사용됨
-수정: release/acquire/relaxed 다운그레이드
-금지: 보안 소거 fence 변경 금지
-```
-
-**② std::abs → fast_abs**
-```
-- ARM 경로 std::abs(int32_t) → float 오버로드 위험
-FAIL: ARM 경로에서 std::abs 사용
-수정: 프로젝트 내 fast_abs 함수로 교체
-```
-
-**③ 힙 할당 금지 (ARM 경로)**
-```
-- new / malloc / shared_ptr / unique_ptr ARM 경로 잔존
-- std::vector / std::string ARM 경로 잔존
-FAIL: ARM 경로에 동적 할당 발견
-수정: placement new + 정적 배열 전환
-금지: PC 전용 #else 블록 수정 금지
-```
-
-**④ double/float 금지 (ARM 경로)**
-```
-- ARM 경로 double 연산 실제 실행 여부
-- 파라미터 double → 진입 즉시 float 변환 여부 확인
-FAIL: ARM 경로에서 double 연산 실행
-수정: static_cast<float> 또는 Q16 정수 전환
-금지: 알고리즘 수식·계수 변경 금지
-```
-
-**⑤ try-catch 금지 (-fno-exceptions)**
-```
-- try / catch / throw ARM 또는 전역 경로 잔존
-FAIL: 발견 시
-수정: 블록 제거, 반환값 기반 처리
-금지: 제거 후 빈 함수 → [요검토] 표시
-```
-
-**⑥ 스택 사용량**
-```
-- 로컬 배열 512B 초과 여부
-- 재귀 호출 여부
-FAIL: 512B 초과 또는 재귀 발견
-수정: static/전역 버퍼로 이동
-금지: 인덱스·크기 변경 금지
-```
-
-**⑦ 주석-코드 불일치**
-```
-- 파일 상단 BUG 수정 이력과 실제 코드 일치
-FAIL: 주석은 수정됐다고 하는데 코드에 미반영
-수정: 주석을 코드에 맞게 수정
-금지: 코드를 주석에 맞게 변경 금지
-```
-
-**⑧ SRAM static_assert**
-```
-- sizeof(Impl) <= IMPL_BUF_SIZE 검증 존재
-- alignof(Impl) <= IMPL_BUF_ALIGN 검증 존재
-FAIL: Pimpl 구조체에 static_assert 없음
-수정: static_assert 삽입
-금지: IMPL_BUF_SIZE 값 변경 금지
-```
-
-**⑨ 나눗셈 → 시프트 전환**
-```
-- 2의 거듭제곱: / → >> 또는 & (mask)
-- 비2의제곱: Q16 역수 곱셈+시프트 또는 불가피 주석
-- constexpr 나눗셈: 허용
-- HW 레지스터 주소 상수: 허용
-- 32비트 UDIV: 허용
-- Fisher-Yates 등 불가피 경우: 주석 명시
-FAIL: 런타임 루프 내 가변 분모 64비트 나눗셈 (불가피 주석 없음)
-수정: >> 또는 & 전환, 불가피 주석 추가
-```
-
-**⑩ const& + zero-copy**
-```
-- 64B 초과 구조체를 값으로 전달
-FAIL: 대형 구조체 값 전달 발견
-수정: const& 추가
-금지: 반환 타입·의미 변경 금지
-```
-
-**⑪ 엔디안 독립**
-```
-- 멀티바이트 직렬화 시 포인터 캐스팅 사용
-FAIL: reinterpret_cast로 구조체→바이트 배열 직접 캐스팅
-수정: 명시적 비트 시프트 직렬화로 교체
-```
-
-**⑫ static_cast (암묵적 형변환 금지)**
-```
-- C스타일 캐스팅 (type)value 사용
-- dynamic_cast / typeid 사용
-- 암묵적 정수 축소 변환
-FAIL: 위 항목 발견
-수정: static_cast 명시
-금지: 변환 의미 자체 변경 금지
-```
-
-**⑬ CFI 상태전이 검증**
-```
-- 상태 머신 전이 시 이전 상태 유효성 검증 여부
-- 불법 전이 시 ERROR_RECOVERY 전환
-FAIL: 상태 전이에 검증 없음
-수정: 검증 조건 추가
-금지: 상태 정의·전이 로직 변경 금지
-```
-
-**⑭ PC 코드 삭제**
-```
-- <iostream>/<cstdlib>/<windows.h>/<unistd.h>/std::abort()
-  ARM 경로 물리 배제 여부
-- <thread>/<mutex>/<condition_variable>/<future>
-  ARM 경로 발견 즉시 FAIL
-FAIL: ARM 빌드에서 위 헤더 컴파일됨
-수정: #ifndef HTS_PLATFORM_ARM 가드 추가
-금지: PC 경로 기능 삭제 금지
-```
-
-**⑮ HW 레지스터 폴링 타임아웃**
-```
-⚠ [외부업체 주의] SPI/UART/DMA 대기루프 무한 행업 위험
-- while(flag) {} 무한 루프 여부
-- 폴링 루프 상한 카운터 여부
-FAIL: 폴링 루프에 탈출 조건 없음
-수정: 타임아웃 카운터 추가 + 경고 주석 삽입:
-// ⚠ [HW 주의] 이 폴링 루프는 실제 보드의 타임아웃 값으로 교체 필수.
-//   플레이스홀더 값으로 양산 금지.
-```
-
-**⑯ 전원강하/EMI 비트플립 방어**
-```
-- PVD 연동 여부
-- Flash 쓰기 원자성 (Read-Back 검증) 여부
-FAIL: Flash 쓰기 후 검증 없음
-수정: 위험 주석 명시
-금지: Flash HAL 코드 변경 금지
-```
-
-**⑰ 하드 리얼타임 데드라인**
-```
-⚠ [외부업체 최우선 확인] NVIC 우선순위 미설정 시 타임슬롯 마감 실패
-- NVIC 설정 위치 확인 (파일 전체 grep)
-- ISR WCET 루프 상한 여부
-FAIL: ISR 내 무제한 루프 또는 NVIC 설정 없음
-수정: 루프 상한 추가 + 아래 경고 블록 삽입:
-#ifdef HTS_TARGET_ARM_BAREMETAL
-// ⚠══════════════════════════════════════════════════════
-// [외부업체 필수 교체] IRQ 번호는 플레이스홀더입니다.
-// 실제 보드 회로도 및 STM32F407 RM0090 벡터 테이블 확인 후 교체.
-//
-// RM0090 주요 IRQ 번호:
-//   TIM2=28, TIM3=29, TIM4=30, TIM5=50
-//   DMA1_Stream0=11 ~ DMA1_Stream7=47
-//   DMA2_Stream0=56 ~ DMA2_Stream7=70
-//   SPI1=35, SPI2=36, SPI3=51
-//   USART1=37, USART2=38, USART3=39
-//
-// ※ IPC_Protocol이 DMA2_Stream0(56번)을 SPI1 RX로 사용 중.
-//   Tx 스케줄러 DMA는 반드시 다른 Stream 번호로 설정하세요.
-// ⚠══════════════════════════════════════════════════════
-NVIC_SetPriority(static_cast<IRQn_Type>(28), 2u); // 교체 필요
-NVIC_SetPriority(static_cast<IRQn_Type>(59), 3u); // 교체 필요
-#endif
-```
+# HTS B-CDMA 전수검사 통합 기준서
+**INNOViD CORE-X Pro HTS B-CDMA 보안통신 펌웨어**
+**버전 5.1 — 초경량화 양산 전용 (OOM 방어 최적화)**
 
 ---
 
-### [보충 4항] A~D
+## 0. 자동 검수 실행 원칙 (AI 행동 지침)
 
-**A. sizeof 전파 경고**
-```
-- 1KB 이상 멤버 포함 클래스: Doxygen @warning에 sizeof 근사값 명시
-- @warning에 "전역/정적 배치 필수" 문구 포함
-- 연쇄 래퍼(A→B→C): 최상위에도 누적 sizeof 경고
-FAIL: 대형 멤버 포함 클래스에 @warning 없음
-수정: @warning 추가
-예시:
-/// @warning sizeof(HTS_Xxx) ≈ NKB (YYY impl_buf_ 내장)
-///          반드시 전역/정적 변수로 배치. 스택 선언 시 Cortex-M4 즉시 오버플로우.
-```
-
-**B. 래퍼 클래스 static_assert**
-```
-- 1KB 이상 멤버 포함 클래스: sizeof <= SRAM예산 검증
-- static_assert 위에 SRAM 예산 산출 근거 주석
-- 메시지에 어떤 멤버를 줄여야 하는지 가이드
-FAIL: static_assert 없음
-수정: static_assert 삽입
-```
-
-**C. 원자적 초기화 CAS**
-```
-- atomic<bool> 1회성 가드: compare_exchange_strong(expected=false, true, acq_rel)
-- load→if(false)→store(true) 패턴 → FAIL
-- CAS 실패 시 즉시 반환
-FAIL: 비CAS 패턴 사용
-수정: compare_exchange_strong 전환
-```
-
-**D. C++20 속성 가드 매크로**
-```
-- [[likely]]/[[unlikely]]: #if __cplusplus >= 202002L 가드
-- 프로젝트 전체 동일 매크로 (HTS_LIKELY/HTS_UNLIKELY)
-- [[nodiscard]]: C++17 이상이면 가드 불필요
-FAIL: raw [[likely]] 직접 사용
-수정: 가드 매크로 추가
-```
+1. **파일당 1-Pass 처리:** Layer 0부터 순차적으로 읽고, 수정 및 로그 기록 후 즉시 메모리를 비우고 다음 파일로 넘어갈 것. (동시 다중 파일 로드 금지)
+2. **양산 무결성 집중:** 스타일(들여쓰기, 네이밍), 모던 C++ 문법 강제(auto, 범위 기반 for), 컴파일러 자동 최적화(RVO, 루프 이동) 지적을 엄격히 금지함.
+3. **기능 훼손 절대 금지:** 알고리즘 본문, 수식, 상태 머신 전이 순서, 파이프라인 호출 순서를 단 1줄도 임의로 변경하지 말 것.
+4. **자동 수정 3조건:** ① 기준서에 명시된 보안/포인터/동시성 위반 사항일 것, ② 함수 시그니처가 변하지 않을 것, ③ 100% 확신이 있을 것. 불충족 시 `[요검토]` 태그만 남기고 패스.
 
 ---
 
-### [A항] 동시성 및 메모리 배리어
+## 1. 제외 대상 (검수 생략 및 N/A 처리)
 
-| No | 항목 | 기준 |
-|----|------|------|
-| A-1 | seq_cst 다운그레이드 | relaxed/acquire/release 최적화 |
-| A-2 | 컴파일러/CPU 재배치 방어 | DMA/ISR 공유 영역 → atomic_thread_fence + volatile |
-| A-3 | Lock-free/Wait-free | ISR/실시간루프 → mutex/spinlock 배제, CAS 링 버퍼 |
+* **전체 SKIP (PC 전용 파일):** `HTS_3D_Tensor_FEC.h/.cpp`, `Layer 18 (모든 테스트 파일)`
+* **코드 블록 SKIP:** `#else` (ARM 가드 반대편), `_HTS_CREATOR_MODE` 내부 코드
+* **컴파일러 위임 (검사 금지):** 데드 코드 제거, 캐시 지역성, O(n²) 복잡도, RVO/NRVO.
 
 ---
 
-### [B항] 메모리 및 리소스 무결성
+## 2. 필수 검수 17항 + 보충 4항 (최우선 스캔)
 
-| No | 항목 | 기준 |
-|----|------|------|
-| B-1 | Zero-Copy | const& 또는 포인터, 런타임 동적 할당 금지 |
-| B-2 | 정렬(Alignment) | alignas 누락 → Unaligned Access Fault |
-| B-3 | 스택 무결성 | 대형 로컬 배열 → static/전역, 재귀 배제 |
+* **① 배리어:** seq_cst 금지 → acquire/release/relaxed 다운그레이드 (단, Secure Wipe fence는 건드리지 말 것)
+* **② std::abs:** ARM 경로에서 사용 금지 → fast_abs 전환
+* **③ 힙 할당 금지:** ARM 경로 내 new/malloc/shared_ptr/std::vector/std::string 전면 금지 → 정적 버퍼 + placement new 전환
+* **④ double/float:** ARM 내 double 금지 → Q16 정수 또는 static_cast<float> 전환
+* **⑤ 예외 금지:** try-catch-throw 삭제 (-fno-exceptions)
+* **⑥ 스택 보호:** 512B 초과 로컬 배열 → static/전역 전환, 재귀 호출 금지
+* **⑦ 주석 일치:** BUG 수정 이력과 코드 정합성 유지
+* **⑧ SRAM 검증:** Pimpl 구조체에 `static_assert(sizeof(Impl) <= IMPL_BUF_SIZE)` 필수
+* **⑨ 나눗셈 제거:** 가변 분모 64비트 나눗셈 → 시프트/비트마스크 (32비트 UDIV 및 불가피 주석은 허용)
+* **⑩ Zero-copy:** 64B 초과 구조체 값 전달 금지 → const& 전환
+* **⑪ 엔디안:** 포인터 직접 캐스팅 직렬화 금지 → 비트 시프트
+* **⑫ 캐스팅:** 암묵적 형변환, C스타일 캐스팅 금지 → static_cast 명시
+* **⑬ CFI:** 상태 머신 전이 시 이전 상태 유효성 검증 로직 필수
+* **⑭ PC 헤더:** `<iostream>`, `<thread>`, `<mutex>` 등 발견 시 `#ifndef HTS_PLATFORM_ARM` 가드 처리
+* **⑮ 타임아웃:** HW 폴링 `while(flag)`에 타임아웃/상한 카운터 필수
+* **⑯ 플래시 원자성:** Flash 쓰기 후 Read-Back 검증 확인
+* **⑰ 데드라인/NVIC:** ISR 내 무제한 루프 금지, NVIC IRQ 번호는 플레이스홀더로 두고 `[파트너사 필수 교체]` 경고 주석 삽입
+* **[A] sizeof 경고:** 1KB+ 멤버 포함 시 `@warning 전역/정적 배치 필수` 명시
+* **[B] 래퍼 static_assert:** 1KB+ 클래스 sizeof ≤ SRAM 예산 산출 주석 포함
+* **[C] CAS 가드:** 원자적 1회성 초기화는 `compare_exchange_strong` 사용
+* **[D] 속성 가드:** raw `[[likely]]` 금지 → 프로젝트 매크로 처리
 
 ---
 
-### [C항] 제어 흐름 무결성
+## 3. 핵심 아키텍처 및 보안 검수 항목 (초경량화)
 
-| No | 항목 | 기준 |
-|----|------|------|
-| C-1 | CFI | 상태 머신 전이 합법성 검증 (ROP/JOP 방어) |
-| C-2 | 예외 배제 | try-catch/throw 제거 |
-| C-3 | HardFault 폴백 | 안전 핸들러, 레지스터 로깅 + 리셋 |
+**(※ 작동과 무관한 스타일/가독성 조항 전면 삭제 완료)**
+
+### [A/B/C/D] 코어 무결성
+* A-2. DMA/ISR 공유 영역 `atomic_thread_fence` + `volatile` 병행
+* A-3. ISR 내 mutex/spinlock 배제 (Lock-free/CAS 링버퍼)
+* B-2. alignas 누락에 의한 Unaligned Access 방어
+* D-1. 암호 연산 Constant-time (if/switch 금지 → 비트마스크)
+* **D-2. 보안 소거 3중 방어 (패턴 1자도 변경 금지):** `volatile 루프` + `__asm__ volatile("" ::: "memory");` + `release fence`
+* **D-3. JTAG 감지 리셋 (순서 엄수):** `AIRCR 쓰기` → `DBGMCU 정지` → `dsb/isb` → `for(;;)`
+
+### [H/I/J/K] 메모리 & 흐름 제어 (치명적 오류만)
+* H-1~H-3, H-7~H-8. 널/댕글링 포인터, OOB, 이중 해제, 누수 원천 차단
+* H-12~H-13. strcpy/sprintf 금지 → strncpy/snprintf 강제
+* I-3. switch 문 default 케이스 명시
+* J-1~J-2. 정수 축소 변환 시 유실, Unsigned 오버/언더플로우 방어
+* J-3. HW 레지스터 매직넘버 금지 → constexpr 상수화
+* K-1~K-3. MPU 리전 검사, ISR 진입 시 FPU 컨텍스트 보호
+
+### [M/N/O] 정적 분석 & 동시성 (ARM 전용)
+* M-4. 경고 유발 코드 수정 (-Werror 대비)
+* M-8. reinterpret_cast 최소화 및 안전성 검증
+* M-20. Pimpl 패턴의 placement new 규격 준수
+* N-1, N-3, N-10. 데이터 레이스 방어, PRIMASK 크리티컬 섹션 락 범위 최소화
+* O-1, O-4, O-13. 외부 입력/페이로드 인자 경계 및 버퍼 크기 철저 검증
+
+### [R] 펌웨어 검증 (보안 부팅)
+* R-17. WDT는 ISR 내부에서 킥 금지, 메인 루프 최상단에서만 허용
+* R-19. HardFault 시 레지스터 로깅 후 즉각 리셋
 
 ---
 
-### [D항] 보안 및 안티포렌식
+## 4. 모듈 및 파트너사 연동 규약 (경계 방어)
 
-| No | 항목 | 기준 |
-|----|------|------|
-| D-1 | Constant-time | 암호 연산 내 if/switch 금지 → 비트마스크 |
-| D-2 | 보안 소거 3중 방어 | volatile + asm clobber "memory" + release fence |
-| D-3 | JTAG/SWD 감지 리셋 | AIRCR → DBGMCU → dsb/isb → for(;;) 순서 |
+### [PIMPL] 은닉화 표준
+* Impl 정의는 무조건 `.cpp` 내부. 복사/이동은 `= delete`.
+* 생성자: `Secure_Wipe(buf)` → `placement new` → `valid=true`
+* 소멸자: `~Impl()` 호출 → `Secure_Wipe(buf)`
 
-**D-2 표준 패턴 (이 패턴에서 1자도 변경 금지)**
+### [EXT] 파트너사/NVIC 특별 경고 (자동 삽입 템플릿)
+* 코드에 임의의 NVIC 번호를 매핑하지 말 것. 발견 시 아래 주석 필수 삽입.
 ```cpp
-volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
-__asm__ __volatile__("" : : "r"(p) : "memory");  // "memory" 필수
-std::atomic_thread_fence(std::memory_order_release);
-```
-
-**D-3 AIRCR 리셋 순서 (순서 변경 금지)**
-```
-AIRCR 쓰기(0x05FA0004)
-→ DBGMCU_APB1_FZ &= ~(WWDG_STOP(bit11) | IWDG_STOP(bit12))
-→ dsb sy / isb
-→ for(;;) { nop; }
-```
-
----
-
-### [E항] DSP 및 알고리즘 최적화
-
-| No | 항목 | 기준 |
-|----|------|------|
-| E-1 | ALU 병목 제거 | 나눗셈/모듈로 → 시프트+비트마스크 (32비트 UDIV 허용) |
-| E-2 | HW Intrinsics | __builtin_popcount, __clz 단일사이클 명령 |
-| E-3 | 분기 예측 최적화 | Hot Path → HTS_LIKELY/HTS_UNLIKELY (C++20 가드) |
-
----
-
-### [F항] 데이터 무결성 및 통신
-
-| No | 항목 | 기준 |
-|----|------|------|
-| F-1 | 엔디안 독립 | 포인터 캐스팅 금지 → 명시적 비트 시프트 |
-| F-2 | 오류 검출 | 통신 페이로드 + 설정값 → CRC-16/32 또는 해시 |
-
----
-
-### [G항] 빌드 타임 검증
-
-| No | 항목 | 기준 |
-|----|------|------|
-| G-1 | static_assert | 구조체 크기, 비트마스크, 배열 길이 빌드타임 검증 |
-| G-2 | 엄격한 형변환 | 암묵적 캐스팅 금지 → static_cast 명시 |
-| G-3 | 경고 에러화 | -Wall -Wextra -Werror (경고 0개) |
-
----
-
-### [H항] 포인터 및 메모리 관리 (20항)
-
-| No | 항목 |
-|----|------|
-| H-1 | NULL 포인터 역참조 방지 |
-| H-2 | 댕글링 포인터 (해제 후 재참조) |
-| H-3 | 버퍼 오버플로우 (memcpy/strcpy 경계) |
-| H-4 | 동적 메모리 할당 제한 (malloc/free 금지) |
-| H-5 | 정렬 위반 (Cortex-M4 Fault) |
-| H-6 | new/malloc 후 delete/free 쌍 |
-| H-7 | 메모리 누수 (모든 경로 해제) |
-| H-8 | 더블 프리 방지 |
-| H-9 | 스택 버퍼 오버플로우 (512B 초과 로컬) |
-| H-10 | 힙 무결성 |
-| H-11 | 초기화되지 않은 변수 |
-| H-12 | strcpy/strcat 금지 → strncpy/snprintf |
-| H-13 | sprintf 금지 → snprintf |
-| H-14 | gets() 금지 → fgets() |
-| H-15 | memcpy 크기 소스/타겟 일치 |
-| H-16 | 포인터 연산 유효 범위 |
-| H-17 | 상속 구조 가상 소멸자 |
-| H-18 | 생성자/소멸자 내 가상 함수 호출 자제 |
-| H-19 | 지역 변수 주소 반환 금지 |
-| H-20 | ASan 설정 확인 |
-
----
-
-### [I항] 제어 흐름 및 예외 처리
-
-| No | 항목 |
-|----|------|
-| I-1 | ISR 내 긴 로직 금지 |
-| I-2 | 무한 루프 탈출 조건 |
-| I-3 | switch default 케이스 명시 |
-| I-4 | 재귀 호출 금지 |
-
----
-
-### [J항] 타입 안정성
-
-| No | 항목 |
-|----|------|
-| J-1 | 형 변환 안전성 (큰→작은 데이터 유실) |
-| J-2 | Unsigned 언더/오버플로우 |
-| J-3 | 매직 넘버 금지 → constexpr/enum (SWAR/CRC/LCG/비트마스크 예외, HW 레지스터 주소 constexpr 상수화) |
-| J-4 | volatile 올바른 사용 (동기화 목적 volatile 금지, atomic 사용) |
-
----
-
-### [K항] Cortex-M4 전용
-
-| No | 항목 |
-|----|------|
-| K-1 | MPU 설정 (Flash RO, 8개 리전, 스택 가드 256B, DMA Shared Device) |
-| K-2 | DSP 명령어 데이터 범위 검사 |
-| K-3 | FPU 레지스터 컨텍스트 저장 (ISR 진입 시) |
-
----
-
-### [L항] 가독성 및 유지보수
-
-| No | 항목 |
-|----|------|
-| L-1 | 함수 복잡도 (Cyclomatic Complexity ≤ 10 권장) |
-| L-2 | 변수 초기화 (선언 시 즉시) |
-| L-3 | 미사용 코드/변수 제거 |
-
----
-
-### [M항] 정적 분석 및 표준 준수 (20항)
-
-| No | 항목 |
-|----|------|
-| M-1 | Cppcheck 결함 탐지 |
-| M-2 | Clang-tidy 모던 C++ |
-| M-3 | -Wall -Wextra -Wpedantic |
-| M-4 | -Werror (경고 0개) |
-| M-5 | const/constexpr 상수화 |
-| M-6 | enum class 명시적 타입 |
-| M-7 | explicit 생성자 |
-| M-8 | static_cast/reinterpret_cast (C스타일 금지) |
-| M-9 | nullptr (NULL 금지) |
-| M-10 | auto 남용 자제 |
-| M-11 | 범위 기반 for 활용 |
-| M-12 | std::move 적절한 활용 |
-| M-13 | 템플릿 과용 자제 |
-| M-14 | DRY 원칙 (중복 코드 제거) |
-| M-15 | 데드 코드 제거 |
-| M-16 | 함수 길이 적정 (100줄 초과 시 분할 권장) |
-| M-17 | 주석-코드 일치 |
-| M-18 | ProtectedEngine 네임스페이스 (전역 오염 방지) |
-| M-19 | unsigned/signed 혼용 주의 |
-| M-20 | placement new (베어메탈 Pimpl 표준) |
-
----
-
-### [N항] 동시성 (15항 — ARM 해당 없는 항목 N/A)
-
-| No | 항목 | ARM 적용 |
-|----|------|---------|
-| N-1 | 데이터 레이스 방어 | ✅ |
-| N-2 | Mutex/Lock | N/A (PC용) |
-| N-3 | 데드락 방지 (PRIMASK 크리티컬 섹션) | ✅ |
-| N-4 | std::atomic 사용 | ✅ |
-| N-5 | 공유 상태 최소화 | ✅ |
-| N-6 | 스레드 비안전 함수 주의 | ✅ |
-| N-7 | volatile 오용 금지 (atomic 사용) | ✅ |
-| N-8 | 조건 변수 | N/A (PC용) |
-| N-9 | 비동기 처리 | N/A (PC용) |
-| N-10 | 락 범위 최소화 | ✅ |
-| N-11 | 재진입성 (ISR 안전 설계) | ✅ |
-| N-12 | 스레드 종료 Join/Detach | N/A (PC용) |
-| N-13 | shared_ptr 멀티스레드 안전 | N/A (PC용) |
-| N-14 | 예외 시 락 해제 (RAII) | ✅ |
-| N-15 | thread_local | N/A (PC용) |
-
----
-
-### [O항] 입력 검증 및 보안 (15항)
-
-| No | 항목 | ARM 적용 |
-|----|------|---------|
-| O-1 | 입력 값 범위 검사 | ✅ |
-| O-2 | 명령어 인젝션 방지 | ✅ |
-| O-3 | 형식 문자열 취약점 | ✅ |
-| O-4 | 버퍼 크기 검증 | ✅ |
-| O-5 | NULL 바이트 삽입 방지 | ✅ |
-| O-6 | UTF-8 인코딩 검증 | ✅ |
-| O-7 | 화이트리스트 입력 | ✅ |
-| O-8 | 오류 메시지 정보 노출 방지 | ✅ |
-| O-9 | 평문 키/비밀번호 저장 금지 | ✅ |
-| O-10 | 암호학적 난수 (PUF+PRNG) | ✅ |
-| O-11 | 세션 관리 | ✅ |
-| O-12 | 코드 주입 방지 | ✅ |
-| O-13 | 인자 경계 검사 | ✅ |
-| O-14 | 경로 조작 방지 | N/A (파일시스템 없음) |
-| O-15 | 파일 크기/형식 검증 | N/A (파일시스템 없음) |
-
----
-
-### [P항] 런타임 성능 (15항)
-
-| No | 항목 |
-|----|------|
-| P-1 | assert (디버그 모드) |
-| P-2 | RTTI 비용 (dynamic_cast 자제) |
-| P-3 | noexcept 지정 |
-| P-4 | 알고리즘 복잡도 (O(n²)+ 경보) |
-| P-5 | 컨테이너 선택 (ARM: 정적 배열, std::vector 금지) |
-| P-6 | 캐시 지역성 |
-| P-7 | const T& 전달 |
-| P-8 | RVO/NRVO 활성화 |
-| P-9 | 임시 객체 최소화 |
-| P-10 | 루프 불변식 외부 이동 |
-| P-11 | 정적 라이브러리 불필요 링크 제거 |
-| P-12 | 런타임 무결성 해시 체크 |
-| P-13 | 예외 안전성 (RAII) |
-| P-14 | 스트림 오버헤드 (ARM: std::cout/cin 금지) |
-| P-15 | 핫 루프 최적화 |
-
----
-
-### [Q항] 프로젝트 구조 (15항)
-
-| No | 항목 |
-|----|------|
-| Q-1 | 헤더 가드 (#pragma once) |
-| Q-2 | include 최소화 (삭제 금지, 추가만 허용) |
-| Q-3 | 전방 선언 (Pimpl 은닉화) |
-| Q-4 | Debug/Release 분리 |
-| Q-5 | 코드 스타일 일관성 |
-| Q-6 | Doxygen API 문서화 (공개 API 전체) |
-| Q-7 | 외부 라이브러리 버전 고정 |
-| Q-8 | ARM/PC 플랫폼 분리 (#ifdef __arm__ 3단 분기) |
-| Q-9 | Self-Contained 헤더 |
-| Q-10 | ProtectedEngine 네임스페이스 |
-| Q-11 | 복사/이동 = delete (보안 객체) |
-| Q-12 | [[nodiscard]] (반환값 무시 위험 함수) |
-| Q-13 | constexpr 컴파일타임 상수화 |
-| Q-14 | inline constexpr (ODR 준수) |
-| Q-15 | static_assert 아키텍처 검증 |
-
----
-
-### [R항] 보안 부팅 및 펌웨어 검증 (30항)
-
-| No | 항목 |
-|----|------|
-| R-1 | 부트 코드 ROM 불변성 |
-| R-2 | 펌웨어 디지털 서명 (RSA/ECC) |
-| R-3 | SHA-256/SHA-3 해시 무결성 |
-| R-4 | OTP 안전 부팅 설정 |
-| R-5 | Anti-rollback |
-| R-6 | 안전 키 저장소 |
-| R-7 | 부트 영역 쓰기 보호 |
-| R-8 | QSPI 외부 Flash 검증 |
-| R-9 | Flash ECC 쓰기 확인 |
-| R-10 | 설정값 CRC-32 |
-| R-11 | MPU 보안 영역 분리 (8개 리전) |
-| R-12 | 스택 Guard Value 감시 |
-| R-13 | 힙 오버플로우 검출 |
-| R-14 | Read-only 데이터 보호 |
-| R-15 | 부팅 시 전체 CRC |
-| R-16 | 런타임 코드 변경 감지 |
-| R-17 | WDT — 메인 루프 최상단만 킥 |
-| R-18 | 윈도우 워치독 (WWDG) |
-| R-19 | HardFault → 레지스터 로깅 + 리셋 |
-| R-20 | 클럭 감시 (CSS) |
-| R-21 | 저전력 모드 상태 검사 |
-| R-22 | JTAG/SWD 비활성화 |
-| R-23 | 입력 경계 검사 |
-| R-24 | 암호화 펌웨어 |
-| R-25 | 코드 주입 방지 |
-| R-26 | 보안 HW 가속기 활용 |
-| R-27 | 서명 키 주기 변경 |
-| R-28 | 동적 펌웨어 갱신 차단 |
-| R-29 | Secure Boot State 확인 |
-| R-30 | 무결성 실패 → 안전 모드 전환 |
-
----
-
-### [U항] 구조적 안전성 (4항)
-
-| No | 항목 | 기준 |
-|----|------|------|
-| U-A | sizeof 전파 경고 | 1KB+ 멤버 → @warning sizeof + "전역/정적 필수" |
-| U-B | 래퍼 static_assert | sizeof≤SRAM예산 빌드타임 검증 |
-| U-C | 원자적 초기화 CAS | compare_exchange_strong(acq_rel) |
-| U-D | C++20 속성 가드 | [[likely]]/[[unlikely]] → `#if __cplusplus >= 202002L` |
-
----
-
-### [V항] 모듈별 특수 취약점 (35항)
-
-**V-1. BLE/NFC 게이트웨이 (10항)**
-
-| No | 항목 |
-|----|------|
-| V-1-1 | AT TX 버퍼 독립 할당 |
-| V-1-2 | 오버플로 라인 즉시 폐기 |
-| V-1-3 | 인밴드 AT 인젝션 차단 |
-| V-1-4 | 프레임 밀반입 차단 |
-| V-1-5 | 세션 암살 방지 |
-| V-1-6 | 64비트 국가지점번호 검증 |
-| V-1-7 | msg_type 프로토콜 분기 |
-| V-1-8 | Send_* 세션 게이트키퍼 |
-| V-1-9 | 일괄 틱 갱신 철거 |
-| V-1-10 | SPSC 링 버퍼 PRIMASK 보호 |
-
-**V-2. CCTV 보안 (8항)**
-
-| No | 항목 |
-|----|------|
-| V-2-1 | Event Storm DoS → Edge 트리거 |
-| V-2-2 | 시계열 정합성 |
-| V-2-3 | nullptr → detail_len=0 클램프 |
-| V-2-4 | MAC 키 역산 방어 |
-| V-2-5 | 1틱 격리 |
-| V-2-6 | 틱 보상 폭주 방지 |
-| V-2-7 | 무한 락다운 방지 |
-| V-2-8 | OFFLINE 전이 합법화 |
-
-**V-3. CoAP 엔진 (14항)**
-
-| No | 항목 |
-|----|------|
-| V-3-1 | URI 버퍼 오버플로 → 클램프 |
-| V-3-2 | 스택 평문 잔류 → Secure_Wipe |
-| V-3-3 | next_mid/token → atomic |
-| V-3-4 | TKL 미검증 → 즉각 폐기 |
-| V-3-5 | Piggybacked Response 처리 |
-| V-3-6 | 0xFF Payload Marker 삽입 |
-| V-3-7 | 파서 스머글링 방어 |
-| V-3-8 | safe_streq XOR 상수 시간 |
-| V-3-9 | safe_shift 21 클램프 |
-| V-3-10 | alloc_state 4단계 CAS |
-| V-3-11 | ACK CAS(READY→WIPING) 독점 |
-| V-3-12 | Enqueue → PRIMASK 외부 |
-| V-3-13 | atomic 객체 Wipe UB 금지 |
-| V-3-14 | Register URI 사전 소거 |
-
-**V-4. 자가진단 + Config (3항)**
-
-| No | 항목 |
-|----|------|
-| V-4-1 | alignas(uint32_t) LEA 버퍼 |
-| V-4-2 | HMAC ctx 5경로 Wipe |
-| V-4-3 | 곱셈(*) → 시프트(<<) |
-
----
-
-### [W항] 수석 아키텍트 규약 (4항)
-
-| No | 항목 | 기준 |
-|----|------|------|
-| W-1 | DMA 캐시 일관성 | D-Cache Invalidate/Clean 또는 Non-cacheable |
-| W-2 | WDT 펫팅 제한 | ISR/데드락 루프 내 금지, 메인 루프 최상단만 |
-| W-3 | Flash 마모 평준화 | NVRAM 링 버퍼 Wear-Leveling |
-| W-4 | 인터럽트 폭주 차단 | ISR 내 디바운싱/일시적 마스킹 |
-
----
-
-### [X항] 추가 정밀검사 (20항)
-
-| No | 항목 | 기준 |
-|----|------|------|
-| X-1-1 | HW 레지스터 주소 constexpr | AIRCR/VECTKEY 등 매직넘버 금지 |
-| X-1-2 | 레지스터 RMW 원자성 | PRIMASK 또는 비트밴딩 |
-| X-1-3 | 페리페럴 클럭 활성화 | RCC ON 후 접근 |
-| X-2-1 | DMA 버퍼 Non-cacheable | 32바이트 경계 정렬 |
-| X-2-2 | DMA 완료 콜백 배리어 | DSB/DMB 발행 |
-| X-2-3 | DMA 이중 버퍼 교차 오염 방지 | 핑퐁 전환 시 잠금 |
-| X-3-1 | PVD 임계값 (2.7V) | Flash 오류 방지 |
-| X-3-2 | 브라운아웃 NVM 쓰기 중단 | 원자적 폴백 |
-| X-3-3 | 웨이크업 후 클럭 재설정 | STOP/STANDBY 복귀 시 PLL |
-| X-4-1 | SPI NSS 관리 | 크리티컬 섹션 내 토글 |
-| X-4-2 | UART 프레이밍 에러 처리 | ORE/NE/FE 클리어 |
-| X-4-3 | I2C 행업 복구 | SCL 토글 10회 + SWRST |
-| X-4-4 | 버스 타임아웃 | HW 타이머 연동 |
-| X-5-1 | Secure Wipe 3중 방어 | volatile + asm "memory" + release fence |
-| X-5-2 | 키 유도 함수 | nonce/salt 포함 |
-| X-5-3 | 사이드 채널 방어 | 암호 비교 → 상수 시간 XOR |
-| X-5-4 | Write Suppression 방어 | 보안 비교 반환형 → uint32_t |
-| X-5-5 | Boolean Coercion 방어 | bool 반환 보안 함수 → uint32_t |
-| X-5-6 | 64비트 Data Tearing 방어 | atomic<uint64_t> → 두 개 atomic<uint32_t> |
-| X-6-1 | systick 래핑 안전성 | uint32_t ms 49.7일 elapsed 계산 |
-| X-6-2 | 타이머 오버플로우 | TIM 16/32비트 경계 처리 |
-
----
-
-### [HDR항] 헤더 파일 전용 검사 (신규 8항)
-
-| No | 항목 | 기준 |
-|----|------|------|
-| HDR-1 | #pragma once | 이중 include 가드 존재 |
-| HDR-2 | 구현 코드 금지 | 함수 본문 직접 작성 금지 (inline/constexpr/template 예외) |
-| HDR-3 | 전역 변수 금지 | extern 선언만 허용 |
-| HDR-4 | using namespace 금지 | 헤더 내 전면 금지 |
-| HDR-5 | Pimpl 확인 | struct Impl; 전방 선언만, 정의는 .cpp에만 |
-| HDR-6 | ARM 전용 선언 가드 | #if defined(__arm__) 내부에만 |
-| HDR-7 | Self-Contained | 헤더 단독 컴파일 가능 여부 |
-| HDR-8 | 외부 업체 가이드 섹션 | 공개 헤더 상단에 통합 가이드 블록 존재 |
-
----
-
-### [PIMPL항] Pimpl 은닉화 검사 (신규 6항)
-
-| No | 항목 | 기준 |
-|----|------|------|
-| PIMPL-1 | Impl 정의 위치 | .cpp에만 존재, 헤더에 멤버 노출 금지 |
-| PIMPL-2 | impl_buf_ 선언 | alignas(N) uint8_t impl_buf_[SIZE], 플랫폼 분기 |
-| PIMPL-3 | get_impl() 검증 | static_assert(sizeof(Impl) <= IMPL_BUF_SIZE) 내부 존재 |
-| PIMPL-4 | 생성자 순서 | Secure_Wipe → placement new → impl_valid_ store(true) |
-| PIMPL-5 | 소멸자 순서 | p->~Impl() → Secure_Wipe(impl_buf_) |
-| PIMPL-6 | 복사/이동 차단 | = delete 선언 |
-
----
-
-### [EXT항] 외부 업체 가이드 검사 (신규 7항)
-
-| No | 항목 | 기준 |
-|----|------|------|
-| EXT-1 | 통합 가이드 섹션 | 공개 헤더 상단에 사용법/메모리/보안/교체항목 명시 |
-| EXT-2 | 교체 필요 HW 상수 경고 | `⚠ [파트너사 필수 교체]` 주석 |
-| EXT-3 | NVIC/IRQ 플레이스홀더 경고 | RM0090 벡터 테이블 참조 주석 삽입 |
-| EXT-4 | 전역/정적 배치 경고 | `⚠ [배치 주의]` @warning 명시 |
-| EXT-5 | 파트너사 교체 레지스터 목록 | UART/WDT 커스텀 주소 명시 |
-| EXT-6 | Cortex-M7 마이그레이션 가이드 | Cache 함수 교체 필요 주석 |
-| EXT-7 | 빌드 프리셋 가이드 | KCMVP/FIPS/DUAL 활성화 방법 명시 |
-
----
-
-### [NVIC항] NVIC/인터럽트 경고 특별 검사 (신규 5항)
-
-```
-⚠ 외부 업체가 가장 많이 놓치는 항목입니다.
-  모든 NVIC 관련 코드에 아래 경고를 반드시 삽입하세요.
-```
-
-| No | 항목 | 기준 |
-|----|------|------|
-| NVIC-1 | NVIC 설정 위치 전수 검색 | 발견 위치 목록 출력, 미발견 시 [요검토] |
-| NVIC-2 | IRQ 번호 플레이스홀더 경고 | RM0090 벡터 테이블 주석 삽입 |
-| NVIC-3 | ISR 핸들러 명 검증 | DMA2_Stream0_IRQHandler ↔ 실제 IRQ 일치 |
-| NVIC-4 | ISR WDT 킥 금지 주석 | `⚠ [WDT 규칙] ISR 내 Kick_Watchdog() 호출 금지` |
-| NVIC-5 | 우선순위 역전 경보 | 보안 ISR > 통신 ISR 확인 |
+// ⚠════════════════════════════════════════════════════════
+// [외부업체 필수 확인] IRQ 번호 교체 필요 — 양산 사용 금지
+// RM0090 벡터 테이블 참조 (ex: SPI1=35, DMA2_Stream0=56)
+// ⚠════════════════════════════════════════════════════════
 
 **NVIC-2 삽입 주석 표준:**
 ```cpp

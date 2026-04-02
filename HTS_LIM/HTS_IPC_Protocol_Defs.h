@@ -321,9 +321,9 @@ namespace ProtectedEngine {
         const uint8_t* payload,
         uint16_t        payload_len) noexcept
     {
-        if (wire_buf == nullptr) { return 0u; }
+        if (wire_buf == NULL) { return 0u; }
         if (payload_len > IPC_MAX_PAYLOAD) { return 0u; }
-        if ((payload == nullptr) && (payload_len != 0u)) { return 0u; }
+        if ((payload == NULL) && (payload_len != 0u)) { return 0u; }
 
         IPC_Serialize_U16(&wire_buf[0], IPC_SYNC_WORD);
         wire_buf[2] = seq;
@@ -357,7 +357,7 @@ namespace ProtectedEngine {
         const uint8_t*& out_payload,
         uint16_t& out_payload_len) noexcept
     {
-        if (wire_buf == nullptr) { return IPC_Error::BUFFER_OVERFLOW; }
+        if (wire_buf == NULL) { return IPC_Error::BUFFER_OVERFLOW; }
         if (wire_len < IPC_HEADER_SIZE + IPC_CRC_SIZE) { return IPC_Error::INVALID_LEN; }
 
         const uint16_t sync = IPC_Deserialize_U16(&wire_buf[0]);
@@ -377,7 +377,7 @@ namespace ProtectedEngine {
         const uint16_t received_crc = IPC_Deserialize_U16(&wire_buf[crc_region]);
         if (computed_crc != received_crc) { return IPC_Error::CRC_MISMATCH; }
 
-        out_payload = (out_payload_len > 0u) ? &wire_buf[IPC_HEADER_SIZE] : nullptr;
+        out_payload = (out_payload_len > 0u) ? &wire_buf[IPC_HEADER_SIZE] : NULL;
 
         return IPC_Error::OK;
     }
@@ -442,7 +442,7 @@ namespace ProtectedEngine {
     ///        MSVC: /volatile:ms (기본값)가 volatile 접근을 컴파일러 배리어로 처리.
     inline void IPC_Secure_Wipe(void* ptr, uint32_t len) noexcept
     {
-        if (ptr == nullptr) { return; }
+        if (ptr == NULL) { return; }
         volatile uint8_t* vp = static_cast<volatile uint8_t*>(ptr);
         for (uint32_t i = 0u; i < len; ++i) {
             vp[i] = 0u;

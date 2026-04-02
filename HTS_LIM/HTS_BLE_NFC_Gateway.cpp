@@ -1,4 +1,4 @@
-﻿/// @file  HTS_BLE_NFC_Gateway.cpp
+/// @file  HTS_BLE_NFC_Gateway.cpp
 /// @brief HTS BLE/NFC Gateway -- Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -87,18 +87,18 @@ namespace ProtectedEngine {
         // --- Frame Build Buffer ---
         uint8_t frame_buf[BLE_MAX_FRAME_SIZE];
 
-        // --- [BUG-FIX FATAL] AT TX 전용 버퍼 ---
-        //  기존: frame_buf(128B) 재사용 → AT+SEND 헤더+페이로드+트레일러 오버플로
-        //  수정: 별도 버퍼 (BLE_MAX_PAYLOAD + AT 헤더 15B + 트레일러 2B + 여유)
+        // --- AT TX 전용 버퍼 ---
+        //  frame_buf(128B) 재사용 → AT+SEND 헤더+페이로드+트레일러 오버플로
+        //  별도 버퍼 (BLE_MAX_PAYLOAD + AT 헤더 15B + 트레일러 2B + 여유)
         static constexpr uint32_t AT_TX_BUF_SIZE = BLE_MAX_PAYLOAD + 20u;
         uint8_t at_tx_buf[AT_TX_BUF_SIZE];
 
         // --- UART RX Line Buffer (assembled from ring) ---
         uint8_t  uart_line_buf[BLE_UART_RX_BUF_SIZE];
         uint16_t uart_line_pos;
-        bool     uart_line_overflow;  ///< [BUG-FIX MED] 오버플로 라인 폐기 플래그
-        uint16_t uart_data_remaining; ///< [BUG-FIX CRIT] +DATA 바이트 카운팅 (0=AT모드)
-        bool     uart_skip_trailing_lf; ///< [BUG-FIX FATAL] \r 후 \n 소각 플래그
+        bool     uart_line_overflow;  ///< 오버플로 시 라인 폐기
+        uint16_t uart_data_remaining; ///< +DATA 바이트 카운팅 (0=AT모드)
+        bool     uart_skip_trailing_lf; ///< \r 후 \n 소각
 
         // ============================================================
         //  CFI Transition
@@ -243,8 +243,8 @@ namespace ProtectedEngine {
 
             // Overflow-safe bounds check
             if (data_region < BLE_FRAME_HEADER_SIZE) { return false; }
-            //  기존: (data_region - HEADER) < plen → 패딩 바이트 허용 → Smuggling
-            //  수정: != 정확 일치 → 1바이트라도 불일치 시 거부
+            //  (data_region - HEADER) < plen → 패딩 바이트 허용 → Smuggling
+            //  != 정확 일치 → 1바이트라도 불일치 시 거부
             if ((data_region - BLE_FRAME_HEADER_SIZE) != static_cast<uint32_t>(plen)) {
                 return false;
             }
@@ -371,9 +371,9 @@ namespace ProtectedEngine {
             }
 
             //
-            //  기존: 길이만 파싱 → uart_data_remaining = dlen
+            //  길이만 파싱 → uart_data_remaining = dlen
             //        → 이미 line_buf에 있는 페이로드 증발 → 위상 편이
-            //  수정: 구분자(,) 이후 인라인 바이트를 먼저 소비
+            //  구분자(,) 이후 인라인 바이트를 먼저 소비
             //        → 부족분만 uart_data_remaining으로 설정
             if (len >= 7u && line[0] == static_cast<uint8_t>('+') &&
                 line[1] == static_cast<uint8_t>('D') &&
@@ -452,10 +452,10 @@ namespace ProtectedEngine {
         void Handle_Disconnect_Event() noexcept
         {
             //
-            //  기존: 정순(i=0→N) 탐색 → 첫 번째 활성 세션 무조건 파괴
+            //  정순(i=0→N) 탐색 → 첫 번째 활성 세션 무조건 파괴
             //        → 다중 세션 시 50% 확률로 엉뚱한 세션 암살
             //
-            //  수정: 역순(i=N→0) 탐색 → 가장 최근 할당 세션 종료
+            //  역순(i=N→0) 탐색 → 가장 최근 할당 세션 종료
             //   근거: BLE/NFC 모듈은 LIFO 순서로 +DISC 발행 (마지막 연결이 먼저 끊김)
             //         역순 탐색이 정순보다 올바른 세션을 닫을 확률이 높음
             //
@@ -557,7 +557,7 @@ namespace ProtectedEngine {
             impl->sessions[i].active = 0u;
         }
         IPC_Secure_Wipe(impl->frame_buf, BLE_MAX_FRAME_SIZE);
-        IPC_Secure_Wipe(impl->at_tx_buf, Impl::AT_TX_BUF_SIZE);  // [BUG-FIX HIGH] 신규 버퍼 소거
+        IPC_Secure_Wipe(impl->at_tx_buf, Impl::AT_TX_BUF_SIZE);  // AT TX 버퍼 소거
         IPC_Secure_Wipe(impl->uart_line_buf, BLE_UART_RX_BUF_SIZE);
         IPC_Secure_Wipe(impl->uart_ring, UART_RING_SIZE);
         std::atomic_thread_fence(std::memory_order_release);
@@ -594,9 +594,9 @@ namespace ProtectedEngine {
         // Drain UART ring (processes +CONN, +DISC, +DATA etc.)
         impl->Drain_UART_Ring();
 
-        //  기존: has_uart_activity → 모든 활성 세션 tick 갱신
+        //  has_uart_activity → 모든 활성 세션 tick 갱신
         //        → BLE 사용자 통신으로 NFC 세션까지 수명 연장 → 좀비 세션
-        //  수정: 삭제. 세션 tick은 해당 세션이 식별된 문맥에서만 개별 갱신:
+        //  삭제. 세션 tick은 해당 세션이 식별된 문맥에서만 개별 갱신:
         //   · Relay_From_BCDMA: Find_Session(session_id) → s->last_activity_tick
         //   · Send_Text/Voice/Emergency: 게이트키퍼 s → s->last_activity_tick
         //   · Drain_UART_Ring DATA_BODY: Find_Active_BLE_Session() → ds->tick
@@ -611,11 +611,11 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         //
-        //  기존: SPSC Lock-free → 단일 ISR에서는 안전
+        //  SPSC Lock-free → 단일 ISR에서는 안전
         //        BUT: DMA완료 ISR + UART RX ISR 중첩 시 head 포인터 경합
         //        → 동일 슬롯 이중 쓰기 → 바이트 유실 + 링 포인터 오염
         //
-        //  수정: PRIMASK로 head 읽기~쓰기 원자적 보호 (~10사이클)
+        //  PRIMASK로 head 읽기~쓰기 원자적 보호 (~10사이클)
         //        UART 바이트 간격 ~87µs@115200bps → 10cyc 차단 영향 0
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
@@ -658,8 +658,8 @@ namespace ProtectedEngine {
             return;
         }
 
-        //  기존: loc 추출 후 미검증 → 타 안내판 프레임도 무단 릴레이
-        //  수정: loc.code ≠ local → Drop (자기 위치 프레임만 수용)
+        //  loc 추출 후 미검증 → 타 안내판 프레임도 무단 릴레이
+        //  loc.code ≠ local → Drop (자기 위치 프레임만 수용)
         //  예외: loc.code == 0 → 브로드캐스트 (전체 안내판 대상)
         if (loc.code != 0u && loc.code != impl->local_location.code) {
             return;  // 타 안내판 프레임 → 폐기
@@ -668,8 +668,8 @@ namespace ProtectedEngine {
         BLE_Session* s = impl->Find_Session(session_id);
         if (s == nullptr) { return; }
 
-        //  기존: msg_type 무시 → 모든 패킷 AT+SEND 릴레이 (바보 파이프)
-        //  수정: TEXT/VOICE → AT+SEND, SESSION_CLOSE → 세션 파기 + AT+DISC
+        //  msg_type 무시 → 모든 패킷 AT+SEND 릴레이 (바보 파이프)
+        //  TEXT/VOICE → AT+SEND, SESSION_CLOSE → 세션 파기 + AT+DISC
         switch (msg_type) {
         case BLE_MsgType::TEXT_MESSAGE:
         case BLE_MsgType::VOICE_TRIGGER:
@@ -741,8 +741,8 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
-        //  기존: 전송 완료 후 마지막에 Find_Session → 유령 세션도 망으로 송신
-        //  수정: 전송 전 선검증 → nullptr이면 즉각 거부
+        //  전송 완료 후 마지막에 Find_Session → 유령 세션도 망으로 송신
+        //  전송 전 선검증 → nullptr이면 즉각 거부
         BLE_Session* s = impl->Find_Session(session_id);
         if (s == nullptr) { return IPC_Error::CFI_VIOLATION; }
 

@@ -8,12 +8,12 @@
 // 내부 전용 includes (헤더에 미노출)
 #include "HTS_Dynamic_Config.h"
 
-// ── Self-Contained 표준 헤더 [BUG-08] ───────────────────────────────
+// ── Self-Contained 표준 헤더 (<atomic>, <cstdint> 등) ────────────────
 #include <atomic>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>   // [FIX-C] memcpy
+#include <cstring>   // memcpy
 #include <new>
 
 namespace ProtectedEngine {
@@ -78,8 +78,8 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: std::make_unique<Impl>(tier) + try-catch
-    //  수정: impl_buf_ SecWipe → ::new Impl(tier) → impl_valid_ = true
+    //  std::make_unique<Impl>(tier) + try-catch
+    //  impl_buf_ SecWipe → ::new Impl(tier) → impl_valid_ = true
     //  Impl(tier) 생성자는 noexcept → 예외 없이 안전
     // =====================================================================
     HTS_Rx_Matched_Filter::HTS_Rx_Matched_Filter(
@@ -101,9 +101,9 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  Set_Reference_Sequence — [BUG-12] Copy-and-Swap: 예외 안전성
-    //  기존: Wipe → assign → aliasing 시 원본 증발
-    //  수정: 임시 벡터에 먼저 복사 → 성공 시 기존 소거 → swap
+    //  Set_Reference_Sequence — Copy-and-Swap (alias-safe)
+    //  Wipe → assign → aliasing 시 원본 증발
+    //  임시 벡터에 먼저 복사 → 성공 시 기존 소거 → swap
     // =====================================================================
     bool HTS_Rx_Matched_Filter::Set_Reference_Sequence(
         const int32_t* seq_data, size_t size) noexcept
@@ -119,7 +119,7 @@ namespace ProtectedEngine {
         int32_t shadow[Impl::MAX_REF_SEQ] = {};
         std::memcpy(shadow, seq_data, size * sizeof(int32_t));
 
-        // 기존 데이터 보안 소거
+        // 데이터 보안 소거
         Secure_Wipe_MF(p->reference_sequence,
             Impl::MAX_REF_SEQ * sizeof(int32_t));
 

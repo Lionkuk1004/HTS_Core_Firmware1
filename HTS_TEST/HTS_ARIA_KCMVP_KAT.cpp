@@ -20,7 +20,7 @@
 //  규격 : KS X 1213-1
 //  벡터 : KISA ARIA 공식 테스트 벡터 (seed.kisa.or.kr)
 //
-//  [KCMVP / BUG-KAT-46] Known Answer = 검증된 **정적** 기대값만
+//  [KCMVP KAT] Known Answer = 검증된 **정적** 기대값만
 //  · 기대 암호문: RFC 5794 Appendix A (또는 seed.kisa.or.kr 공식 하드카피) 상수 하드코딩
 //  · 런타임에 aria.c 등으로 정답을 계산(캡처)하면 안 됨 — 동일 툴체인 편향 시 오동작
 //    이 참조와 MUT가 동일 오류로 일치하는 블라인드 스팟 + 시험 규격 미달
@@ -36,7 +36,7 @@
 #include <cstdint>
 
 // =========================================================================
-//  유틸리티 — D-2: 스택 버퍼 소거는 SecureMemory::secureWipe (BUG-KAT-43)
+//  유틸리티 — D-2: 스택 버퍼 소거는 SecureMemory::secureWipe
 // =========================================================================
 static void SZ(void* p, size_t n) noexcept {
     ProtectedEngine::SecureMemory::secureWipe(p, n);
@@ -75,7 +75,7 @@ static void PHex(const char* lbl, const uint8_t* data, size_t len) {
 
 // =========================================================================
 //  KAT 벡터 구조체
-//  ciphertext[16]: **사전 검증된 정적 정답** (런타임 생성 금지 — BUG-KAT-46)
+//  ciphertext[16]: **사전 검증된 정적 정답** (런타임 생성 금지)
 // =========================================================================
 struct KAT_Vector {
     const char* name;
@@ -163,7 +163,7 @@ sizeof(KAT_TABLE) / sizeof(KAT_TABLE[0]);
 // =========================================================================
 static bool KAT_Phase() {
     std::cout << "\n==========================================\n"
-        << "  KAT 검증 — 정적 기대암호문 vs MUT [BUG-KAT-46]\n"
+        << "  KAT 검증 — 정적 기대암호문 vs MUT [KCMVP KAT]\n"
         << "  (런타임 참조 라이브러리로 정답 생성 없음)\n"
         << "==========================================\n";
 

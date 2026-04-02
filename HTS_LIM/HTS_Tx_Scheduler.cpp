@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Tx_Scheduler.cpp — B-CDMA TX 전송 스케줄러 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
@@ -13,7 +13,7 @@
 #include <new>
 
 namespace ProtectedEngine {
-    // ── [BUG-67] 2의 제곱수 올림 (플랫폼별 링 버퍼 상한) ──
+    // ── 2의 제곱수 올림 (플랫폼별 링 버퍼 상한) ─────────────────
     //
     //  ARM (EMBEDDED_MINI): node_count=256 → raw_cap=1024 → ring_size=1024
     //    MAX_RING_POW2 = 2048 (ring_size 1024 수용 + 여유 1024 요소)
@@ -48,7 +48,7 @@ namespace ProtectedEngine {
         return v;
     }
 
-    // ── [BUG-67] 정렬 상수 (플랫폼별) ──
+    // ── 정렬 상수 (플랫폼별) ───────────────────────────────────
     //  ARM Cortex-M4: 단일 코어, L1 데이터 캐시 없음 → False Sharing 불가
     //                 alignas(4) 충분 → 128B → 8B 절감
     //  PC x86/x64:    멀티 코어, L1 캐시 라인 64B → False Sharing 방어 필요
@@ -220,7 +220,7 @@ namespace ProtectedEngine {
         impl.read_idx.val.store(0, std::memory_order_release);
         std::atomic_thread_fence(std::memory_order_release);
 
-        // 기존 memset은 컴파일러 DSE 최적화 시 제거 가능 → SecureMemory::secureWipe로 교체
+        // memset은 컴파일러 DSE 최적화 시 제거 가능 → SecureMemory::secureWipe로 교체
         if (impl.ring_mask > 0u) {
             const size_t nwords = impl.ring_mask + 1u;
             if (nwords <= MAX_RING_POW2) {

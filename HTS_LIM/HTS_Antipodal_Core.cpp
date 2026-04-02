@@ -1,11 +1,11 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Antipodal_Core.cpp — 안티포달 텐서 변환 유틸리티
 // Target: STM32F407 (Cortex-M4, 168MHz) / PC
 //
 #include "HTS_Antipodal_Core.h"
 #include <cstddef>
 #include <cstdint>
-#include <cstring>  // [BUG-17] memcpy (Strict Aliasing 준수 워드 로드)
+#include <cstring>  // memcpy (Strict Aliasing 준수 워드 로드)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define HTS_UNROLL __attribute__((optimize("unroll-loops")))
@@ -33,9 +33,9 @@ namespace ProtectedEngine {
             int8_t* __restrict out, size_t len) noexcept {
         if (!in || !out || len == 0u) return;
 
-        //  기존: __builtin_assume_aligned(in, 4) → 컴파일러가 LDRD/LDM 생성
+        //  __builtin_assume_aligned(in, 4) → 컴파일러가 LDRD/LDM 생성
         //        → 비정렬 포인터 전달 시 HardFault(UsageFault) 즉사
-        //  수정: 바이트 단위 루프는 정렬 무관 → 정렬 가정 불필요
+        //  바이트 단위 루프는 정렬 무관 → 정렬 가정 불필요
         //        (루프 본체가 바이트 접근이므로 ALIGNED의 벡터화 이득 없음)
         const uint8_t* __restrict p_in = in;
         int8_t* __restrict p_out = out;
@@ -70,8 +70,8 @@ namespace ProtectedEngine {
         uint32_t i = 0u;
         const uint32_t u_len = static_cast<uint32_t>(len);
 
-        //  기존: (a & 3) == 0 검사 → 비정렬 시 1바이트 잔여분 루프 강제 (400% 성능 추락)
-        //  수정: std::memcpy가 정렬 무관하게 안전한 LDR 생성 (C++ 표준 보장)
+        //  (a & 3) == 0 검사 → 비정렬 시 1바이트 잔여분 루프 강제 (400% 성능 추락)
+        //  std::memcpy가 정렬 무관하게 안전한 LDR 생성 (C++ 표준 보장)
         //        Cortex-M4도 비정렬 LDR 하드웨어 지원 (1~2cyc 페널티, 400% 추락 대비 극소)
         const uint32_t word_count = u_len >> 2u;
 
@@ -85,8 +85,8 @@ namespace ProtectedEngine {
             std::memcpy(&ub, b + byte_off, sizeof(uint32_t));
 
             //
-            //  기존: UBFX×3 + LSR + ADD×3 = 7명령어 (~7cyc)
-            //  수정: LSR + MUL + LSR = 3명령어 (~3cyc, 2.3x 가속)
+            //  UBFX×3 + LSR + ADD×3 = 7명령어 (~7cyc)
+            //  LSR + MUL + LSR = 3명령어 (~3cyc, 2.3x 가속)
             //        ASIC HLS 직행 가능 구조 (조합 논리 1단)
             //
             //  수학: sign_diff >> 7 → 각 바이트 LSB에 부호 차이 비트 정렬

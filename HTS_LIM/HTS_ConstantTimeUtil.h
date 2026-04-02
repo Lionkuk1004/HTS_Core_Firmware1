@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_ConstantTimeUtil.h
 // 사이드채널 공격 방어용 상수시간 비교 유틸리티
 // Target: STM32F407 (Cortex-M4)
@@ -20,9 +20,6 @@
 //   // 가변 길이 (길이 정보도 미누출)
 //   bool ok = ConstantTimeUtil::compare_variable(a, a_len, b, b_len);
 //
-//   // vector 래퍼 (레거시 호환)
-//   bool ok = ConstantTimeUtil::compare(vec_a, vec_b);
-//
 //  [상수시간 보장]
 //   XOR + OR 비트 누적 + asm clobber("+r") → 조기 종료/벡터화 차단
 //   레지스터 격리: result는 CPU 레지스터에만 존재 (SRAM Store 0회)
@@ -31,14 +28,7 @@
 //   ~6사이클/바이트 (LDRB×2 + EOR + ORR + asm)
 //   32바이트(HMAC): ~192사이클 ≈ 1.1us
 //
-//  [양산 수정 이력 — 9건 + 세션 14 (3건) = 총 12건]
-//   BUG-10 [LOW]  Target / PC 제거
-//   BUG-11 [LOW]  외주 업체 Doxygen 가이드 추가
-//   BUG-12 [HIGH] volatile result/length_mismatch 제거
-//          (asm clobber "+r"가 DCE/조기종료 차단 → volatile 중복+유해)
-//
 // ─────────────────────────────────────────────────────────────────────────
-// =========================================================================
 #pragma once
 
 #include <cstdint>

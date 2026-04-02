@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // AnchorDecoder.cpp
 // GF(2^8) Cauchy Reed-Solomon 이레이저 복구 디코더 구현부
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
@@ -7,7 +7,7 @@
 #include "AnchorManager.h"
 
 // ARM(STM32) 빌드 차단 — A55/서버 전용 모듈
-// 기존: __arm__ 단독 → ARMCC(Keil)/IAR/GCC Thumb-only 누락
+// __arm__ 단독 → ARMCC(Keil)/IAR/GCC Thumb-only 누락
 // A55 (aarch64): 정상 통과
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
@@ -25,12 +25,12 @@
 // HTS_ConstantTimeUtil, HTS_POST_Manager
 
 
-// ── Self-Contained [BUG-10] ─────────────────────────────────────────
+// ── Self-Contained 표준 헤더 ────────────────────────────────────────
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <atomic>
-#include <mutex>   // [BUG-20] std::call_once (A55 멀티스레드 안전)
+#include <mutex>   // std::call_once (A55 멀티스레드 안전)
 
 namespace ProtectedEngine {
 
@@ -63,12 +63,12 @@ namespace ProtectedEngine {
     // =====================================================================
     //  GF(2^8) 고속 연산 엔진 (Decoder 전용)
     //
-    //  기존 문제 (A55 멀티스레드):
+    //  문제 (A55 멀티스레드):
     //    스레드A: tables_initialized=false 확인 → 테이블 생성 시작
     //    스레드B: tables_initialized=false 확인 → 동시 생성 시작
     //    → 반만 초기화된 테이블로 GF 연산 → 데이터 훼손
     //
-    //  수정: std::call_once — C++11 표준 스레드 안전 1회 초기화
+    //  std::call_once — C++11 표준 스레드 안전 1회 초기화
     //    A55 Linux: pthread_once 기반, ISR 미사용 → 데드락 위험 없음
     // =====================================================================
     namespace GF8Bit_DEC {
@@ -206,10 +206,10 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  decode — [BUG-22] decode_inplace 래퍼 (기존 API 100% 호환)
+    //  decode — decode_inplace 래퍼 (기존 API 호환)
     //
-    //  기존: 독립 구현 (중복 코드)
-    //  수정: decode_inplace 호출 → 결과 반환 (DRY 원칙)
+    //  독립 구현 (중복 코드)
+    //  decode_inplace 호출 → 결과 반환 (DRY 원칙)
     // =====================================================================
     std::vector<uint16_t> AnchorDecoder::decode(
         const std::vector<uint16_t>& brokenData,
@@ -227,8 +227,8 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존 restoreBlock: restored = brokenChunk (힙 복사) + 수정 + 반환
-    //  수정: data가 이미 brokenData의 assign 복사본 → 직접 수정
+    //  restoreBlock: restored = brokenChunk (힙 복사) + 수정 + 반환
+    //  data가 이미 brokenData의 assign 복사본 → 직접 수정
     //  내부 임시 벡터(erasureIndices, healthy 등)는 E에 비례 (E < 16)
     //  → 메모리 할당 무시 가능
     // =====================================================================
@@ -325,8 +325,8 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //
-    //  기존: 4개 exit 경로마다 동일한 volatile+asm+fence 소거 블록 복사
-    //  수정: RAII_Seed_Wiper 소멸자에서 1회 자동 소거
+    //  4개 exit 경로마다 동일한 volatile+asm+fence 소거 블록 복사
+    //  RAII_Seed_Wiper 소멸자에서 1회 자동 소거
     //        경로 추가 시 소거 누락 위험 원천 차단
     // =====================================================================
     uint32_t AnchorDecoder::decode_inplace(

@@ -43,7 +43,7 @@ namespace ProtectedEngine {
         explicit Unified_Scheduler(Dual_Tensor_Pipeline* pipeline) noexcept;
 
         /// @brief 소멸자 — 핑퐁 버퍼 + 넌스 보안 소거
-        /// [BUG-70] 32KB 텐서 데이터 잔존 방지 (콜드부트/힙 스캔 방어)
+        /// 32KB 텐서 데이터 잔존 방지 (콜드부트/힙 스캔 방어)
         ~Unified_Scheduler() noexcept;
 
         // 복사/이동 금지 (DMA 레지스터 포인터 + atomic 멤버)

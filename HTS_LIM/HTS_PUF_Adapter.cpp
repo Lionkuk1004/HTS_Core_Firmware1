@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_PUF_Adapter.cpp
 // PUF 하드웨어 시드 추출 어댑터 구현부
 // Target: STM32F407 (Cortex-M4)
@@ -48,7 +48,7 @@ namespace ProtectedEngine {
 
 #if defined(HTS_PLATFORM_ARM)
         // ARM 양산: PUF 하드웨어 레지스터 직접 읽기
-        // [J-3 FIX] 매직넘버 → constexpr (STM32F407 RNG 레지스터)
+        // J-3: RNG 레지스터 주소 constexpr (STM32F407)
         static constexpr uintptr_t ADDR_PUF_CTRL = 0x50060800u;    ///< RNG_CR
         static constexpr uintptr_t ADDR_PUF_STATUS = 0x50060804u;  ///< RNG_SR
         static constexpr uintptr_t ADDR_PUF_DATA = 0x50060808u;    ///< RNG_DR

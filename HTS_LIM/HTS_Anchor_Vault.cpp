@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Anchor_Vault.cpp
 // 5% 위상 닻(Anchor) 보안 금고 구현부
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
@@ -13,7 +13,7 @@
 #endif
 
 #include <atomic>
-#include <mutex>   // [BUG-07] lock_guard 멀티스레드 직렬화
+#include <mutex>   // A55/서버 전용: lock_guard 직렬화 (STM32 빌드는 상단 #error)
 #include <cstring>
 
 #include "HTS_HMAC_Bridge.hpp"
@@ -31,7 +31,7 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        // [PEND FIX] 프로젝트 보안 소거 표준 통일: memory clobber
+        // 컴파일러 배리어 (SecureMemory::secureWipe와 동일 정책으로 통일 가능)
         __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
@@ -50,12 +50,11 @@ namespace ProtectedEngine {
         const std::vector<uint8_t>& tensor,
         uint8_t ratio_percent) noexcept {
 
-        std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
+        std::lock_guard<std::mutex> lock(mtx_);
         if (ratio_percent == 0) return;
         if (ratio_percent > 100u) ratio_percent = 100u;
 
-        //  기존: anchor_step = 100/ratio → 80% 요청 시 step=1 → 100% 추출(20% 낭비)
-        //  수정: 오차 누적(Bresenham): 임의 퍼센티지에서 소수점 오차 0으로 균등 추출
+        //  비율 추출: Bresenham 오차 누적 (정수 step=100/ratio 방식의 편향 완화)
         //  원리: total개 중 target = total*ratio/100 개를 균등 선택
         //        err += target; if (err >= total) { 선택, err -= total; }
         const size_t total = tensor.size();
@@ -96,7 +95,7 @@ namespace ProtectedEngine {
         std::vector<uint8_t>& damaged_tensor,
         uint8_t ratio_percent) noexcept {
 
-        std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
+        std::lock_guard<std::mutex> lock(mtx_);
         if (ratio_percent == 0) return;
         if (ratio_percent > 100u) ratio_percent = 100u;
 
@@ -128,7 +127,7 @@ namespace ProtectedEngine {
     //  [3] 외부 반출
     // =====================================================================
     std::vector<uint8_t> Anchor_Vault::Export_Anchor(uint64_t block_id) noexcept {
-        std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
+        std::lock_guard<std::mutex> lock(mtx_);
         auto it = secret_enclave.find(block_id);
         if (it == secret_enclave.end()) return {};
         if (it->second.empty()) return {};
@@ -199,7 +198,7 @@ namespace ProtectedEngine {
         uint64_t block_id,
         const std::vector<uint8_t>& external_anchor) noexcept {
 
-        std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
+        std::lock_guard<std::mutex> lock(mtx_);
         if (external_anchor.empty()) return;
         if (external_anchor.size() <= ANCHOR_HMAC_TAG_SIZE_BYTES) return;
 
@@ -262,9 +261,7 @@ namespace ProtectedEngine {
     // =====================================================================
     //  [6] 처리 완료 앵커 보안 소거 + 맵 삭제 (OOM 방지)
     //
-    //   기존: Sequestrate + Import만 존재, 개별 삭제 로직 없음
-    //   → 패킷 처리 후 앵커가 영구 잔존 → RAM 무한 증식 → OOM Killer
-    //   수정: ACK 수신 후 해당 block_id 앵커를 보안 소거 + erase
+    //   전송 완료(ACK) 후 block_id별 소거 — 맵 누적·OOM 방지
     //   호출 시점: V400_Dispatcher에서 블록 전송 완료(ACK) 후 즉시
     // =====================================================================
     void Anchor_Vault::Discard_Anchor(uint64_t block_id) noexcept {
@@ -284,22 +281,10 @@ namespace ProtectedEngine {
     // =====================================================================
     //  [7] 금고 전체 보안 소거 후 해제
     //
-    //  [양산 수정] 보안 소거 추가
-    //  기존: secret_enclave.clear()
-    //    → std::map 노드 해제 → 힙 메모리 반환
-    //    → 반환된 메모리에 앵커 데이터가 그대로 잔존
-    //    → 콜드 부트 공격: SRAM 전원 차단 후 즉시 덤프
-    //      → 해제된 힙 영역에서 앵커 패턴 복원 가능
-    //    → 힙 스캔 공격: 디버거로 free list 탐색
-    //      → 해제된 블록 내용에서 앵커 데이터 추출
-    //
-    //  수정: clear() 전에 모든 벡터를 volatile 소거
-    //    → 힙 메모리가 반환되기 전에 0으로 덮어쓰기
-    //    → atomic_thread_fence로 재배치 금지
-    //    → 콜드 부트/힙 스캔 모두 방어
+    //  clear() 전 각 벡터 volatile 덮어쓰기 — 힙 반환 전 잔존 데이터 최소화
     // =====================================================================
     void Anchor_Vault::Clear_Vault() noexcept {
-        std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
+        std::lock_guard<std::mutex> lock(mtx_);
         for (auto& pair : secret_enclave) {
             if (!pair.second.empty()) {
                 Vault_Secure_Wipe(pair.second.data(),

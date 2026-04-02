@@ -1,4 +1,4 @@
-﻿/// @file  HTS_Holo_Tensor_4D.cpp
+/// @file  HTS_Holo_Tensor_4D.cpp
 /// @brief HTS 4D Holographic Tensor Engine -- True Holographic Spread/Despread
 /// @note  ARM only. Pure ASCII. No PC/server code.
 ///        Every output chip = f(ALL input bits, ALL phases, ALL layers)
@@ -62,10 +62,10 @@ namespace ProtectedEngine {
         uint32_t decode_count;
 
         // --- Accumulator Buffer (encode: per-chip N, decode: per-bit K) ---
-        //  기존: accum[HOLO_MAX_BLOCK_BITS(128)] — 비트(K) 기준만 고려
+        //  accum[HOLO_MAX_BLOCK_BITS(128)] — 비트(K) 기준만 고려
         //  위험: Encode에서 accum[0..N-1] (N=칩수) 인덱싱 → N > 128 시 OOB
         //  현재: MAX_BLOCK(128) > CHIP_COUNT(64) → 우연히 안전
-        //  수정: 양쪽 최대값 보증 + static_assert로 빌드타임 검증
+        //  양쪽 최대값 보증 + static_assert로 빌드타임 검증
         static constexpr uint16_t ACCUM_SIZE =
             (HOLO_MAX_BLOCK_BITS >= HOLO_CHIP_COUNT)
             ? HOLO_MAX_BLOCK_BITS : HOLO_CHIP_COUNT;
@@ -101,8 +101,8 @@ namespace ProtectedEngine {
             return HTS_Holo_Tensor_4D::SECURE_TRUE;
         }
 
-        //  기존: 매 (k,i) 호출마다 RNG 재시딩 + k번 스킵 = O(K²)
-        //  수정: (i, layer, t) 당 1회 시딩 → k루프에서 Next_Phase_Q16만 호출
+        //  매 (k,i) 호출마다 RNG 재시딩 + k번 스킵 = O(K²)
+        //  (i, layer, t) 당 1회 시딩 → k루프에서 Next_Phase_Q16만 호출
         //  131,072회 → 4,096회 RNG 호출 (32× 가속)
 
         // ============================================================

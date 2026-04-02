@@ -304,8 +304,8 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        //  기존: last_beacon_ms 미갱신 → 49일 래핑 시 유령 윈도우
-        //  수정: 타이머 연산 자체를 건너뛰고 무조건 false
+        //  last_beacon_ms 미갱신 → 49일 래핑 시 유령 윈도우
+        //  타이머 연산 자체를 건너뛰고 무조건 false
         //  DEEP_SLEEP에서는 모듈 일시정지 → RF OFF → Power_Manager 슬립
         if (p->mode == DiscoveryMode::DEEP_SLEEP) { return false; }
 
@@ -365,7 +365,7 @@ namespace ProtectedEngine {
         int32_t slot = p->find_by_id(src_id);
 
         if (slot >= 0) {
-            // 기존 이웃 갱신
+            // 이웃 갱신
             NbrEntry& e = p->table[static_cast<size_t>(slot)];
             e.rssi = rx_rssi;
             e.last_seen_ms = systick_ms;
@@ -430,8 +430,8 @@ namespace ProtectedEngine {
         }
 
         // ── 1. 타임아웃 검사 (모드별 타임아웃 적용) ──
-        //  기존: 5번째 만료 이웃도 Wipe → 콜백 미도달 → 라우팅 좀비
-        //  수정: expired_count >= 4 → break → 다음 Tick에서 재검사
+        //  5번째 만료 이웃도 Wipe → 콜백 미도달 → 라우팅 좀비
+        //  expired_count >= 4 → break → 다음 Tick에서 재검사
         uint16_t expired_ids[4] = {};
         size_t   expired_count = 0u;
 
@@ -497,8 +497,8 @@ namespace ProtectedEngine {
 
         // ── 크리티컬 밖 ──
 
-        //  기존: 콜백 → 인큐 → 콜백의 깊은 스택이 beacon_pkt 오염 위험
-        //  수정: 인큐 → 콜백 → beacon_pkt 사용 완료 후 콜백 실행
+        //  콜백 → 인큐 → 콜백의 깊은 스택이 beacon_pkt 오염 위험
+        //  인큐 → 콜백 → beacon_pkt 사용 완료 후 콜백 실행
         if (send_beacon) {
             const EnqueueResult enq = scheduler.Enqueue(
                 PacketPriority::DATA,

@@ -17,6 +17,32 @@
 extern uint32_t __stack_bottom__ __attribute__((weak));
 #endif
 
+// 양산: 컴파일 정의 HTS_BOOT_ENFORCE_RDP_LEVEL2=1 시 RDP Level2(OPTCR[15:8]==0xCC) 미만이면 정지
+#ifndef HTS_BOOT_ENFORCE_RDP_LEVEL2
+#define HTS_BOOT_ENFORCE_RDP_LEVEL2 0
+#endif
+
+#if HTS_BOOT_ENFORCE_RDP_LEVEL2 && defined(HTS_TARGET_ARM_BAREMETAL)
+namespace {
+[[noreturn]] void Terminal_Fault_Action() noexcept {
+    for (;;) {
+        __asm__ __volatile__("wfi");
+    }
+}
+
+void HTS_Boot_Assert_Rdp_Level2_Or_Halt() noexcept {
+    static constexpr uintptr_t FLASH_OPTCR = 0x40023C14u;
+    static constexpr uint32_t  RDP_MASK = 0x0000FF00u;
+    static constexpr uint32_t  RDP_LEVEL_2 = 0xCCu;
+    const uint32_t optcr = *reinterpret_cast<volatile uint32_t*>(FLASH_OPTCR);
+    const uint32_t rdp = (optcr & RDP_MASK) >> 8u;
+    if (rdp != RDP_LEVEL_2) {
+        Terminal_Fault_Action();
+    }
+}
+} // namespace
+#endif
+
 namespace ProtectedEngine {
 
     // =====================================================================
@@ -47,7 +73,7 @@ namespace ProtectedEngine {
     //  [ARM 동작 순서 — H-2]
     //    1. WDT 활성화: WDT_CTRL_REG에 0x01 쓰기
     //       → 이후 주기적으로 Kick_Watchdog() 미호출 시 하드웨어 리셋
-    //    2. NVIC: Tx 스케줄러 IRQ 우선순위 플레이스홀더 (BUG-NVIC)
+    //    2. NVIC: Tx 스케줄러 IRQ 우선순위 플레이스홀더 (파트너사 IRQ 번호 교체)
     //    3. MPU: Initialize_MPU() 8리전 (K-1/R-11)
     //    4. DWT CYCCNT: DEMCR TRCENA → DWT_CTRL CYCCNTENA → 카운터 리셋
     //       → Hardware_Bridge::Get_Physical_CPU_Tick() 사용 가능
@@ -55,6 +81,9 @@ namespace ProtectedEngine {
     // =====================================================================
     void Hardware_Init_Manager::Initialize_System() noexcept {
 #ifdef HTS_TARGET_ARM_BAREMETAL
+#if HTS_BOOT_ENFORCE_RDP_LEVEL2
+        HTS_Boot_Assert_Rdp_Level2_Or_Halt();
+#endif
         // ── WDT 활성화 ──────────────────────────────────────────────
         volatile uint32_t* wdt_ctrl = reinterpret_cast<volatile uint32_t*>(
             static_cast<uintptr_t>(WDT_CTRL_REG));
@@ -94,7 +123,7 @@ namespace ProtectedEngine {
 // ※ IPC_Protocol이 DMA2_Stream0(56번)을 SPI1 RX로 사용 중.
 //   Tx 스케줄러 DMA는 반드시 다른 Stream 번호로 설정하세요.
 // ⚠════════════════════════════════════════════════════════
-TIM_IRQn, 2u);   // Tx 심볼 타이머 — 높은 우선순위
+            NVIC_SetPriority(TIM_IRQn, 2u);   // Tx 심볼 타이머 — 높은 우선순위
 // ⚠════════════════════════════════════════════════════════
 // [외부업체 필수 확인] IRQ 번호 교체 필요 — 양산 사용 금지
 //
@@ -108,7 +137,7 @@ TIM_IRQn, 2u);   // Tx 심볼 타이머 — 높은 우선순위
 // ※ IPC_Protocol이 DMA2_Stream0(56번)을 SPI1 RX로 사용 중.
 //   Tx 스케줄러 DMA는 반드시 다른 Stream 번호로 설정하세요.
 // ⚠════════════════════════════════════════════════════════
-DMA_IRQn, 3u);   // Tx DMA 완료 — Tx 타이머 다음
+            NVIC_SetPriority(DMA_IRQn, 3u);   // Tx DMA 완료 — Tx 타이머 다음
             NVIC_EnableIRQ(TIM_IRQn);
             NVIC_EnableIRQ(DMA_IRQn);
         }
@@ -125,7 +154,7 @@ DMA_IRQn, 3u);   // Tx DMA 완료 — Tx 타이머 다음
         //  DWT_CTRL: 0xE0001000 (bit0 = CYCCNTENA)
         //  DWT_CYCCNT: 0xE0001004 (32-bit cycle counter)
         //
-        // [J-3 FIX] 매직넘버 → constexpr 상수화 (HW 레지스터 주소/비트)
+        // J-3: HW 레지스터 주소·비트 constexpr 상수화
         static constexpr uintptr_t ADDR_DEMCR = 0xE000EDFCu;  ///< Debug Exception & Monitor Control
         static constexpr uintptr_t ADDR_DWT_CTRL = 0xE0001000u;  ///< DWT Control Register
         static constexpr uintptr_t ADDR_DWT_CYCCNT = 0xE0001004u;  ///< DWT Cycle Count Register
@@ -349,12 +378,7 @@ extern "C" int fputc(int ch, FILE* f) {
 #endif
 
 #ifdef HTS_TARGET_ARM_BAREMETAL
-#if defined(__GNUC__) || defined(__clang__)
-extern "C" __attribute__((weak)) void MemManage_Handler(void)
-#else
-extern "C" void MemManage_Handler(void)
-#endif
-{
+static inline void HTS_Fault_Reset_Wait() noexcept {
     static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
     static constexpr uint32_t  AIRCR_RESET =
         (0x05FAu << 16) | (1u << 2);
@@ -371,9 +395,49 @@ extern "C" void MemManage_Handler(void)
     *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
     __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
 #endif
-    for (;;) {
+    for (;;) { // ⚠ [요검토: ⑰(예외·Fault 핸들러 무한 대기) vs D-3 AIRCR 후 정지 — 감사 시 정책 확정]
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("wfi");
+#else
         __asm__ __volatile__("nop");
+#endif
     }
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void MemManage_Handler(void)
+#else
+extern "C" void MemManage_Handler(void)
+#endif
+{
+    HTS_Fault_Reset_Wait();
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void HardFault_Handler(void)
+#else
+extern "C" void HardFault_Handler(void)
+#endif
+{
+    HTS_Fault_Reset_Wait();
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void BusFault_Handler(void)
+#else
+extern "C" void BusFault_Handler(void)
+#endif
+{
+    HTS_Fault_Reset_Wait();
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void UsageFault_Handler(void)
+#else
+extern "C" void UsageFault_Handler(void)
+#endif
+{
+    HTS_Fault_Reset_Wait();
 }
 #endif
 

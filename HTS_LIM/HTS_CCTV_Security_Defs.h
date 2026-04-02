@@ -210,7 +210,7 @@ namespace ProtectedEngine {
     ///        LOCKDOWN->MONITORING|ALERT|ERROR|OFFLINE,
     ///        ERROR->MONITORING|OFFLINE
     ///
-    /// [BUG-FIX FATAL] CFI 전이 규칙 2건 교정:
+    /// CFI 전이 규칙 교정:
     ///  (1) k_legal: | OFFLINE(0x00) 무효 연산 제거 (비트OR 0 = 무의미)
     ///  (2) to==OFFLINE 예외 분기: MONITORING+ERROR만 → 모든 활성 상태(from!=0)
     ///      → ALERT/LOCKDOWN에서 Shutdown() 호출 시 CFI Violation 방지
@@ -244,8 +244,7 @@ namespace ProtectedEngine {
         default:                        return false;
         }
 
-        //  기존: k_off_src = MONITORING|ERROR → ALERT/LOCKDOWN에서 Shutdown 불가!
-        //  수정: from != OFFLINE (0u) → 켜져있는 모든 상태에서 끄기 허용
+        //  OFFLINE이 아닌 임의 상태에서 OFF 전이 허용
         if (static_cast<uint8_t>(to) == 0u) {
             return (static_cast<uint8_t>(from) != 0u);
         }

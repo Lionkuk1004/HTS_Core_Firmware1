@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_MAC_RateController.h
 // MAC 계층 포트 자동 감지 및 확산 코드 기어 변속 컨트롤러
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -16,14 +16,6 @@
 //   mac.Set_Dial_Speed(VocoderRate::RATE_2400_BPS);
 //   mac.Auto_Detect_And_Route(InputPort::I2S_MIC_VOCODER);
 //   uint32_t sf = mac.Calculate_Spreading_Factor();
-//
-//  [양산 수정 이력 — 6건]
-//   BUG-01 [CRIT] <iostream> + std::cout 제거 (ARM/A55 빌드 불가)
-//   BUG-02 [CRIT] double + std::log10 제거 (④ float/double 금지)
-//   BUG-03 [CRIT] std::cout 6곳 → SecureLogger 또는 제거
-//   BUG-04 [HIGH] noexcept 전체 추가
-//   BUG-05 [MED]  런타임 나눗셈 → 룩업 테이블 (⑨ ALU 최적화)
-//   BUG-06 [LOW]  Target 주석 추가
 //
 // =========================================================================
 #pragma once

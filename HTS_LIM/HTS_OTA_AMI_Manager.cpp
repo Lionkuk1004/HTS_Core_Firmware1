@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_OTA_AMI_Manager.cpp
 // AMI 보안 일제 무선 펌웨어 갱신 (Secure FUOTA) 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -10,12 +10,8 @@
 //  · CRC32 전송 무결성 (기존 유지)
 //  · 점진적 검증 (WDT 안전, Tick 분산)
 //  · Constant-Time HMAC 비교 (타이밍 부채널 차단)
-//
-//  BUG-42 [CRIT] 로컬 OTA_Secure_Wipe 제거 → SecureMemory::secureWipe (D-2/X-5-1)
-//         소멸자: busy 락 미획득 조기 return 제거, 스핀 상한 + 타임아웃 파쇄
-//  BUG-AIRCR-WDT [HIGH] AIRCR 폴백 전 DBGMCU IWDG/WWDG 프리즈 해제
-//         (HTS_Anti_Debug forceHalt Phase 3 동일 패턴)
-//  BUG-43 [CRIT] 소멸자 op_busy_ 대기: Cortex-M 단일코어 PRIMASK (ISR·스핀 데드락 차단)
+//  · D-2: SecureMemory::secureWipe 단일화 / AIRCR 경로 DBGMCU WDT 프리즈 해제
+//  · 소멸자: PRIMASK 또는 스핀 상한(op_busy_)
 // =========================================================================
 #include "HTS_OTA_AMI_Manager.h"
 #include "HTS_ConstantTimeUtil.h"
@@ -53,7 +49,7 @@ namespace ProtectedEngine {
     };
 
     // =====================================================================
-    //  보안 유틸리티 — D-2 / X-5-1: 소거는 SecureMemory::secureWipe 단일화 (BUG-42)
+    //  보안 유틸리티 — D-2 / X-5-1: 소거는 SecureMemory::secureWipe 단일화
     //  HMAC/논스 비교: ConstantTimeUtil::compare (KCMVP 단일화)
     // =====================================================================
 

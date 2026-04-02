@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h> /* NULL — C 및 C++03 호환 (nullptr는 C++11 전용) */
 // ─────────────────────────────────────────────────────────
 //  외주 업체 통합 가이드
 // ─────────────────────────────────────────────────────────
@@ -19,15 +20,15 @@ void MAKE_FUNC(cbc_enc)(unsigned char *ct, const unsigned char *pt, unsigned int
 	unsigned int nBlock1 = pt_len >> 4, i;
 	const unsigned char *iv_ptr = iv;
 
-	if (ct == nullptr)
+	if (!ct)
 		return;
-	else if (pt == nullptr)
+	else if (!pt)
 		return;
 	else if ((pt_len == 0) || (pt_len & 0xf))
 		return;
-	else if (iv == nullptr)
+	else if (!iv)
 		return;
-	else if (key == nullptr)
+	else if (!key)
 		return;
 
 	for(i = 0; i < nBlock1; i++, pt += 16, ct += 16)
@@ -48,15 +49,15 @@ void MAKE_FUNC(cbc_dec)(unsigned char *pt, const unsigned char *ct, unsigned int
 	unsigned char tmp[128];
 #endif
 
-	if (pt == nullptr)
+	if (!pt)
 		return;
-	else if (ct == nullptr)
+	else if (!ct)
 		return;
 	else if ((ct_len == 0) || (ct_len & 0xf))
 		return;
-	else if (iv == nullptr)
+	else if (!iv)
 		return;
-	else if (key == nullptr)
+	else if (!key)
 		return;
 
 	pt += ct_len;

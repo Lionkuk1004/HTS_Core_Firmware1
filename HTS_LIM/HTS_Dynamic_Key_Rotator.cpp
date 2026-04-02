@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Dynamic_Key_Rotator.cpp
 // 동적 키 로테이터 구현부 — LCG + Murmur3 비선형 키 파생
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -74,8 +74,7 @@ namespace ProtectedEngine {
 
     uint64_t Dynamic_Key_Rotator::Get_Current_Key_And_Rotate() noexcept {
         const uint32_t pm = keyrot_critical_enter();
-        //  기존: count++ 선행 → 첫 키 K0가 (interval-1)회만 사용 → TX/RX 키 엇갈림
-        //  수정: 회전 검사 먼저, 카운트 증가 후행 → 모든 키 정확히 interval회 사용
+        //  회전 임계 도달 시에만 LCG 전이 — 카운트는 회전 후 증가(키당 interval회 대칭)
         //
         //  흐름 (interval=1024):
         //   Call 1:    count=0 → 0<1024 → count++=1 → return K0
@@ -91,7 +90,7 @@ namespace ProtectedEngine {
 
             internal_state = lcg_state;
 
-            // ── [BUG-12] 단방향 키 파생 (Forward/Backward Secrecy) ───
+            // ── 단방향 키 파생 (Forward/Backward Secrecy) ─────────────
             uint64_t new_key = Murmur3_Fmix64(lcg_state) ^ lcg_state;
 
             current_key = new_key;

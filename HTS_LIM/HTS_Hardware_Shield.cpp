@@ -64,8 +64,7 @@ namespace ProtectedEngine {
     //  Pass 3: 0x00000000 최종 소거
     //          → 확인 가능한 깨끗한 상태로 마무리
     //
-    //  각 패스 사이 atomic_thread_fence(seq_cst):
-    //    CPU + DMA 메모리 접근 순서 보장 → 패스 순서 보존
+    //  각 패스 사이 atomic_thread_fence(release): 패스 순서 가시성
     //
     //  Physical_Entropy_Engine::Extract_Quantum_Seed() + DWT 틱 혼합
     //  → 매 호출마다 고유한 패턴 → 전력 차단 시 잔존 데이터 비예측적
@@ -126,10 +125,8 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Get_Hardware_Clock — CPU 물리 사이클 카운터
     //
-    //  기존: 더미 0xDEAD... 반환 (비기능적)
-    //  수정: Hardware_Bridge::Get_Physical_CPU_Tick() 직접 호출
-    //        → ARM: DWT CYCCNT (32비트) / PC: TSC (64비트) 실제 값 반환
-    //  
+    //  Hardware_Bridge::Get_Physical_CPU_Tick() — ARM DWT / PC TSC
+    //
     //  [API 유지 이유]
     //  BB1_Core_Engine 등 호출자가 Hardware_Shield 경유로 틱을 사용할 수 있음
     //  Hardware_Bridge 직접 호출과 동일하나, 모듈 간 의존성 캡슐화 목적

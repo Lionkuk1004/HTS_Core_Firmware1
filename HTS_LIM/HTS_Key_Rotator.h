@@ -29,20 +29,6 @@
 //   파생 중간값(running_hash, Murmur3 로컬): 함수 반환 전 보안 소거
 //   복사/이동: = delete (키 소재 복제 경로 원천 차단)
 //
-//  [양산 수정 이력]
-//   BUG-01~14 (Forward Secrecy 위반→Murmur3, CRC→전체 혼합, namespace,
-//              소멸자 소거, 복사 문서화, noexcept, Pimpl, RotL32 MISRA,
-//              RotL32 UB가드, fallthrough, Self-Contained,
-//              running_hash 소거, num_passes 올림, Murmur3 로컬 소거)
-//   BUG-15 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//          · impl_buf_[256] alignas(8) — vector 정렬 수용
-//          · Impl 셸은 vector 객체(24B)만 — 시드 데이터는 힙에 유지
-//          · 소멸자 = default → 명시적 p->~Impl() + Key_Rotator_Secure_Wipe
-//   BUG-18 [CRIT] deriveNextSeed 동시성: Cortex-M(__arm__/THUMB/__ARM_ARCH 등)은
-//          cpp 내부 PRIMASK 크리티컬; PC/A55는 atomic_flag+타임아웃 (헤더 ARM 매크로와 정합)
-//   BUG-19 [HIGH] deriveNextSeed: PRIMASK·spin_lock RAII 가드 (cpp) — 조기 return 시 IRQ/락 누락 방지
-//   BUG-20 [MED] ⑨ offset 마스크·SecWipe asm memory clobber (cpp)
-//
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
@@ -100,7 +86,7 @@ namespace ProtectedEngine {
 #endif
 
     private:
-        // ── [BUG-15] Pimpl In-Place Storage (zero-heap) ──────────────
+        // ── Pimpl In-Place Storage (zero-heap) ─────────────────────
         // Impl = std::vector<uint8_t> currentSeed (객체 24B)
         // 시드 데이터 자체는 vector 내부 힙에 유지 (크기 가변)
         static constexpr size_t IMPL_BUF_SIZE = 256u;

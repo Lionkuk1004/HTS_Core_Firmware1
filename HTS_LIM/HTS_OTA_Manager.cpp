@@ -2,15 +2,6 @@
 /// @brief HTS OTA Manager -- Remote Firmware Update Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 ///
-/// [양산 수정 이력]
-///  OTA-1 [HIGH] Get_Progress_Percent 나눗셈 → Q16 역수 사전 계산
-///        · 설계 기준 "hot path 나눗셈 0" 위반 → Handle_Begin에서 1회 사전 계산
-///        · Get_Progress_Percent: 곱셈(1cyc) + 시프트(1cyc) = 2cyc (나눗셈 0)
-///  OTA-2 [HIGH] Shutdown 보안 소거 — impl_buf_ 민감 데이터 잔존 방지
-///  OTA-3 [MED]  생성자 for 루프 → memset + SecWipe 프로젝트 표준 통일
-///  OTA-5 [LOW]  Handle_Verify 바이트 읽기 → 256B 스택 청크 읽기
-///        · 512KB: 524,288회 → 2,048회 함수 호출 (256× 감소)
-///
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
 
@@ -19,6 +10,14 @@
 #include <new>
 #include <atomic>
 #include <cstring>
+
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+// 보드에서 강한 심볼로 재정의 — 기본 true(기존 동작 100% 유지)
+extern "C" __attribute__((weak)) bool HTS_OTA_Board_Power_Stable(void) {
+    return true;
+}
+#endif
 
 namespace ProtectedEngine {
 
@@ -207,6 +206,15 @@ namespace ProtectedEngine {
                 }
             }
 
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+            if (!HTS_OTA_Board_Power_Stable()) {
+                last_result = OTA_Result::FLASH_FAIL;
+                Transition_State(OTA_State::ERROR);
+                return;
+            }
+#endif
+
             // Erase Bank B sectors
             for (uint32_t i = 0u; i < OTA_SECTOR_COUNT; ++i) {
                 const uint32_t sector_addr = OTA_BANK_B_BASE + (i * OTA_SECTOR_SIZE);
@@ -270,6 +278,15 @@ namespace ProtectedEngine {
             if (len < 5u) { return; }
             if (static_cast<uint32_t>(len) - 5u < static_cast<uint32_t>(chunk_len)) { return; }
 
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+            if (!HTS_OTA_Board_Power_Stable()) {
+                last_result = OTA_Result::FLASH_FAIL;
+                Transition_State(OTA_State::ERROR);
+                return;
+            }
+#endif
+
             // Flash write bounds check
             if (write_offset + static_cast<uint32_t>(chunk_len) > OTA_BANK_SIZE) {
                 last_result = OTA_Result::SIZE_FAIL;
@@ -297,9 +314,7 @@ namespace ProtectedEngine {
         // ============================================================
         //  Handle VERIFY
         //
-        //  [OTA-5] 바이트 단위 → 256B 청크 단위 Flash 읽기
-        //   기존: 524,288회 read_flash 호출 (바이트 단위)
-        //   수정: 2,048회 호출 (256B 단위) — 함수 호출 오버헤드 256× 감소
+        //  [OTA-5] 256B 청크 단위 Flash 읽기 (read_flash 호출 횟수 감소)
         //   스택 사용: +256B (OTA 컨텍스트에서 허용 범위)
         //   양산 환경: STM32 HW CRC + DMA로 대체 권장
         // ============================================================
@@ -374,6 +389,15 @@ namespace ProtectedEngine {
                 return;
             }
 
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+            if (!HTS_OTA_Board_Power_Stable()) {
+                last_result = OTA_Result::FLASH_FAIL;
+                state = OTA_State::ERROR;
+                return;
+            }
+#endif
+
             // Execute bank swap (system will reset -- no return)
             if (flash_cb.execute_bank_swap != nullptr) {
                 flash_cb.execute_bank_swap();
@@ -428,7 +452,7 @@ namespace ProtectedEngine {
     //  Public API
     // ============================================================
 
-    // [OTA-3] 생성자: for 루프 → memset (프로젝트 표준 통일)
+    // [OTA-3] 생성자: impl_buf_ memset 0 초기화
     HTS_OTA_Manager::HTS_OTA_Manager() noexcept
         : initialized_{ false }
     {
@@ -477,10 +501,7 @@ namespace ProtectedEngine {
         return IPC_Error::OK;
     }
 
-    // [OTA-2] Shutdown: impl_buf_ 보안 소거 추가
-    //  기존: ipc=nullptr + state=IDLE + ~Impl() → 민감 데이터 잔존
-    //  수정: ~Impl() 후 impl_buf_ 전체 보안 소거
-    //  잔존 위험: image_header(CRC/버전), flash_cb(함수포인터), rsp_buf
+    // [OTA-2] Shutdown: impl 소멸 후 impl_buf_ 전체 보안 소거
     void HTS_OTA_Manager::Shutdown() noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
@@ -542,8 +563,8 @@ namespace ProtectedEngine {
     }
 
     // [OTA-1] Get_Progress_Percent — 나눗셈 완전 제거
-    //  기존: received * 100 / total_chunks (매 호출 UDIV 2-12cyc)
-    //  수정: received * inv_progress_q16 >> 16 (MUL 1cyc + shift 1cyc)
+    //  received * 100 / total_chunks (매 호출 UDIV 2-12cyc)
+    //  received * inv_progress_q16 >> 16 (MUL 1cyc + shift 1cyc)
     //  inv_progress_q16 = (100 << 16) / total_chunks (Handle_Begin에서 1회)
     //
     //  정밀도 검증:

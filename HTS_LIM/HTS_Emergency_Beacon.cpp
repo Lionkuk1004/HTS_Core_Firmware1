@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Emergency_Beacon.cpp
 // 긴급 비콘 자동 송출기 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -64,8 +64,8 @@ namespace ProtectedEngine {
     //  해외 확장: 오프셋 조정으로 전 세계 커버 가능
     //  int16_t ±32767 → ±32.767° 범위 → 오프셋 중심 ±32° 커버
     //
-    //  기존: diff / 10             (SDIV ~12cyc, 비2의제곱 금지)
-    //  수정: (diff * 6554) >> 16   (MUL+ASR ~3cyc)
+    //  diff / 10             (SDIV ~12cyc, 비2의제곱 금지)
+    //  (diff * 6554) >> 16   (MUL+ASR ~3cyc)
     //  검증: 6554/65536 = 0.09999... vs 1/10 = 0.1 → 오차 -0.009%
     //        최대 diff = 80000: 80000 × 6554 = 524,320,000 < INT32_MAX ✓
     //        음수: int64_t 확장 후 산술 우시프트로 부호 보존
@@ -283,7 +283,7 @@ namespace ProtectedEngine {
         }
 
         //  last_tx_ms = systick_ms - INTERVAL → 첫 송출 즉시 허용
-        //  기존: last_tx_ms=0 → elapsed=systick_ms → 폭주 가능
+        //  last_tx_ms=0 → elapsed=systick_ms → 폭주 가능
         if (p->start_ms == 0u && p->tx_count == 0u) {
             p->start_ms = systick_ms;
             p->last_tx_ms = systick_ms - BEACON_INTERVAL_MS;
@@ -300,10 +300,10 @@ namespace ProtectedEngine {
         uint8_t* const pkt = acquire_beacon_pkt_slot();
         p->build_packet(pkt);
 
-        //  기존: p->last_tx_ms = systick_ms
+        //  p->last_tx_ms = systick_ms
         //    → Tick 호출 지연(인터럽트, 스케줄 지연)이 그대로 누적
         //    → 비콘 주기가 뒤로 밀림 → B-CDMA P0 타임슬롯 충돌
-        //  수정: p->last_tx_ms += BEACON_INTERVAL_MS
+        //  p->last_tx_ms += BEACON_INTERVAL_MS
         //    → 이전 송출 시각 기준 정확히 +500ms 갱신
         //    → 누적 오차 0, 타임슬롯 위상 고정
         //  예: t=0 송출→ last=500, t=503 Tick→ last=1000 (systick 대입 시 1003)
@@ -335,26 +335,8 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  Cancel — 비콘 해제
-    //
-    //
-    //  ▶ 기존 로직의 결함 경로:
-    //    1. tx_count < 60 → return (취소 요청 완전 무시, alert_flags 유지)
-    //    2. 이후 tx_count >= 60 도달 → Tick이 자동 종료 조건 검사
-    //    3. alert_flags != 0 (취소가 무시됐으므로) → flags_cleared = false
-    //    4. 자동 종료 거부 → 비콘 무한 송출 (RF Flooding / Mesh Jammer)
-    //
-    //  ▶ 수정 원칙 (의사(Intent)와 전환(Transition) 분리):
-    //    ① alert_flags = 0u : tx_count 무관하게 항상 즉시 실행
-    //       → "취소 의사" 상태에 즉시 반영
-    //       → Tick()이 flags_cleared=true를 감지 → 30초 경과 후 자동 종료
-    //    ② active = false   : tx_count >= 60 (30초 경과) 시에만 즉시 전환
-    //       → 미경과 시 Tick에 위임 (최소 보장 송출 유지)
-    //    ③ POWER_LOSS 플래그: 물리적 복전 없이 취소 불가 (기존 정책 유지)
-    //
-    //  ▶ 수정 후 시나리오 (오작동 10초 후 Cancel 호출):
-    //    Cancel() → alert_flags=0 즉시, active 유지 (tx_count=20 < 60)
-    //    → Tick: flags_cleared=true, 30초 도달 시 active=false 자동 전환
-    //    → RF Flooding 없이 최소 보장 송출(30초) 완료 후 정상 종료
+    //  POWER_LOSS는 복전 전 수동 취소 불가. 그 외: alert_flags=0 즉시 반영,
+    //  active 해제는 MIN_TX_COUNT(30초) 충족 시 또는 Tick이 flags_cleared로 종료.
     // =====================================================================
     void HTS_Emergency_Beacon::Cancel() noexcept {
         Impl* p = get_impl();

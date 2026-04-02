@@ -1,4 +1,4 @@
-﻿/// @file  HTS_Modbus_Gateway.cpp
+/// @file  HTS_Modbus_Gateway.cpp
 /// @brief HTS Modbus Gateway -- Multi-PHY Industrial Protocol Converter
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -8,7 +8,7 @@
 #include "HTS_IPC_Protocol.h"
 #include <new>
 #include <atomic>
-#include <cstring>  // [FIX-D2] memset
+#include <cstring>  // memset
 
 namespace ProtectedEngine {
 
@@ -469,7 +469,7 @@ namespace ProtectedEngine {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
             "HTS_Modbus_Gateway::Impl exceeds IMPL_BUF_SIZE");
 
-        // [OPT] byte loop → memset (LDMIA/STMIA burst)
+        // [OPT] memset 일괄 0
         std::memset(impl_buf_, 0, IMPL_BUF_SIZE);
     }
 
@@ -522,13 +522,14 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
+
 #if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
         uint32_t primask_saved;
         __asm__ __volatile__("mrs %0, primask\n\t"
             "cpsid i"
             : "=r"(primask_saved) :: "memory");
 #endif
-        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
 
         if (!initialized_.load(std::memory_order_acquire)) {
             op_busy_.clear(std::memory_order_release);

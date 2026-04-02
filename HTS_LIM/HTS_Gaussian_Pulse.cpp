@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Gaussian_Pulse.cpp
 // 가우시안 펄스 셰이핑 엔진 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -64,8 +64,8 @@ namespace ProtectedEngine {
 
 
         // [OPT-1] std::log(2)/std::sqrt → 컴파일 타임 상수화
-        //  기존: std::sqrt(...) → ARM fp64 에뮬 유발 위험
-        //  수정: sqrt(ln(2)/2) = 0.5887054816... 하드코딩
+        //  std::sqrt(...) → ARM fp64 에뮬 유발 위험
+        //  sqrt(ln(2)/2) = 0.5887054816... 하드코딩
         //  부팅 1회 연산이지만 -fno-math-errno 없는 환경에서 fp64 fallback 차단
         // sqrt(ln(2)/2) ~= 0.5887054816 in Q16 (정수 근사)
         static constexpr int32_t SQRT_LN2_OVER_2_Q16 = 38582;
@@ -181,8 +181,8 @@ namespace ProtectedEngine {
     //  8-Way 무손실 텐서 다중화 + Q16 IIR DC 제거 (Raw 포인터 API)
     //
     //  [OPT-2] 루프 역전 (scatter → gather) + FIR/IIR 1-Pass 융합
-    //   기존: 입력 기준 scatter — output[c+j] += 매 칩×탭 = ~26만 R/W
-    //   수정: 출력 기준 gather — acc 레지스터 누적, output[n] 1회 기록
+    //   입력 기준 scatter — output[c+j] += 매 칩×탭 = ~26만 R/W
+    //   출력 기준 gather — acc 레지스터 누적, output[n] 1회 기록
     //   SRAM 접근: ~262,000 → ~4,126 (98% 감소)
     //   memset: 제거 (덮어쓰기 = 로 충분)
     //   IIR DC 블로커: FIR 결과 즉시 융합 (2-Pass → 1-Pass)

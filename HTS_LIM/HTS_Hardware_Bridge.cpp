@@ -5,7 +5,7 @@
 //
 #include "HTS_Hardware_Bridge.hpp"
 
-// ── Self-Contained 표준 헤더 [BUG-07] ───────────────────────────────
+// ── Self-Contained 표준 헤더 (<cstddef>, <cstdint>) ──────────────────
 #include <atomic>
 #include <cstddef>      // size_t
 #include <cstdint>      // uint8_t, uint64_t
@@ -36,7 +36,7 @@
     // ARM Cortex-A55 (통합콘솔 INNOVID CORE-X Pro): POSIX vDSO 타이머
     //  Linux 4.12+ 보안 커널: CNTKCTL_EL1.EL0VCTEN=0 → EL0에서
     //  mrs cntvct_el0 트랩 → SIGILL(Illegal Instruction) 프로세스 즉사
-    //  수정: clock_gettime(CLOCK_MONOTONIC) — vDSO 경유 커널 안전 읽기
+    //  EL0: clock_gettime(CLOCK_MONOTONIC) — vDSO, 커널 안전 타이머
     //  성능: vDSO는 syscall 아님 → 컨텍스트 스위칭 0, ~20ns (cntvct 대비 +5ns)
 #define HTS_TICK_AARCH64_VDSO
 #include <time.h>
@@ -74,7 +74,7 @@ namespace ProtectedEngine {
 
 #elif defined(HTS_TICK_ARM_DWT)
         // STM32F407 DWT CYCCNT (CMSIS 비의존 직접 접근)
-        // [J-3 FIX] 매직넘버 → constexpr (ARM CoreSight 표준)
+        // J-3: DWT CYCCNT 주소 constexpr (CoreSight)
         static constexpr uintptr_t ADDR_DWT_CYCCNT = 0xE0001004u;
         volatile uint32_t* DWT_CYCCNT =
             reinterpret_cast<volatile uint32_t*>(ADDR_DWT_CYCCNT);

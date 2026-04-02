@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Universal_API.cpp
 // ProtectedEngine 내부 보안 게이트 / 세션 검증 / 물리적 파쇄
 // Target: STM32F407VGT6 (Cortex-M4F, 168MHz)
@@ -19,13 +19,7 @@ namespace ProtectedEngine {
     static constexpr uint64_t HOLOGRAPHIC_INTERFACE_KEY = 0x3D504F574E533332ULL;
 
     // =====================================================================
-    //
-    //  BUG-01: uint64_t == 비교 → XOR + OR 접기로 교체
-    //  BUG-12: return (combined == 0u) → 비트 시프트 브랜치리스 교체
-    //          == 비교는 CMP+B(조건분기)로 컴파일 가능 → 타이밍 부채널 잔존
-    //          비트 연산: (combined | -combined) >> 31 → nonzero=1, zero=0
-    //          XOR 1 반전 → zero=1(true), nonzero=0(false)
-    //          조건분기/조건실행 0개 — 모든 아키텍처에서 일정 시간 보장
+    //  Secure_Gate: uint64_t 동등성 — 분기 최소화(브랜치리스 zero 검출)
     // =====================================================================
     bool Universal_API::Secure_Gate_Open(uint64_t session_id) noexcept {
         const uint64_t diff = session_id ^ HOLOGRAPHIC_INTERFACE_KEY;
@@ -46,19 +40,7 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //
-    //  수정 이력:
-    //   BUG-02: XOR 루프 DSE 위험 → volatile 보호 (이후 asm clobber로 대체)
-    //   BUG-03: pragma O0 미적용 → 적용 (이후 pragma O0 삭제, asm clobber로 대체)
-    //   BUG-04: entropy_shredder 결정론적 → target 주소 기반 가변 시드
-    //   BUG-05: i % 8 → i & 7u 비트마스크
-    //   BUG-13: 이중 주석 블록(구+현) 통합 — ⑦주석-코드 불일치 해소
-    //
-    //  현행 구현:
-    //   · pragma O0 전면 삭제 → XOR 루프 레지스터 최적화 회복
-    //   · uint8_t 바이트 순회 → uint32_t 워드 단위 (75% 사이클 절감)
-    //   · uintptr_t 64비트 잘림 경고 → & 0xFFFFFFFFu 명시 마스킹
-    //   · DSE 방어: asm volatile memory clobber + release fence
+    //  Absolute_Trace_Erasure: XOR 스크램블 → 배리어 → SecureMemory::secureWipe
     // =====================================================================
     void Universal_API::Absolute_Trace_Erasure(
         void* target, size_t size) noexcept {
@@ -66,7 +48,7 @@ namespace ProtectedEngine {
             return;
         }
 
-        // [수정 3] 64비트 빌드 호환: 하위 32비트 명시 마스킹
+        // 64비트 포인터: uintptr 하위 32비트만 shredder 시드에 사용
         uint32_t shredder = static_cast<uint32_t>(
             (reinterpret_cast<uintptr_t>(target) & 0xFFFFFFFFu)
             ^ static_cast<uint32_t>(size) ^ 0xDEADBEEFu);
@@ -87,7 +69,7 @@ namespace ProtectedEngine {
         // 메인 바디: 정렬된 32비트 워드 고속 타격
         // Strict Aliasing 준수: memcpy 4B → 컴파일러가 LDR/STR 인라인 치환
         if (bytes_left >= 4u) {
-            // [⑨-FIX] /4u → >>2u (2의제곱 시프트 전환)
+            // 워드 개수: bytes_left >> 2 (항목⑨ 시프트)
             const size_t words = bytes_left >> 2u;
             for (size_t i = 0; i < words; ++i) {
                 shredder = shredder * 1103515245u + 12345u;

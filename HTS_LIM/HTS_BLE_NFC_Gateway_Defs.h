@@ -72,7 +72,7 @@ namespace ProtectedEngine {
     /// @brief 국가지점번호 위치 코드 (8바이트)
     /// @note  대한민국 국가지점번호: "가나 1234 5678" 형식.
     ///        2글자 한글 인덱스(12비트) + 숫자 8자리(BCD 32비트) = 44비트.
-    ///        [BUG-FIX FATAL] uint32_t(32비트)에 44비트 압축 불가 → 상위 12비트 증발
+    ///        uint32_t(32비트)에 44비트 압축 불가 → 상위 12비트 증발
     ///        uint64_t로 확장하여 44비트 전체 보존.
     struct LocationCode {
         uint64_t code;      ///< 압축된 국가지점번호 (또는 GPS 그리드 ID)
@@ -84,7 +84,7 @@ namespace ProtectedEngine {
     // ============================================================
 
     /// 프레임 헤더: MSG_TYPE(1) + SESSION_ID(2) + LOCATION_CODE(8) + PAYLOAD_LEN(1) = 12
-    /// [BUG-FIX] LocationCode 4→8바이트 확장 반영
+    /// LocationCode 4→8바이트 확장 반영
     static constexpr uint32_t BLE_FRAME_HEADER_SIZE = 12u;
     /// CRC 후미
     static constexpr uint32_t BLE_FRAME_CRC_SIZE = 2u;
@@ -110,7 +110,7 @@ namespace ProtectedEngine {
     // ============================================================
 
     /// @brief 단일 BLE/NFC 세션
-    /// @note  [BUG-FIX] LocationCode 8바이트 확장 → 정렬 최적화 재배치
+    /// @note  LocationCode 8바이트 확장 → 정렬 최적화 재배치
     struct BLE_Session {
         LocationCode location;          ///< 연결된 국가지점번호 (8바이트, 최대 정렬)
         uint32_t     last_activity_tick; ///< 마지막 활동 시각 (ms)

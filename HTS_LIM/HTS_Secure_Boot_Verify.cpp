@@ -1,4 +1,4 @@
-﻿// =========================================================================
+// =========================================================================
 // HTS_Secure_Boot_Verify.cpp
 // 보안 부팅 검증자 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -389,12 +389,34 @@ namespace ProtectedEngine {
             return false;
         }
 
+        // ⑯ 기록 직후 Read-Back 검증 (OTP/Flash)
+        uint8_t verify_hash[HASH_SIZE] = {};
+        otp_read_block(OTP_HASH_ADDR, verify_hash, HASH_SIZE);
+        const bool hash_ok = ConstantTimeUtil::compare(
+            verify_hash, hash, HASH_SIZE);
+        SecureMemory::secureWipe(verify_hash, sizeof(verify_hash));
+        if (!hash_ok) { return false; }
+
         // 매직 기록 (기록 완료 표시)
         const uint32_t magic = HASH_MAGIC;
-        if (!otp_write_block(OTP_HMAG_ADDR,
-            reinterpret_cast<const uint8_t*>(&magic), sizeof(magic))) {
+        uint8_t magic_bytes[sizeof(magic)] = {};
+        std::memcpy(magic_bytes, &magic, sizeof(magic));
+        if (!otp_write_block(OTP_HMAG_ADDR, magic_bytes, sizeof(magic))) {
+            SecureMemory::secureWipe(magic_bytes, sizeof(magic_bytes));
             return false;
         }
+
+        // ⑯ 매직 기록 직후 Read-Back 검증
+        uint8_t verify_magic[sizeof(magic)] = {};
+        otp_read_block(OTP_HMAG_ADDR, verify_magic, sizeof(magic));
+        const bool magic_ok = ConstantTimeUtil::compare(
+            verify_magic, magic_bytes, sizeof(magic));
+        SecureMemory::secureWipe(verify_magic, sizeof(verify_magic));
+        if (!magic_ok) {
+            SecureMemory::secureWipe(magic_bytes, sizeof(magic_bytes));
+            return false;
+        }
+        SecureMemory::secureWipe(magic_bytes, sizeof(magic_bytes));
 
         return true;
     }
@@ -420,9 +442,7 @@ extern "C" {
             return 0;  // 성공
         }
 
-        //  기존: 성공 처리 → 전압 글리칭으로 OTP 읽기 방해 시 악성 펌웨어 부팅
-        //  수정: 안전 모드 → 프로비저닝 통신만 허용, 메인 기능 차단
-        //  첫 출하 시: 공장에서 Provision_Expected_Hash() 후 정상 부팅
+        //  미프로비저닝 → 안전 모드(프로비저닝만). 공장 첫 출하는 Provision_Expected_Hash() 후 정상 부팅
         if (r == BootVerifyResult::NOT_PROVISIONED) {
             g_safe_mode = 1u;
             return 1;  // 안전 모드 (프로비저닝 필요)

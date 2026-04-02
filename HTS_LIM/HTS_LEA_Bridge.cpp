@@ -47,7 +47,7 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
-        // [BUG] seq_cst → release (소거 배리어 정책 통일)
+        // 소거 배리어: memory_order_release
         std::atomic_thread_fence(std::memory_order_release);
     }
 
@@ -130,7 +130,7 @@ namespace ProtectedEngine {
     //    ctr 파라미터 = unsigned char* (non-const)
     //    → 함수 내부에서 블록 수만큼 CTR을 증가시킴
     //    → 외부에서 추가 증가 시 TX/RX CTR 불일치 → 복호화 실패
-    //  수정: Increment_CTR 호출 삭제 — KISA API 내부 관리에 위임
+    //  외부 Increment_CTR 금지 — KISA lea_ctr_enc가 ctr 갱신
     // =====================================================================
     uint32_t LEA_Bridge::Encrypt_Payload(
         uint32_t* payload_data, size_t elements) noexcept {
