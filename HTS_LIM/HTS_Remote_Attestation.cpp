@@ -1,19 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Remote_Attestation.cpp
 // Remote Attestation — FNV-1a + 디바이스 바인딩 + 상수시간 검증
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 23건]
-//  01~10: (이전 이력 참조)
-//  BUG-11 [CRIT] ⑨강화: 64비트 FNV/Murmur3 → 32비트 전환
-//                FNV1a_PRIME 64비트 곱셈 매 바이트 → __aeabi_lmul 제거
-//                Murmur3_Fmix64 → Murmur3_Fmix32 이중 해시
-//  BUG-12 [LOW]  Target "/ PC" 제거, BAREMETAL/WINDOWS/LINUX 매크로 제거
-//  BUG-13 [MED]  pragma O0 → volatile + asm clobber (프로젝트 표준)
-//  BUG-14 [HIGH] UID MMIO 역참조 → GCC/ARM 가드 (MSVC 크래시 방지)
-//
-// [제약] try-catch 0, float/double 0, 힙 0, uint64_t 곱셈 0
-// =========================================================================
 #include "HTS_Remote_Attestation.hpp"
 #include "HTS_Hardware_Bridge.hpp"
 
@@ -39,7 +28,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-11] Murmur3 fmix32 — 64비트 곱셈 0회
     // =====================================================================
     static uint32_t Murmur3_Fmix32(uint32_t h) noexcept {
         h ^= h >> 16u;
@@ -52,7 +40,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  Get_Device_Unique_Key — UID 3워드 혼합 (32비트 연산만)
-    //  [BUG-14] MMIO 역참조 GCC/ARM 가드
     // =====================================================================
     static uint32_t Get_Device_Key_Lo() noexcept {
 #if (defined(__GNUC__) || defined(__clang__)) && \
@@ -77,13 +64,11 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-11] Compute_Keyed_FNV1a — 32비트 이중 해시
     //
     //  기존: uint64_t hash × FNV1A_PRIME(64bit) = __aeabi_lmul ~30cyc/바이트
     //  수정: FNV32 × 2 독립 누적 → ARM MUL 1cyc × 2 = 2cyc/바이트
     //        hi: 바이트 + key_hi 혼합, lo: 바이트 + key_lo 혼합
     //
-    //  [BUG-13+15] TOCTOU 방어: volatile 입력 읽기 + 매 반복 메모리 배리어
     //
     //  기존 문제:
     //    data[i]는 일반 포인터 → 컴파일러가:
@@ -101,7 +86,6 @@ namespace ProtectedEngine {
         const uint8_t* data, size_t size,
         uint32_t key_lo, uint32_t key_hi) noexcept {
 
-        // [BUG-15] 입력을 volatile 포인터로 접근 — 캐시/벡터화 차단
         volatile const uint8_t* vdata =
             static_cast<volatile const uint8_t*>(data);
 
@@ -118,7 +102,6 @@ namespace ProtectedEngine {
             hash_hi *= FNV32_PRIME;
             hash_hi ^= hash_lo;
 
-            // [BUG-15] 매 반복 메모리 배리어
             // 컴파일러가 다음 반복의 vdata[i+1] 읽기를
             // 현재 반복의 해시 연산보다 앞당기는 것을 차단
 #if (defined(__GNUC__) || defined(__clang__)) && \

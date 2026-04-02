@@ -27,7 +27,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -118,7 +118,6 @@ namespace ProtectedEngine {
         // ──────────────────────────────────────────────────
         //  센서 건강 상태 머신 (3단계 판정)
         //
-        //  [FIX-STUCK] 기존: 0/4095만 감지, 복구 경로 불명확
         //  수정: 3단계 에스컬레이션 + 명확한 복구 경로
         //
         //  상태 전이:
@@ -282,7 +281,6 @@ namespace ProtectedEngine {
         const uint32_t elapsed = systick_ms - p->last_sample_ms;
         if (elapsed < period) { return; }
 
-        // [FIX-JITTER] 주기 기반 갱신: last += period (시각 기반 아님)
         //  기존: last = systick_ms → 지연 누적 → IIR 시정수 왜곡
         //  수정: last += period → 정확한 샘플링 주파수 유지
         //  안전 장치: 2주기 이상 밀린 경우 → 현재 시각으로 리셋 (폭주 방지)

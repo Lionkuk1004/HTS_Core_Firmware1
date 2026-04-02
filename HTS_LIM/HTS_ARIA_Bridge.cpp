@@ -1,44 +1,9 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_ARIA_Bridge.cpp
 // KCMVP ARIA 블록 암호 브릿지 구현부
 // 규격: KS X 1213-1 (2009)
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 6건 결함 교정]
-//
-//  BUG-01 [MEDIUM] C26495 — 멤버 기본값 미초기화
-//    기존: round_keys[272] → 값 초기화 없음 (생성자에서 Secure_Zero)
-//          num_rounds, is_initialized → 기본값 없음
-//    수정: 헤더에서 = {} / = 0 / = false 기본값 할당
-//
-//  BUG-02 [MEDIUM] Secure_Zero: pragma O0 보호 누락
-//    기존: volatile + atomic_thread_fence만 사용
-//          volatile은 C/C++ 표준상 "동시성 메모리 접근" 용도가 아님
-//          일부 컴파일러가 "사용되지 않는 메모리에 volatile 쓰기" 를 최적화할 가능성
-//    수정: pragma O0 push/pop 추가 (프로젝트 보안 소거 표준 패턴)
-//
-//  BUG-03 [MEDIUM] Process_Block: 실패 시 출력 버퍼 미소거
-//    기존: false 반환 → output_16bytes에 이전 메모리 데이터 잔존
-//          호출자가 반환값 무시 시 키스트림 또는 이전 평문 노출 가능
-//    수정: 실패 경로에서 출력 16바이트 보안 소거
-//
-//  BUG-04 [LOW] 매직 넘버 272 반복 사용
-//    수정: ARIA_Bridge::ROUND_KEY_BUF_SIZE 명명 상수 사용
-//
-//  BUG-05 [LOW] KCMVP 인증 문서화 보강
-//  BUG-43 [CRIT] Secure_Zero 제거 → SecureMemory::secureWipe (D-2/X-5-1, MSVC 배리어)
-//
-// [KISA ARIA C 구현체 연결]
-//  aria.c (KISA 공식 배포) → extern "C" 선언으로 링크
-//  EncKeySetup: 암호화 라운드 키 생성 → 라운드 수 반환
-//  DecKeySetup: 복호화 라운드 키 생성 → 라운드 수 반환
-//  Crypt:       16바이트 블록 암/복호화 (라운드 키 + 라운드 수 기반)
-//
-// [STM32F407 성능]
-//  키 스케줄 (256비트): ~15K사이클 ≈ 0.09ms @168MHz
-//  블록 암/복호화 (16B): ~3K사이클 ≈ 0.018ms @168MHz
-//  Flash: ~500바이트 (브릿지) + ~2KB (aria.c KISA 원본)
-// =========================================================================
 #include "HTS_ARIA_Bridge.hpp"
 #include "HTS_Secure_Memory.h"
 #include <cstring>
@@ -70,7 +35,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  보안 메모리 소거 — KCMVP 키 소재 잔존 방지(Key Zeroization)
-    //  [BUG-43] HTS_Secure_Memory::secureWipe 단일화 (D-2 / X-5-1)
     // =====================================================================
 
     // =====================================================================
@@ -177,7 +141,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Process_Block — ARIA 16바이트 블록 암/복호화
     //
-    //  [BUG-03 수정] 실패 시 출력 버퍼 보안 소거
     //  기존: false 반환 → output_16bytes에 이전 메모리 데이터 잔존
     //  수정: 모든 실패 경로에서 출력 16바이트를 0으로 소거
     //  → 호출자가 [[nodiscard]] 경고를 무시하더라도 키스트림 미누출
@@ -190,7 +153,6 @@ namespace ProtectedEngine {
             !input_16bytes ||
             !output_16bytes ||
             !Is_Valid_Round_Count(num_rounds)) {
-            // [BUG-03] 실패 시 출력 소거 (output이 유효한 경우에만)
             if (output_16bytes) {
                 SecureMemory::secureWipe(static_cast<void*>(output_16bytes), 16u);
             }

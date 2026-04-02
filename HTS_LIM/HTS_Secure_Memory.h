@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Secure_Memory.h
 // 보안 메모리 잠금 + 안티포렌식 소거 (코어 인터페이스)
 // Target: STM32F407 (Cortex-M4)
@@ -36,10 +36,8 @@
 
 namespace ProtectedEngine {
 
-    // [BUG-05] 빌드 타임 검증
     static_assert(sizeof(unsigned char) == 1, "byte must be 1 byte");
 
-    // [BUG-02] SecureVector typedef 제거
     // 기존: using SecureVector = std::vector<uint8_t>;
     // → <vector> include가 ARM에서 힙 할당 인프라 강제 링크
     // → Session_Gateway에서 고정 배열로 교체 완료 → typedef 불필요
@@ -57,9 +55,10 @@ namespace ProtectedEngine {
         /// @param ptr   대상 메모리
         /// @param size  바이트 수
         /// @note  volatile 0x00 + 컴파일러 전체 배리어 + release fence (BUG-41, D-2/X-5-1)
+        /// @note  [M-1] 모듈 전역 로컬 소거 루프는 MSVC에서 배리어 누락 위험이 있으므로
+        ///        Key_Rotator·Secure_Boot·Conditional_SelfTest 등은 본 API 위임으로 통일.
         static void secureWipe(void* ptr, size_t size) noexcept;
 
-        // [BUG-07] 정적 전용 — 인스턴스화 차단 (6종)
         SecureMemory() = delete;
         ~SecureMemory() = delete;
         SecureMemory(const SecureMemory&) = delete;

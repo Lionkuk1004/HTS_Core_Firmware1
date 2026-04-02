@@ -47,6 +47,32 @@
 
 namespace ProtectedEngine {
 
+#if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
+    !defined(__aarch64__)
+#define HTS_AMI_PRIMASK_SHUTDOWN 1
+#else
+#define HTS_AMI_PRIMASK_SHUTDOWN 0
+#endif
+
+    namespace {
+        struct AMI_Busy_Guard {
+            std::atomic_flag& f;
+            bool locked;
+            explicit AMI_Busy_Guard(std::atomic_flag& flag) noexcept
+                : f(flag), locked(false) {
+                if (!f.test_and_set(std::memory_order_acquire)) {
+                    locked = true;
+                }
+            }
+            ~AMI_Busy_Guard() noexcept {
+                if (locked) {
+                    f.clear(std::memory_order_release);
+                }
+            }
+        };
+    } // namespace
+
     // ============================================================
     //  [AMI-1] 보안 메모리 소거 (프로젝트 표준)
     // ============================================================
@@ -56,8 +82,7 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        // [BUG-FIX] "memory" → 경량 "r" 이스케이프 (프로젝트 표준 통일)
-        __asm__ __volatile__("" : : "r"(ptr));
+        __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -81,7 +106,6 @@ namespace ProtectedEngine {
     }
 
     // ============================================================
-    //  [FIX-AMI-NV] 비휘발 부팅 카운터 — RTC Backup Register
     //
     //  STM32F407 BKP_DR0~DR19: VBAT 전원 유지 시 비휘발
     //  전원 차단 후 재부팅 시 boot_count 단조증가 보장
@@ -270,7 +294,6 @@ namespace ProtectedEngine {
             invoke_id = static_cast<uint8_t>(
                 (static_cast<uint32_t>(invoke_id) + 1u) & 0xFFu);
 
-            // [FIX-AMI-NV] 비휘발 부팅 카운터 — 리플레이 공격 차단
             //  전원 차단 → 재부팅해도 boot_count 단조증가 (RTC BKP 저장)
             //  공격자가 old 패킷을 리플레이해도 boot_count 불일치 → HES 폐기
             apdu_buf[pos++] = static_cast<uint8_t>(boot_count >> 24u);
@@ -278,7 +301,6 @@ namespace ProtectedEngine {
             apdu_buf[pos++] = static_cast<uint8_t>(boot_count >> 8u);
             apdu_buf[pos++] = static_cast<uint8_t>(boot_count & 0xFFu);
 
-            // [FIX-AMI] 세션 내 시퀀스 — 동일 부팅 내 중복 방지
             apdu_buf[pos++] = static_cast<uint8_t>(report_seq >> 24u);
             apdu_buf[pos++] = static_cast<uint8_t>(report_seq >> 16u);
             apdu_buf[pos++] = static_cast<uint8_t>(report_seq >> 8u);
@@ -411,6 +433,32 @@ namespace ProtectedEngine {
         }
     };
 
+    // Tick → Send_Periodic_Report 재진입 방지: 공개 API와 동일 본문 (Busy_Guard 단일)
+    IPC_Error HTS_AMI_Protocol::ami_send_periodic_report_impl(Impl* impl) noexcept
+    {
+        if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
+
+        if (!impl->Transition_State(AMI_State::REPORTING)) {
+            return IPC_Error::CFI_VIOLATION;
+        }
+
+        const uint16_t apdu_len = impl->Build_Report_APDU();
+        if (apdu_len == 0u) {
+            impl->Transition_State(AMI_State::ERROR);
+            return IPC_Error::BUFFER_OVERFLOW;
+        }
+
+        const IPC_Error err = impl->Send_Secured(apdu_len);
+
+        if (err != IPC_Error::OK) {
+            impl->Transition_State(AMI_State::ERROR);
+            return err;
+        }
+
+        impl->Transition_State(AMI_State::IDLE);
+        return IPC_Error::OK;
+    }
+
     // ============================================================
     //  Public API
     // ============================================================
@@ -453,7 +501,6 @@ namespace ProtectedEngine {
         impl->last_report_tick = 0u;
         impl->report_seq = 0u;
 
-        // [FIX-AMI-NV] 비휘발 부팅 카운터: RTC BKP에서 읽기 → +1 → 쓰기
         //  리플레이 공격 차단: 재부팅해도 boot_count 단조증가
         //  (device_id, boot_count, report_seq) = 글로벌 유일 키
         impl->boot_count = NV::Read_Boot_Count() + 1u;
@@ -471,8 +518,26 @@ namespace ProtectedEngine {
     }
 
     // [AMI-1] Shutdown: impl_buf_ 전체 보안 소거
+    // A-5: ISR·재진입과 경쟁 시 안전 종료 — PRIMASK + op_busy_ 스핀 (OTA_AMI 동일)
     void HTS_AMI_Protocol::Shutdown() noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+
+#if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
+        uint32_t primask_saved;
+        __asm__ __volatile__("mrs %0, primask\n\t"
+            "cpsid i"
+            : "=r"(primask_saved) :: "memory");
+#endif
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
+
+        if (!initialized_.load(std::memory_order_acquire)) {
+            op_busy_.clear(std::memory_order_release);
+#if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
+            __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
+#endif
+            return;
+        }
+
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->state = AMI_State::OFFLINE;
         impl->ipc = nullptr;
@@ -483,6 +548,11 @@ namespace ProtectedEngine {
         // [AMI-1] impl_buf_ 전체 보안 소거 (함수 포인터, device_id, apdu_buf 등)
         AMI_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
         initialized_.store(false, std::memory_order_release);
+        op_busy_.clear(std::memory_order_release);
+
+#if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
+        __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
+#endif
     }
 
     // [A1] 국가별 OBIS 딕셔너리 주입
@@ -490,6 +560,8 @@ namespace ProtectedEngine {
         const OBIS_Dictionary* dict) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->obis_dict = dict;
     }
@@ -499,6 +571,8 @@ namespace ProtectedEngine {
         const AMI_SecuritySuite* suite) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->security = suite;
     }
@@ -507,11 +581,15 @@ namespace ProtectedEngine {
         const MeterCallbacks& cb) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->meter_cb = cb;
     }
 
     void HTS_AMI_Protocol::Set_Report_Interval(uint32_t interval_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->report_interval_ms = interval_ms;
     }
 
@@ -520,45 +598,28 @@ namespace ProtectedEngine {
     //  추가 방어 불필요 — MISRA C++ Rule 5-0-4 unsigned wrap 허용
     void HTS_AMI_Protocol::Tick(uint32_t systick_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         if (impl->report_interval_ms > 0u) {
             // unsigned 뺄셈: 49.7일 래핑 시에도 정확 (의도적)
             const uint32_t elapsed = systick_ms - impl->last_report_tick;
             if (elapsed >= impl->report_interval_ms) {
-                Send_Periodic_Report();
+                (void)ami_send_periodic_report_impl(impl);
                 impl->last_report_tick = systick_ms;
             }
         }
     }
 
     IPC_Error HTS_AMI_Protocol::Send_Periodic_Report() noexcept {
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return IPC_Error::BUSY; }
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
-        if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
-
-        if (!impl->Transition_State(AMI_State::REPORTING)) {
-            return IPC_Error::CFI_VIOLATION;
-        }
-
-        const uint16_t apdu_len = impl->Build_Report_APDU();
-        if (apdu_len == 0u) {
-            impl->Transition_State(AMI_State::ERROR);
-            return IPC_Error::BUFFER_OVERFLOW;
-        }
-
-        // [A2] 보안 랩핑 후 전송
-        const IPC_Error err = impl->Send_Secured(apdu_len);
-
-        if (err != IPC_Error::OK) {
-            impl->Transition_State(AMI_State::ERROR);
-            return err;
-        }
-
-        impl->Transition_State(AMI_State::IDLE);
-        return IPC_Error::OK;
+        return HTS_AMI_Protocol::ami_send_periodic_report_impl(impl);
     }
 
     void HTS_AMI_Protocol::Process_Request(const uint8_t* apdu,
@@ -567,11 +628,12 @@ namespace ProtectedEngine {
         if (apdu == nullptr) { return; }
         if (apdu_len < AMI_APDU_HEADER_SIZE + AMI_APDU_CRC_SIZE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         // [A2] 수신 복호화 (security suite 등록 시)
         //  복호화 실패(MAC 불일치) → 폐기 (무응답 = 보안 정책)
-        //  [FIX-STACK] decrypt_buf: 스택→Impl 이동 (스택 오버플로우 방지)
         const uint8_t* effective_apdu = apdu;
         uint16_t effective_len = apdu_len;
         std::memset(impl->decrypt_buf, 0, AMI_MAX_APDU_SIZE);
@@ -596,7 +658,6 @@ namespace ProtectedEngine {
             effective_len = plain_len;
         }
 
-        // [BUG-FIX FATAL] CFI 위반 시 ERROR 잠금 (보안 무장해제 방지)
         //
         //  기존 문제 (1차):
         //    Transition_State(PROCESSING) 실패 → state=ERROR/OFFLINE 고착
@@ -631,9 +692,7 @@ namespace ProtectedEngine {
         }
             break;
         case DLMS_Service::SET_REQUEST:
-            // [BUG-FIX ⑦] 미지원 SET 요청 → DLMS 에러 응답 명시 전송
             //  IEC 62056-53 §7.4.2.3: Data-Access-Error 3 = Read/Write Denied
-            //  [BUG-FIX CRIT] 스택 변수 rsp[4] → Impl::apdu_buf 정적 버퍼 교체
             //   기존: uint8_t rsp[4] 스택 → Send_Frame에 포인터 전달
             //    Send_Frame이 현재 동기 직렬화이므로 즉시 복사되어 안전하나
             //    구현 변경 시 Dangling 포인터 위험 (스코프 이탈 후 DMA 접근)
@@ -653,9 +712,7 @@ namespace ProtectedEngine {
             }
             break;
         case DLMS_Service::ACTION_REQUEST:
-            // [BUG-FIX ⑦] 미지원 ACTION 요청 → DLMS 에러 응답 명시 전송
             //  IEC 62056-53 §7.4.2.6: Action-Result 3 = Other-Reason
-            //  [BUG-FIX CRIT] 동일 패턴 — apdu_buf 정적 버퍼 사용
             if (effective_len >= 1u && impl->ipc != nullptr) {
                 impl->apdu_buf[0] = static_cast<uint8_t>(DLMS_Service::ACTION_RESPONSE);
                 impl->apdu_buf[1] = (effective_len >= 2u) ? effective_apdu[1] : 0x01u;
@@ -684,6 +741,8 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return AMI_State::OFFLINE;
         }
+        AMI_Busy_Guard g(op_busy_);
+        if (!g.locked) { return AMI_State::OFFLINE; }
         return reinterpret_cast<const Impl*>(impl_buf_)->state;
     }
 

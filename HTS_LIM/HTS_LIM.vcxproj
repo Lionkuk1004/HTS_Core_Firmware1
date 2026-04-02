@@ -1,5 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+  ===================================================================
+  HTS_LIM.vcxproj — 빌드 매트릭스 정의
+  ===================================================================
+  현재 구성: Debug|Win32, Release|Win32, Debug|x64, Release|x64
+             (PC 시뮬레이션 및 개발 전용 — ARM 타깃 아님)
+
+  ┌─────────────────────┬──────────┬──────────┬──────────┐
+  │ 파일 그룹           │ Win32/x64│ ARM-M4   │ A55/서버 │
+  ├─────────────────────┼──────────┼──────────┼──────────┤
+  │ [A] A55/서버 전용   │    ✅    │  #error  │    ✅    │
+  │ [B] PC 시뮬 전용    │    ✅    │  #error  │  #error  │
+  │ [C] ARM-M4 전용     │  #error  │    ✅    │          │
+  │ [D] 조건부 분기     │    ✅    │    ✅    │    ✅    │
+  └─────────────────────┴──────────┴──────────┴──────────┘
+
+  ARM GCC/Keil 타깃 빌드 시 반드시 아래 파일을 제외할 것:
+  [A] AnchorDecoder.cpp, AnchorEncoder.cpp, AnchorManager.cpp,
+      TensorCodec.cpp, HTS_Anchor_Vault.cpp, HTS_Storage_Interface.cpp
+  [B] HTS_3D_Tensor_FEC.cpp
+  ===================================================================
+  -->
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -168,11 +190,19 @@
     <ClCompile Include="HTS_Sensor_Fusion.cpp" />
     <ClCompile Include="HTS_Tamper_HAL.cpp" />
     <ClCompile Include="HTS64_Native_ECCM_Core.cpp" />
-    <ClCompile Include="HTS_3D_Tensor_FEC.cpp" />
+    <ClCompile Include="HTS_3D_Tensor_FEC.cpp">
+      <!-- [BUILD-MATRIX-B] PC 시뮬 전용 — STM32·A55 모든 ARM 타깃 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="HTS_Adaptive_BPS_Controller.cpp" />
     <ClCompile Include="HTS_AES_Bridge.cpp" />
     <ClCompile Include="HTS_AMI_Protocol.cpp" />
-    <ClCompile Include="HTS_Anchor_Vault.cpp" />
+    <ClCompile Include="HTS_Anchor_Vault.cpp">
+      <!-- [BUILD-MATRIX-A] A55/서버 전용 — ARM 타깃 구성 추가 시 자동 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="HTS_AntiAnalysis_Shield.cpp" />
     <ClCompile Include="HTS_AntiJam_Engine.cpp" />
     <ClCompile Include="HTS_Antipodal_Core.cpp" />
@@ -217,17 +247,36 @@
     <ClCompile Include="HTS_Session_Gateway.cpp" />
     <ClCompile Include="HTS_SHA256_Bridge.cpp" />
     <ClCompile Include="HTS_Sparse_Recovery.cpp" />
-    <ClCompile Include="HTS_Storage_Interface.cpp" />
+    <ClCompile Include="HTS_Storage_Interface.cpp">
+      <!-- [BUILD-MATRIX-A] A55/서버 전용 — ARM 타깃 구성 추가 시 자동 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="HTS_TRNG_Collector.cpp" />
     <ClCompile Include="HTS_Tx_Scheduler.cpp" />
     <ClCompile Include="HTS_Universal_API.cpp" />
-    <ClCompile Include="AnchorDecoder.cpp" />
-    <ClCompile Include="AnchorEncoder.cpp" />
-    <ClCompile Include="AnchorManager.cpp" />
+    <ClCompile Include="AnchorDecoder.cpp">
+      <!-- [BUILD-MATRIX-A] A55/서버 전용 — ARM 타깃 구성 추가 시 자동 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="AnchorEncoder.cpp">
+      <!-- [BUILD-MATRIX-A] A55/서버 전용 — ARM 타깃 구성 추가 시 자동 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="AnchorManager.cpp">
+      <!-- [BUILD-MATRIX-A] A55/서버 전용 — ARM 타깃 구성 추가 시 자동 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="BB1_Core_Engine.cpp" />
     <ClCompile Include="HTS_ConstantTimeUtil.cpp" />
     <ClCompile Include="HTS_Crc32Util.cpp" />
-    <ClCompile Include="HTS_Anti_Debug.cpp" />
+    <ClCompile Include="HTS_Anti_Debug.cpp">
+      <!-- [BUILD-MATRIX-C] ARM-M4 전용 — Win32/x64 빌드에서 __arm__ 정의 필수
+           현재 MSVC 빌드 통과 경로 확인 권고 -->
+    </ClCompile>
     <ClCompile Include="HTS_Anti_Glitch.cpp" />
     <ClCompile Include="HTS_Creator_Telemetry.cpp" />
     <ClCompile Include="HTS_Dual_Tensor_16bit.cpp" />
@@ -257,7 +306,11 @@
       <DisableSpecificWarnings Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <ClCompile Include="lsh512.c" />
-    <ClCompile Include="TensorCodec.cpp" />
+    <ClCompile Include="TensorCodec.cpp">
+      <!-- [BUILD-MATRIX-A] A55/서버 전용 — ARM 타깃 구성 추가 시 자동 배제 -->
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM Thumb-2'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="util.c" />
   </ItemGroup>
   <ItemGroup>

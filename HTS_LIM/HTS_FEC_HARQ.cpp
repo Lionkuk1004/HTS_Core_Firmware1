@@ -1,21 +1,7 @@
-// =============================================================================
+﻿// =============================================================================
 // HTS_FEC_HARQ.cpp — V400 3모드 (1칩/16칩/64칩)
 // Target: STM32F407VGT6 (Cortex-M4F) / PC
 //
-// [양산 수정 이력 — 22건]
-//  BUG-01~11 (이전 세션)
-//  BUG-12 [CRIT] flatI/flatQ 117KB 중복 복사 → row-major 직접 참조
-//  BUG-13 [CRIT] int64_t → int32_t (RxState 50% 절감 + HW 단일 사이클)
-//  BUG-14 [CRIT] static 비재진입 → WorkBuf DI 주입 (재진입 100%)
-//  BUG-15 [CRIT] Bin_To_LLR SUM-에너지 → MAX-LOG-MAP 교체
-//  BUG-16 [CRIT] Viterbi 생존 한계선 -1M → -1B
-//  BUG-17 [HIGH] Viterbi 역추적 state=0 강제
-//  BUG-18 [HIGH] 4인자 오버로드 삭제
-//  BUG-19 [HIGH] Fisher-Yates 모듈로(%) 불가피 사유 주석
-//  BUG-20 [MED]  U-A: WorkBuf/RxState64 @warning sizeof
-//  BUG-21 [MED]  U-B: static_assert SRAM 예산 검증
-//  BUG-22 [LOW]  J-3: bps_from_nf NF 임계값 → constexpr 명명상수
-// =============================================================================
 #include "HTS_FEC_HARQ.hpp"
 #include <cstring>
 #include <climits>
@@ -76,15 +62,12 @@ namespace ProtectedEngine {
 
     // ── [BUG-14+16+17] Soft Viterbi ──
     //
-    // [BUG-16] 생존 한계선: -10억 (bm 최대 ±2M × 500스텝 = ±10억)
-    // [BUG-17] 역추적 state=0 강제 (tail bits → State 0 종료 보장)
     void FEC_HARQ::Viterbi_Decode(const int32_t* soft, int nc,
         uint8_t* out, int no, WorkBuf& wb) noexcept {
         if (!soft || !out || nc < 2 || no < 1) return;
 
         // [⑨-FIX] /2 → >>1 (nc≥2 가드에 의해 양수 보장, ASR 안전)
         const int T = nc >> 1;
-        // [BUG-FIX FATAL] 256 → VIT_STEPS(88): BUG-23에서 surv/tb 버퍼를 88로 축소
         //  기존: steps ≤ 256 → surv[88]/tb[88] OOB → 스택 파괴 → HardFault
         //  MSVC C6386/C6385 경고의 근본 원인
         const int steps = (T < VIT_STEPS) ? T : VIT_STEPS;
@@ -120,7 +103,6 @@ namespace ProtectedEngine {
             cur = nxt;
         }
 
-        // [BUG-17] State 0 강제 역추적
         int state = 0;
         for (int t = steps - 1; t >= 0; --t) {
             wb.tb[t] = static_cast<uint8_t>((state >> 5) & 1);
@@ -130,23 +112,40 @@ namespace ProtectedEngine {
     }
 
     // ── [BUG-15] LLR: MAX-LOG-MAP + Viterbi 안전 스케일링 ──
-    // [BUG-26] 유효 빈만 탐색 (BPS=3: 8개, BPS=6: 64개)
     void FEC_HARQ::Bin_To_LLR(const int32_t* fI, const int32_t* fQ,
         int nc, int bps, int32_t* llr) noexcept {
 
         const int nsym = 1 << bps;
         const int valid = (nsym < nc) ? nsym : nc;
 
-        int64_t energy[64] = {};
-        int64_t peak = 0;
+        uint32_t energy[64] = {};
+        uint32_t peak = 0u;
         for (int m = 0; m < valid; ++m) {
-            energy[m] = static_cast<int64_t>(fI[m]) * fI[m] +
-                static_cast<int64_t>(fQ[m]) * fQ[m];
-            if (energy[m] > peak) peak = energy[m];
+            const int32_t fi = fI[m];
+            const int32_t fq = fQ[m];
+
+            // Square of signed values (no 64-bit storage):
+            // abs(x) in uint32_t, then square in uint64_t, finally clamp.
+            const uint32_t ufi = static_cast<uint32_t>(fi);
+            const uint32_t ufq = static_cast<uint32_t>(fq);
+            const uint32_t mask_i = static_cast<uint32_t>(fi >> 31);
+            const uint32_t mask_q = static_cast<uint32_t>(fq >> 31);
+            const uint32_t abs_i = (ufi ^ mask_i) - mask_i;
+            const uint32_t abs_q = (ufq ^ mask_q) - mask_q;
+
+            const uint64_t sq_i = static_cast<uint64_t>(abs_i) *
+                static_cast<uint64_t>(abs_i);
+            const uint64_t sq_q = static_cast<uint64_t>(abs_q) *
+                static_cast<uint64_t>(abs_q);
+            const uint64_t e64 = sq_i + sq_q;
+            const uint32_t e32 = (e64 > 0xFFFFFFFFull)
+                ? 0xFFFFFFFFu : static_cast<uint32_t>(e64);
+
+            energy[m] = e32;
+            if (e32 > peak) { peak = e32; }
         }
 
         int shift = 0;
-        // [BUG-FIX] VITERBI_SAFE_LIMIT: 1,000,000 → 100,000 (안전 마진 강화)
         //
         //  오버플로 경로: combined = REP(4) × llr_max
         //                bm = 2 × combined
@@ -159,20 +158,29 @@ namespace ProtectedEngine {
         //   High SNR: energy~10^12 → shift~27 → llr=max0-max1 ≈ ±100K
         //   Low SNR:  energy~10^6  → shift~0  → llr=max0-max1 ≈ ±50K
         //   양자화 해상도: 100,000 단계 (17비트 상당) → Viterbi 성능 영향 0
-        static constexpr int64_t VITERBI_SAFE_LIMIT = 100000LL;
-        while (peak > VITERBI_SAFE_LIMIT && shift < 60) {
+        static constexpr uint32_t VITERBI_SAFE_LIMIT = 100000u;
+        while (peak > VITERBI_SAFE_LIMIT && shift < 31) {
             peak >>= 1;
             shift++;
         }
 
         for (int b = 0; b < bps; ++b) {
-            int64_t max0 = 0, max1 = 0;
+            uint32_t max0 = 0u, max1 = 0u;
             for (int m = 0; m < valid; ++m) {
-                const int64_t e = energy[m] >> shift;
-                if ((m >> (bps - 1 - b)) & 1) { if (e > max1) max1 = e; }
-                else { if (e > max0) max0 = e; }
+                const uint32_t e = energy[m] >> static_cast<uint32_t>(shift);
+                if ((m >> (bps - 1 - b)) & 1) {
+                    if (e > max1) { max1 = e; }
+                }
+                else {
+                    if (e > max0) { max0 = e; }
+                }
             }
-            llr[b] = static_cast<int32_t>(max0 - max1);
+            if (max0 >= max1) {
+                llr[b] = static_cast<int32_t>(max0 - max1);
+            }
+            else {
+                llr[b] = -static_cast<int32_t>(max1 - max0);
+            }
         }
     }
 
@@ -199,7 +207,6 @@ namespace ProtectedEngine {
     //   → 현재 UDIV가 가장 단순하고 결정론적 (양산 안정성 우선)
     // =====================================================================
 
-    // [BUG-19] TOTAL_CODED 크기 검증: Fisher-Yates 최대 반복 횟수
     static_assert(FEC_HARQ::TOTAL_CODED <= 1024,
         "TOTAL_CODED > 1024: Fisher-Yates UDIV 오버헤드 재검토 필요");
 
@@ -217,16 +224,22 @@ namespace ProtectedEngine {
     void FEC_HARQ::Bit_Deinterleave(int32_t* soft, int n, uint32_t seed,
         WorkBuf& wb) noexcept {
         if (!soft || n < 2) return;
-        for (int i = 0; i < n; ++i) wb.perm[i] = i;
+        for (int i = 0; i < n; ++i) {
+            wb.perm[i] = static_cast<uint16_t>(i);
+        }
         uint32_t s = (seed == 0u) ? 0xDEADBEEFu : seed;
         for (int i = n - 1; i > 0; --i) {
             s = xs(s);
             // [항목⑨] % 불가피: Fisher-Yates 균등 분포 필수
             int j = static_cast<int>(s % static_cast<uint32_t>(i + 1));
-            int t = wb.perm[i]; wb.perm[i] = wb.perm[j]; wb.perm[j] = t;
+            const uint16_t t = wb.perm[i];
+            wb.perm[i] = wb.perm[static_cast<size_t>(j)];
+            wb.perm[static_cast<size_t>(j)] = t;
         }
         std::memset(wb.tmp_soft, 0, sizeof(wb.tmp_soft));
-        for (int i = 0; i < n; ++i) wb.tmp_soft[wb.perm[i]] = soft[i];
+        for (int i = 0; i < n; ++i) {
+            wb.tmp_soft[static_cast<size_t>(wb.perm[i])] = soft[i];
+        }
         for (int i = 0; i < n; ++i) soft[i] = wb.tmp_soft[i];
     }
 

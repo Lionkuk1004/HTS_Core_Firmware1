@@ -31,7 +31,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -304,7 +304,6 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        // [FIX-GHOST] DEEP_SLEEP: RX 완전 차단
         //  기존: last_beacon_ms 미갱신 → 49일 래핑 시 유령 윈도우
         //  수정: 타이머 연산 자체를 건너뛰고 무조건 false
         //  DEEP_SLEEP에서는 모듈 일시정지 → RF OFF → Power_Manager 슬립
@@ -414,7 +413,6 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        // [FIX-DRAIN] DEEP_SLEEP: 모듈 완전 일시정지
         //  TX 차단: RF/PA 미가동 → 배터리 보존
         //  타임아웃 차단: 이웃 테이블 동결 (WATCH 전환 시 재활용)
         //  WATCH/ALERT 전환 시 first_tick=true로 즉시 비콘 재개
@@ -432,7 +430,6 @@ namespace ProtectedEngine {
         }
 
         // ── 1. 타임아웃 검사 (모드별 타임아웃 적용) ──
-        // [FIX-ZOMBIE] 콜백 한도(4개) 초과 시 삭제 보류 → 다음 Tick에서 처리
         //  기존: 5번째 만료 이웃도 Wipe → 콜백 미도달 → 라우팅 좀비
         //  수정: expired_count >= 4 → break → 다음 Tick에서 재검사
         uint16_t expired_ids[4] = {};
@@ -500,7 +497,6 @@ namespace ProtectedEngine {
 
         // ── 크리티컬 밖 ──
 
-        // [FIX-DANGLING] 비콘 인큐를 콜백보다 먼저 수행
         //  기존: 콜백 → 인큐 → 콜백의 깊은 스택이 beacon_pkt 오염 위험
         //  수정: 인큐 → 콜백 → beacon_pkt 사용 완료 후 콜백 실행
         if (send_beacon) {

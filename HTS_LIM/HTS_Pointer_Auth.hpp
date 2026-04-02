@@ -3,36 +3,18 @@
 // 포인터 인증 코드(PAC) — Murmur3 비가역 해시 기반
 // Target: STM32F407 (Cortex-M4, 32-bit)
 //
-// [양산 수정 — 22건]
-//  BUG-01~05: XOR→Murmur3, 런타임키, 상수시간비교, iostream제거, 64비트호환
-//  BUG-06~14: atomic 타입 통일, abort→자가치유, redundant check,
-//             매직 넘버 상수화, 키 소거 API, include 파일명,
-//             static_assert, 인스턴스화 차단, 무한스핀→유한대기+폴백
-//
-// ─────────────────────────────────────────────────────────────────────────
-//  외주 업체 통합 가이드
-// ─────────────────────────────────────────────────────────────────────────
-//
-//  [사용법]
-//   PAC_Manager::Initialize_Runtime_Key(puf_seed);  // 부팅 시 최우선 호출!
-//   uint64_t sp = PAC_Manager::Sign_Pointer(my_ptr);
-//   auto* p = PAC_Manager::Authenticate_Pointer<MyType>(sp);
-//   // p == my_ptr (변조 시 자가치유)
-//   PAC_Manager::Wipe_Runtime_Key();  // 세션 종료 시
-//
-//  [⚠ 호출 순서 필수]
-//   Initialize_Runtime_Key를 Sign_Pointer보다 먼저 호출해야 합니다.
-//   순서 역전 시: Ensure_Key가 임시키 생성 → Initialize가 덮어쓰기
-//   → 임시키로 서명된 포인터 전부 무효 → Authenticate에서 Halt
-//
-//  [보안 모델]
-//   PAC = Murmur3_Fmix64(addr ⊕ key + rotr(key,17)) 32비트 절사
-//   키 역산 수학적 불가, 관측 N쌍 수집해도 연립방정식 풀기 불가
-//   ARM 32-bit: PAC[63:32] + addr[31:0] → 1/2^32 위변조 탐지
-//   PC  64-bit: PAC[63:48] + addr[47:0] → 1/2^16 (테스트 전용)
-//
-// ─────────────────────────────────────────────────────────────────────────
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 #include <cstdint>
 
@@ -51,7 +33,6 @@ namespace ProtectedEngine {
         static constexpr uint64_t    ADDR_MASK = (1ULL << ADDR_BITS) - 1u;
         static constexpr uint64_t    PAC_MASK = ~ADDR_MASK;
 
-        // [BUG-07] 빌드 타임 검증
         static_assert(PAC_BITS > 0, "PAC must have at least 1 bit");
         static_assert(ADDR_BITS + PAC_BITS == 64u, "Bits must sum to 64");
         static_assert((ADDR_MASK | PAC_MASK) == ~uint64_t(0),
@@ -62,7 +43,6 @@ namespace ProtectedEngine {
         static uint32_t Compute_PAC(uint64_t raw_addr) noexcept;
         static void Ensure_Key_Initialized() noexcept;
 
-        // [BUG-02] 자가 치유 헬퍼 (abort 대체)
         [[noreturn]] static void Halt_PAC_Violation(const char* reason) noexcept;
 
     public:
@@ -71,7 +51,6 @@ namespace ProtectedEngine {
         ///          호출 전 서명된 포인터는 새 키로 재서명 필수
         static void Initialize_Runtime_Key(uint64_t entropy_seed) noexcept;
 
-        /// @brief [BUG-05] 런타임 키 보안 소거 — 세션 종료 시 호출
         static void Wipe_Runtime_Key() noexcept;
 
         /// @brief 포인터에 비가역 PAC 서명 부착
@@ -112,7 +91,6 @@ namespace ProtectedEngine {
             // 3. 상수시간 PAC 비교 (volatile XOR)
             volatile uint32_t diff = stored_pac ^ expected_pac;
 
-            // [BUG-03] Redundant check — 글리치로 첫 번째 분기 스킵 대비
             // 2회 독립 검사로 단일 글리치 방어
             if (diff != 0u) {
                 Halt_PAC_Violation("PAC mismatch — pointer tampered");
@@ -130,7 +108,6 @@ namespace ProtectedEngine {
             return ptr;
         }
 
-        // [BUG-08] 정적 전용 클래스 — 인스턴스화 차단 (6종)
         PAC_Manager() = delete;
         ~PAC_Manager() = delete;
         PAC_Manager(const PAC_Manager&) = delete;

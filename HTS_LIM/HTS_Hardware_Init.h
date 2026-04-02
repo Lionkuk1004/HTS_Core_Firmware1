@@ -17,13 +17,18 @@
 //  → DMA 컨트롤러와 CPU 간 메모리 일관성 보장 목적
 //  → Cortex-M7(STM32F7/H7) 마이그레이션 시 실제 캐시 관리 코드 추가 필요
 //
-// [양산 수정]
-//  1. UART 레지스터 주소: namespace 상수로 공개 (fputc 접근용)
-//  2. 문서화: AMI 커스텀 레지스터 vs STM32 표준 구분 명시
-//  3. 문서화: Cache 함수 = DMA 배리어 역할 명시
-//  4. fputc: EMCON 모드 문서화
-// =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 #include <cstdint>
 #include <cstdio>
@@ -45,16 +50,44 @@ namespace ProtectedEngine {
 
     static const uint32_t WDT_CTRL_REG = 0x80003000u;
     static const uint32_t WDT_FEED_REG = 0x80003004u;
+
+    //  검증용 명세 — .cpp Initialize_MPU()와 동일 값 필수
+    //    MPU_TYPE  = 0xE000ED90  (offset +0xD90, TYPE.DREGION[15:8] = 지원 리전 수)
+    //    MPU_CTRL  = 0xE000ED94  (PRIVDEFENA|HFNMIENA|ENABLE)
+    //    MPU_RNR   = 0xE000ED98  (리전 번호 선택 0~7)
+    //    MPU_RBAR  = 0xE000ED9C  (리전 베이스 + VALID/REGION)
+    //    MPU_RASR  = 0xE000EDA0  (속성·SIZE·ENABLE)
+    //    MPU_CTRL_FULL = 0x07u = bit0 ENABLE | bit1 HFNMIENA | bit2 PRIVDEFENA
+    static constexpr uintptr_t MPU_TYPE_ADDR = 0xE000ED90u;
+    static constexpr uintptr_t MPU_CTRL_ADDR = 0xE000ED94u;
+    static constexpr uintptr_t MPU_RNR_ADDR = 0xE000ED98u;
+    static constexpr uintptr_t MPU_RBAR_ADDR = 0xE000ED9Cu;
+    static constexpr uintptr_t MPU_RASR_ADDR = 0xE000EDA0u;
+    static constexpr uint32_t  MPU_CTRL_FULL = 0x07u;
+
+    // [H-1] SCS 레이아웃·MPU_CTRL 비트 — 컴파일 타임 정합 (K-1/R-11)
+    static_assert(
+        MPU_RBAR_ADDR + static_cast<uintptr_t>(4) == MPU_RASR_ADDR,
+        "MPU RASR must immediately follow RBAR (+4) in ARMv7-M SCS");
+    static_assert(
+        MPU_CTRL_FULL == (1u | 2u | 4u),
+        "MPU_CTRL FULL: ENABLE|HFNMIENA|PRIVDEFENA");
 #endif
 
     class Hardware_Init_Manager {
     public:
-        // 시스템 초기화 (ARM: WDT + DWT CYCCNT 활성화 / PC: no-op)
+        // 시스템 초기화 (ARM: WDT + MPU + DWT CYCCNT 활성화 / PC: no-op)
         static void Initialize_System() noexcept;
 
         // 워치독 타이머 킥 (ARM: WDT 피드 / PC: no-op)
         static void Kick_Watchdog() noexcept;
 
+    private:
+        // @param stack_bottom_addr  스택 가드 리전 베이스 (링커 __stack_bottom__ 또는 폴백)
+        // @note ARM 전용 — PC 빌드에서 no-op
+        static void Initialize_MPU(uint32_t stack_bottom_addr) noexcept;
+
+    public:
         // DMA TX 전: CPU→RAM 메모리 배리어 (DMB)
         static void Cache_Clean_Tx(uint32_t* buffer, size_t length) noexcept;
 

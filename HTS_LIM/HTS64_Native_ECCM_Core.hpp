@@ -11,7 +11,6 @@
 ///   ④ 32비트 argmax → 에너지 임계 판정 (NF 기반 적응형)
 ///
 /// @par 양산 수정 이력 — 30건
-///  - BUG-01~15 (이전 세션)
 ///  - BUG-16 @b [CRIT] unique_ptr Pimpl → placement new (zero-heap)
 ///  - BUG-17 @b [HIGH] decode_core 핫패스 32비트 argmax 최적화
 ///  - BUG-18 @b [MED]  is_barrage 자살 스위치 제거 → !is_clean 단일 조건
@@ -52,6 +51,18 @@
 ///  - @c int64_t 는 소프트 클리핑 곱셈·임계값 비교 내부에서만 허용
 // =============================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
+
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
@@ -128,7 +139,6 @@ namespace ProtectedEngine {
         const Impl* get_impl() const noexcept;
     };
 
-    // [BUG-23] 래퍼 총 sizeof SRAM 예산 검증
     // impl_buf_[2048] + bool + pointer + 패딩 ≈ 2056B
     // CCM 64KB의 3% 이내 — 스택 배치 시 여유 확인 필요
     static_assert(sizeof(HTS64_Native_ECCM_Core) <= 4096u,

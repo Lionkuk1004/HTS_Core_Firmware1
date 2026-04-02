@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // HTS_V400_Dispatcher.cpp — V400 동적 모뎀 디스패처 + 3층 항재밍 통합
 //
 // [세션 10 수정]
@@ -19,13 +19,6 @@
 //           Decode_Core_Split const int32_t* 파라미터와 타입 정확 일치
 //           평탄화 [NSYM64][C64] CCM 배열 시작 주소 직접 전달
 //
-//  BUG-FIX-V2 [CRIT] on_sym_() IQ_INDEPENDENT Q채널 AJC 피드백 분실
-//         기존: ajc_.Update_AJC(I 채널 지표만 전달, Q 채널 소멸)
-//           → AJC LMS 필터가 Q 채널 재밍 패턴 미학습
-//           → I/Q 독립 모드에서 Q 채널 재밍 완전 무방비
-//         수정: I 채널 + Q 채널 각각 독립 Update_AJC 호출
-//           rs.sym_Q / rs.best_eQ / rs.second_eQ → Q 채널 독립 학습 복구
-// =============================================================================
 #include "HTS_V400_Dispatcher.hpp"
 #include "HTS_RF_Metrics.h"   // Tick_Adaptive_BPS 용
 #include "HTS_Secure_Memory.h"
@@ -37,7 +30,6 @@ namespace ProtectedEngine {
     // ── [BUG-54] HARQ Q채널 — CCM 배치 file-scope 배열 ──
     //  sizeof(HTS_V400_Dispatcher)에서 제외하기 위해 클래스 외부 정의.
     //  생성자에서 harq_Q_ 포인터를 이 배열에 연결.
-    //  [FIX-CCM-BSS] .ccm_bss 섹션 → 바이너리 108KB 절감
     //  = {} 제거 → .bss 배치 (startup zero-fill + full_reset_ memset 이중 보장)
     //  PC: 일반 BSS (.bss) — 테스트 시 제약 없음
     HTS_CCM_SECTION
@@ -74,7 +66,6 @@ namespace ProtectedEngine {
                 }
     }
 
-    // [FIX-STACK] static walsh_dec 삭제 — walsh_dec_full_(멤버) 통합
     //  스택 512B(sI[64]+sQ[64]) 제거, dec_wI_/dec_wQ_ 멤버 재활용
 
     HTS_V400_Dispatcher::SymDecResult
@@ -223,7 +214,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  soft_clip_iq — 아웃라이어 소프트 클리핑
     //
-    //  [BUG-45] int64_t / int64_t 나눗셈 완전 제거 — Q8 역수 곱셈
     //
     //  [문제]
     //   기존: (int64_t(I[i]) * clip) / m → __aeabi_ldivmod (~200cyc × 2)
@@ -266,7 +256,6 @@ namespace ProtectedEngine {
         const uint32_t clip = bl << 2u;
         if (clip < 4u) return;
 
-        // [BUG-45] clip << 8 오버플로우 방어 static_assert
         //  clip max = 65535 << 2 = 262140
         //  clip << 8 = 262140 × 256 = 67,107,840 < UINT32_MAX
         static_assert(
@@ -276,7 +265,6 @@ namespace ProtectedEngine {
         const uint32_t clip8 = clip << 8u;
         const uint32_t thresh = clip << 1u;
 
-        // [FIX-BRANCHLESS] 조건분기 제거 — 사이드채널 방어
         //  항상 ratio 계산 + 비트마스크로 선택 (타이밍 일정)
         for (int i = 0; i < nc; ++i) {
             const uint32_t m = mags[i] | 1u;  // div-by-zero 방지 (branchless)
@@ -303,14 +291,12 @@ namespace ProtectedEngine {
         }
     }
 
-    // [BUG-50] 블랙홀 임계값 (J-3 매직넘버 금지)
     static constexpr uint32_t k_BH_NOISE_FLOOR = 50u;   // baseline 하한 (무간섭 판별)
     static constexpr uint32_t k_BH_SATURATION = 8000u;  // baseline 상한 (ADC 포화 방어)
 
     void HTS_V400_Dispatcher::blackhole_(int16_t* I, int16_t* Q, int nc) noexcept {
         if (I == nullptr || Q == nullptr || nc <= 0) return;
         if (nc > 64) return;
-        // [FIX-STACK] 로컬 배열 제거 → 멤버 scratch 재활용
         for (int i = 0; i < nc; ++i) { scratch_mag_[i] = 0u; scratch_sort_[i] = 0u; }
         for (int i = 0; i < nc; ++i) {
             scratch_mag_[i] = fast_abs(static_cast<int32_t>(I[i])) +
@@ -328,11 +314,8 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-41/44] cw_cancel_64_ — CW 사전 소거 + AJC 프로파일 시딩
     //
-    //  [BUG-41] 기존 동작: 상관 추정 → CW 제거 → 신호 정제
     //
-    //  [BUG-44] 신규 추가: CW 진폭 추정 직후 ajc_.Seed_CW_Profile() 호출
     //   → jprof_[]에 CW 파형을 직접 주입
     //   → AJC가 sym 판정 귀환 없이 첫 심볼부터 CW 제거 작동
     //   → CW 17~19dB 닭-달걀 문제 해소
@@ -428,7 +411,6 @@ namespace ProtectedEngine {
     }
 
     HTS_V400_Dispatcher::~HTS_V400_Dispatcher() noexcept {
-        // [FIX-D4/D-2] CCM + 내부 버퍼/시드 개별 소거 (D-2)
         // [CRIT] sizeof(*this)로 this 전체 secureWipe 금지:
         //   · 비트리비얼 멤버 ajc_(AntiJamEngine) 스토리지를 암시적 ~ 이전에 파쇄 → UB
         //   · (가상 함수가 없어도) 하위 객체 수명/소멸 순서 보장 불가
@@ -489,12 +471,21 @@ namespace ProtectedEngine {
     {
         if (p_metrics_ == nullptr) { return; }
 
+        const RxPhase prev_phase = phase_;
+        const int     prev_bps   = cur_bps64_;
+        const IQ_Mode prev_iq    = iq_mode_;
+        bool need_reset = false;
+
         const uint8_t bps = p_metrics_->current_bps.load(
             std::memory_order_acquire);
 
         if (bps >= static_cast<uint8_t>(FEC_HARQ::BPS64_MIN) &&
             bps <= static_cast<uint8_t>(FEC_HARQ::BPS64_MAX)) {
-            cur_bps64_ = static_cast<int>(bps);
+            const int new_bps = static_cast<int>(bps);
+            if (new_bps != prev_bps) {
+                cur_bps64_ = new_bps;
+                if (prev_phase != RxPhase::WAIT_SYNC) { need_reset = true; }
+            }
         }
 
         // ── 적응형 I/Q 모드 전환 (히스테리시스) ──────────────
@@ -512,6 +503,10 @@ namespace ProtectedEngine {
             // 재밍 시 BPS도 최소로 복원
             if (cur_bps64_ > FEC_HARQ::BPS64_MIN) {
                 cur_bps64_ = FEC_HARQ::BPS64_MIN;
+                if (prev_phase != RxPhase::WAIT_SYNC) { need_reset = true; }
+            }
+            if (prev_iq != IQ_Mode::IQ_SAME) {
+                if (prev_phase != RxPhase::WAIT_SYNC) { need_reset = true; }
             }
         }
         else if (nf < NF_IQ_SPLIT_TH) {
@@ -524,6 +519,10 @@ namespace ProtectedEngine {
                 iq_mode_ = IQ_Mode::IQ_INDEPENDENT;
                 if (cur_bps64_ < IQ_BPS_PEACETIME) {
                     cur_bps64_ = IQ_BPS_PEACETIME;
+                    if (prev_phase != RxPhase::WAIT_SYNC) { need_reset = true; }
+                }
+                if (prev_iq != IQ_Mode::IQ_INDEPENDENT) {
+                    if (prev_phase != RxPhase::WAIT_SYNC) { need_reset = true; }
                 }
             }
         }
@@ -531,10 +530,11 @@ namespace ProtectedEngine {
             // SPLIT_TH ≤ NF < SAME_TH: 현재 모드 유지 (히스테리시스 영역)
             iq_upgrade_count_ = 0u;
         }
+
+        if (need_reset) { full_reset_(); }
     }
 
     void HTS_V400_Dispatcher::full_reset_() noexcept {
-        // [BUG-44] full_reset_는 phase_ 직접 기록 (set_phase_ 재귀 방지)
         // WAIT_SYNC 전이는 모든 상태에서 무조건 합법
         phase_ = RxPhase::WAIT_SYNC;
         cur_mode_ = PayloadMode::UNKNOWN;
@@ -556,7 +556,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-44] CFI 상태 전이 검증 (항목⑬)
     //
     //  비트마스크 합법 전이 테이블 — Constant-time (분기 0개)
     //
@@ -646,7 +645,6 @@ namespace ProtectedEngine {
             std::memcpy(orig_I_, buf_I_, nc * sizeof(int16_t));
             std::memcpy(orig_Q_, buf_Q_, nc * sizeof(int16_t));
 
-            // [BUG-41/44] CW 소거 + AJC 시딩 (DATA 64칩 전용)
             if (cur_mode_ == PayloadMode::DATA) {
                 cw_cancel_64_(buf_I_, buf_Q_);
             }
@@ -658,10 +656,8 @@ namespace ProtectedEngine {
 
             if (nc == 16) {
                 if (sym_idx_ < FEC_HARQ::NSYM16) {
-                    // [BUG-51] sI/sQ 저장 삭제 → HARQ 즉시 누적
                     FEC_HARQ::Feed16_1sym(rx_.m16, buf_I_, buf_Q_, sym_idx_);
 
-                    // [FIX-4BIT] 4-bit delta packing (I|Q 각 상위 4비트)
                     for (int c = 0; c < nc; ++c) {
                         const uint8_t hiI = static_cast<uint8_t>(
                             (orig_I_[c] >> 12) & 0x0Fu);
@@ -697,7 +693,6 @@ namespace ProtectedEngine {
                                 static_cast<int32_t>(buf_Q_[c]);
                         }
 
-                        // [FIX-4BIT] I/Q 독립: I심볼→iq4[si_I], Q심볼→iq4[si_Q]
                         for (int c = 0; c < nc; ++c) {
                             const uint8_t hiI = static_cast<uint8_t>(
                                 (orig_I_[c] >> 12) & 0x0Fu);
@@ -725,7 +720,6 @@ namespace ProtectedEngine {
                                 static_cast<int32_t>(buf_Q_[c]);
                         }
 
-                        // [FIX-4BIT] I=Q 동일: I|Q 각 상위 4비트 패킹
                         for (int c = 0; c < nc; ++c) {
                             const uint8_t hiI = static_cast<uint8_t>(
                                 (orig_I_[c] >> 12) & 0x0Fu);
@@ -745,7 +739,6 @@ namespace ProtectedEngine {
                 // I/Q 독립: 각 채널 분리 FWHT → 2심볼 디코딩
                 SymDecResultSplit rs = walsh_dec_split_(buf_I_, buf_Q_, nc);
                 if (ajc_enabled_) {
-                    // [BUG-FIX CRIT] Q 채널 AJC 피드백 분실 수정
                     //
                     //  기존 문제:
                     //    ajc_.Update_AJC(orig_I_, orig_Q_,
@@ -802,7 +795,6 @@ namespace ProtectedEngine {
         }
         else if (cur_mode_ == PayloadMode::VIDEO_16 ||
             cur_mode_ == PayloadMode::VOICE) {
-            // [FIX-HARQ] Init16 제거 — READ_PAYLOAD 진입 시 완료
             FEC_HARQ::Advance_Round_16(rx_.m16);
             harq_round_++;
             pkt.success = FEC_HARQ::Decode16(rx_.m16, pkt.data,
@@ -817,19 +809,14 @@ namespace ProtectedEngine {
             else { pay_recv_ = 0; sym_idx_ = 0; set_phase_(RxPhase::WAIT_SYNC); }
         }
         else if (cur_mode_ == PayloadMode::DATA) {
-            // [FIX-HARQ] Init64 제거 — READ_PAYLOAD 진입 시 완료
-            // [BUG-51] Feed64_A 삭제 — on_sym_()에서 인라인으로 이미 누적
-            // [BUG-54] HARQ 라운드 증가
             if (!rx_.m64_I.ok) rx_.m64_I.k++;
             harq_round_++;
 
-            // [BUG-54] I/Q 분리 Decode — Decode_Core_Split 사용
             //  harq_I(SRAM) + harq_Q(CCM) → 별도 포인터 전달
             {
                 const int bps = cur_bps64_;
                 if (bps >= FEC_HARQ::BPS64_MIN && bps <= FEC_HARQ::BPS64_MAX) {
                     const int nsym = FEC_HARQ::nsym_for_bps(bps);
-                    // [BUG-FIX FATAL] Q 채널 포인터 캐스팅 오류 수정
                     //  기존: &harq_Q_[0][0]
                     //    harq_Q_의 타입은 int32_t(*)[C64] (배열 포인터).
                     //    harq_Q_[0]은 int32_t[C64] 배열을 역참조한 결과이고,
@@ -875,7 +862,6 @@ namespace ProtectedEngine {
                 ? sym_idx_ : FEC_HARQ::NSYM16;
             for (int s = 0; s < nsym; ++s) {
                 if (ajc_enabled_) {
-                    // [FIX-4BIT] 4-bit → int16_t 복원 (AJC API 호환)
                     int16_t tmp_I[16], tmp_Q[16];
                     for (int c = 0; c < nc; ++c) {
                         const uint8_t pk = orig_acc_.acc16.iq4[s][c];
@@ -901,7 +887,6 @@ namespace ProtectedEngine {
             const int nsym = (sym_idx_ < nsym64) ? sym_idx_ : nsym64;
             for (int s = 0; s < nsym; ++s) {
                 if (ajc_enabled_) {
-                    // [FIX-4BIT] 4-bit → int16_t 복원 (orig_I_/orig_Q_ 재활용)
                     for (int c = 0; c < nc; ++c) {
                         const uint8_t pk = orig_acc_.acc64.iq4[s][c];
                         int32_t nI = static_cast<int32_t>((pk >> 4u) & 0x0Fu);
@@ -1031,7 +1016,6 @@ namespace ProtectedEngine {
 
         if (phase_ == RxPhase::WAIT_SYNC) {
             if (buf_idx_ == 64) {
-                // [FIX-STACK] wI/wQ 로컬 제거 → orig_I_/orig_Q_ 재활용
                 std::memcpy(orig_I_, buf_I_, 64 * sizeof(int16_t));
                 std::memcpy(orig_Q_, buf_Q_, 64 * sizeof(int16_t));
 
@@ -1056,7 +1040,6 @@ namespace ProtectedEngine {
                 }
                 if (matched) { buf_idx_ = 0; }
                 else {
-                    // [BUG-46] memmove → 인라인 수동 시프트 (Ultra-Hot Path)
                     //
                     // 이 코드는 WAIT_SYNC에서 칩 1개당 1회 실행됩니다.
                     // 프리앰블 탐색 중 수십만 칩이 연속으로 도착하므로
@@ -1077,7 +1060,6 @@ namespace ProtectedEngine {
         }
         else if (phase_ == RxPhase::READ_HEADER) {
             if (buf_idx_ == 64) {
-                // [FIX-STACK] wI/wQ 로컬 제거 → orig_I_/orig_Q_ 재활용
                 std::memcpy(orig_I_, buf_I_, 64 * sizeof(int16_t));
                 std::memcpy(orig_Q_, buf_Q_, 64 * sizeof(int16_t));
 
@@ -1109,7 +1091,6 @@ namespace ProtectedEngine {
                             : FEC_HARQ::DATA_K;
                         set_phase_(RxPhase::READ_PAYLOAD); buf_idx_ = 0;
 
-                        // [FIX-HARQ] HARQ 누적기 초기화 — Feed_1sym 호출 전 필수
                         //  기존: try_decode_ 내부에서 Init → Feed 이후라 데이터 파괴
                         //  수정: READ_PAYLOAD 진입 시 첫 라운드만 Init
                         if (!harq_inited_) {

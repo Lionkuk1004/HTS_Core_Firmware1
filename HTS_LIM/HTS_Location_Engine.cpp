@@ -45,7 +45,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p));
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -99,7 +99,6 @@ namespace ProtectedEngine {
         return static_cast<int16_t>(v);
     }
 
-    // [FIX-C4505] fast_abs 삭제 (미사용 — Mesh_Sync에서만 사용)
 
     // =====================================================================
     //  삼각측량 (3앵커 Cramer — 순수 32비트, ASIC 호환)
@@ -148,7 +147,6 @@ namespace ProtectedEngine {
         const int32_t K12 = (qd1 * qd1 - qd2 * qd2) + (qx2 * qx2 + qy2 * qy2);
         const int32_t K13 = (qd1 * qd1 - qd3 * qd3) + (qx3 * qx3 + qy3 * qy3);
 
-        // [BUG-FIX FATAL] x_num/y_num: int32_t 오버플로우 → int64_t
         //
         //  위협: K12(~4×10^6) × qy3(~10^3) = ~4×10^9 > INT32_MAX(2.1×10^9)
         //        x_num(~10^9) × inv_det(~10^5) = ~10^14 >> INT32_MAX
@@ -164,7 +162,6 @@ namespace ProtectedEngine {
         const int32_t det_full = det_half * 2;
         if (det_full == 0) { return r; }
 
-        // [FIX-ALU] 역수 곱셈: 나눗셈 2회 → 1회 + 곱셈 2회
         //  inv_det = (1 << 20) / det_full   (Q20 역수, SDIV 1회)
         //  x = (x_num × inv_det) >> 20      (SMULL 1회 + 시프트)
         //  y = (y_num × inv_det) >> 20      (SMULL 1회 + 시프트)
@@ -173,7 +170,6 @@ namespace ProtectedEngine {
         const int32_t inv_det =
             (static_cast<int32_t>(1) << RECIP_SHIFT) / det_full;
 
-        // [BUG-FIX FATAL] int64_t 곱셈: x_num(64) × inv_det(32) → 64비트
         //  Cortex-M4: SMULL+SMLAL 조합 (~2cyc), 기존 int32_t 대비 +1cyc
         const int32_t x_q7 = static_cast<int32_t>(
             (x_num * static_cast<int64_t>(inv_det)) >> RECIP_SHIFT);
@@ -229,7 +225,6 @@ namespace ProtectedEngine {
         uint8_t      family_count = 0u;
         uint8_t      battery_pct = 100u;
         bool         is_moving = false;
-        // [BUG-FIX CRIT] Last Gasp: bool → 3상 카운터 (IDLE/ACTIVE/DONE)
         //  기존: last_gasp_sent=true → Tick 빈 블록 → 전송 0회
         //  수정: remain=3→2→1→DONE 카운터 + DONE 센티넬(재발동 영구 차단)
         //
@@ -242,7 +237,6 @@ namespace ProtectedEngine {
         uint32_t     prev_interval = 0xFFFFFFFFu;
 
         // 감사 로그 (8건 링버퍼)
-        // [FIX-1] 호출 규약: 반드시 caller가 loc_critical 보호 내에서 호출
         AuditEntry   audit_log[8] = {};
         uint8_t      audit_head = 0u;
         uint8_t      audit_count = 0u;
@@ -501,7 +495,6 @@ namespace ProtectedEngine {
 
         // 최소 3앵커
         if (match_count < 3u || !ref_set) {
-            // [FIX-RACE] position 쓰기도 크리티컬 내부
             p->position.valid = 0u;
             p->position.anchor_count = static_cast<uint8_t>(match_count);
             loc_critical_exit(pm);
@@ -528,7 +521,6 @@ namespace ProtectedEngine {
         uint8_t valid_count = 0u;
 
         // ② WLS: 정적 조합 테이블 (3중 루프 제거 — ASIC FSM 방지)
-        //  [FIX-FSM] 런타임 루프 대신 constexpr 테이블 순회
         //  HLS: 단일 for 루프 → 파이프라인 전개 가능
         struct Combo { uint8_t i; uint8_t j; uint8_t k; };
         static constexpr Combo combo_table[8] = {
@@ -620,7 +612,6 @@ namespace ProtectedEngine {
             PositionResult empty = {};
             return empty;
         }
-        // [FIX-RACE] position 읽기도 크리티컬 보호 (Tearing 방지)
         const uint32_t pm = loc_critical_enter();
         const PositionResult result = p->position;
         loc_critical_exit(pm);
@@ -638,7 +629,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  HMAC 간이 검증 (양산 시 LSH256_Bridge::Hash_256 연동)
     //
-    //  [FIX-3] 기존: sig != 0 → 통과 (쓰레기 값 우회 가능)
     //  수정: 토큰 필드로 해시 계산 → 서명과 constant-time 비교
     //  양산: LSH256_Bridge::Hash_256(token_data, len, expected)
     // =====================================================================
@@ -698,7 +688,6 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        // [FIX-1] 모든 감사 로그를 크리티컬 내에서 기록
         const uint32_t pm = loc_critical_enter();
 
         // 대상 확인: 내 ID 또는 와일드카드(0xFFFF)
@@ -742,7 +731,6 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // [FIX-3] 서명 검증 (간이 → 양산 시 HMAC-LSH256)
         if (!verify_token_signature(token)) {
             p->log_audit(current_sec, token.agency_id, 3u);
             loc_critical_exit(pm);
@@ -817,7 +805,6 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p != nullptr) { p->battery_pct = pct; }
 
-        // [BUG-FIX CRIT] Last Gasp: 배터리 5% 미만 + EMERGENCY 활성 → 3회 버스트
         //  remain==IDLE(0)일 때만 발동 → DONE(0xFF)이면 조건 불일치 → 재발동 불가
         //  → 배터리 5% 유지 구간에서 무한 버스트 지옥 원천 차단
         if (p != nullptr && pct < 5u &&
@@ -916,12 +903,10 @@ namespace ProtectedEngine {
 
         // ── [BUG-FIX CRIT] Last Gasp: 배터리 < 5% → 즉시 3회 버스트 ──
         //
-        //  [BUG-FIX FATAL] goto → send_now 플래그 (C++ 표준 위반 해소)
         //   기존 goto loc_send_now: const uint32_t interval/elapsed 초기화를
         //   건너뛰어 "crosses initialization" 컴파일 에러 발생
         //   수정: bool send_now 플래그로 interval 검사 분기 우회
         //
-        //  [BUG-FIX CRIT] 무한 버스트 방지: DONE 센티넬(0xFF)
         //   기존: remain 0→3 재충전 무한 반복 (배터리 즉시 탕진)
         //   수정: 3→2→1→DONE(0xFF) → Set_Battery_Percent에서 재발동 불가
         //
@@ -952,7 +937,6 @@ namespace ProtectedEngine {
             const uint32_t interval = p->get_report_interval_ms();
             if (interval == 0xFFFFFFFFu) { return; }
 
-            // [FIX-2] 주기 변경 감지 → last_report_ms 리셋
             if (interval != p->prev_interval) {
                 p->last_report_ms = systick_ms;
                 p->prev_interval = interval;

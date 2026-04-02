@@ -1,33 +1,13 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Anti_Glitch.cpp
 // 전압 글리칭 / 명령어 스킵 공격 방어 쉴드 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 12건]
-//
-//  ── 기존 (2건) ──
-//  01: ProtectedEngine 네임스페이스로 이동
-//  02: GlitchConsts → 익명 네임스페이스, HW_NOP #undef
-//
-//  ── 세션 8 전수검사 (BUG-03 ~ BUG-08) ──
-//  BUG-03 [MED]  dummy==0 → dummy!=ALU_CANARY 정확 비교 강화
-//  BUG-04 [MED]  매직 넘버 상수화 (ALU_CANARY, GLITCH_HEAL_CODE)
-//  BUG-05 [MED]  static_assert 빌드타임 검증 추가
-//  BUG-06 [LOW]  이동 생성자/대입 차단 완비
-//  BUG-07 [CRIT] 단축평가(||) 4분기 → 비트OR(|) 단일분기 (FI 방어)
-//  BUG-08 [CRIT] volatile fail_acc → 레지스터 격리 (Write Suppression 차단)
-//
-//  ── 세션 10+ (BUG-09 ~ BUG-10) ──
-//  BUG-09 [MED]  ⑭ PC코드 물리삭제: <intrin.h>/__nop()/x86 pause 제거
-//  BUG-10 [LOW]  주석 정합: Target "/ PC" 제거
-//
-// [제약] float 0, double 0, try-catch 0, 힙 0
-// =========================================================================
 #include "HTS_Anti_Glitch.h"
+#include "HTS_Anti_Debug.h"
 #include "HTS_Auto_Rollback_Manager.hpp"
 
 // =========================================================================
-//  [BUG-09] ARM 전용 하드웨어 NOP
 //  MSVC 개발빌드: 빈 매크로 (컴파일만 통과)
 // =========================================================================
 #if (defined(__GNUC__) || defined(__clang__)) && \
@@ -44,12 +24,10 @@ namespace ProtectedEngine {
         constexpr uint32_t LOCKED = 0xAAAAAAAAu;  ///< 잠금 상태 (비트 10 반복)
         constexpr uint32_t UNLOCKED = 0x55555555u;  ///< 해제 상태 (비트 01 반복)
 
-        // [BUG-04] 매직 넘버 상수화
         constexpr uint32_t ALU_CANARY = 0xDEADBEEFu;  ///< ALU 교차 검증 기대값
         constexpr uint32_t GLITCH_HEAL_CODE = 0xFA11FA11u;  ///< 자가 치유 트리거 코드
     }
 
-    // [BUG-05] 빌드 타임 정합성 검증
     static_assert(LOCKED != UNLOCKED,
         "LOCKED and UNLOCKED must differ");
     static_assert((LOCKED^ UNLOCKED) == 0xFFFFFFFFu,
@@ -82,7 +60,6 @@ namespace ProtectedEngine {
     //  2. ALU 교차 검증 (XOR 연산 스킵 시 dummy 변조)
     //  3. 불규칙 NOP 삽입 (타이밍 동기화 교란)
     //
-    //  [BUG-07 CRITICAL] 단축 평가(Short-circuit) 제거
     //
     //    기존: if (check1 != UNLOCKED || check2 != UNLOCKED || ...)
     //    → 컴파일러가 4개의 개별 BNE 분기문을 생성!
@@ -118,8 +95,6 @@ namespace ProtectedEngine {
 
         volatile uint32_t check3 = systemState.load(std::memory_order_acquire);
 
-        // [BUG-07] 비트 OR 누적 → 단일 분기로 합산
-        // [BUG-08] fail_acc에서 volatile 제거 → CPU 레지스터 격리
         //
         //  기존: volatile uint32_t fail_acc → 매 |= 마다 STR(SRAM 쓰기) 강제
         //  → 공격자가 STR 타이밍에 전압 글리치 → Write Suppression
@@ -165,7 +140,7 @@ namespace ProtectedEngine {
         //   분기1 글리치 시: permission은 LOCKED 유지 → 여기서 HALT
         if (permission != UNLOCKED) {
             Auto_Rollback_Manager::Execute_Self_Healing(GLITCH_HEAL_CODE);
-            while (true) { HW_NOP(); }
+            AntiDebugManager::trustedHalt("AntiGlitch: permission gate");
         }
         HW_NOP();
 
@@ -183,7 +158,7 @@ namespace ProtectedEngine {
 #endif
         if (fail_acc != 0u) {
             Auto_Rollback_Manager::Execute_Self_Healing(GLITCH_HEAL_CODE);
-            while (true) { HW_NOP(); }
+            AntiDebugManager::trustedHalt("AntiGlitch: fail_acc reverify");
         }
 
         // ✅ 3중 분기 모두 통과 → 정상 리턴

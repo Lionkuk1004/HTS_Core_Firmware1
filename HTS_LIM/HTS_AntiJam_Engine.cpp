@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_AntiJam_Engine.cpp — 3층 통합 항재밍 엔진
 // Target: STM32F407 (Cortex-M4F, 168MHz, SRAM 192KB)
 //
@@ -99,7 +99,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-44] Seed_CW_Profile — CW 프로파일 직접 시딩
     //
     //  [동작 원리]
     //   cw_cancel_64_()가 상관 연산으로 추정한 ja_I, ja_Q를 받아서
@@ -332,7 +331,6 @@ namespace ProtectedEngine {
         int nc_shift = 0;
         { int tmp = nc; while (tmp > 1) { nc_shift++; tmp >>= 1; } }
 
-        // [BUG-FIX FATAL] I/Q 위상 독립 진폭 복원
         //  기존: amp = (|corr_I|+|corr_Q|)/2/N → I/Q 위상 뭉개기
         //   → 위상≠45° 시 my_sig에 인공 오차 주입 → Phantom Jamming
         //  수정: corr_I/N, corr_Q/N → I축/Q축 독립 부호 보존 진폭
@@ -340,7 +338,6 @@ namespace ProtectedEngine {
         const int32_t amp_I = corr_I >> nc_shift;  // I축 진폭 (부호 보존)
         const int32_t amp_Q = corr_Q >> nc_shift;  // Q축 진폭 (부호 보존)
 
-        // [BUG-FIX FATAL] mismatch: I+Q 양축 합산 (기존 I만 → Q 누락)
         uint32_t mismatch_sum = 0u;
         for (int i = 0; i < nc; ++i) {
             int32_t w = (popc32_(sym_u & static_cast<uint32_t>(i)) & 1u)
@@ -373,7 +370,6 @@ namespace ProtectedEngine {
         for (int i = 0; i < nc; ++i) {
             int32_t w = (popc32_(sym_u & static_cast<uint32_t>(i)) & 1u)
                 ? -1 : 1;
-            // [BUG-FIX FATAL] I/Q 독립 복원 (위상 독립성 보존)
             const int32_t my_sig_I = amp_I * w;
             const int32_t my_sig_Q = amp_Q * w;
             const int32_t pure_J_I = static_cast<int32_t>(orig_I[i]) - my_sig_I;

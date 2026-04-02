@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Dynamic_Key_Rotator.hpp
 // 파일 I/O 및 스토리지 동적 키 로테이터 (블랙박스 은닉형)
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -21,14 +21,12 @@
 //  [보안 설계]
 //   internal_state: PRNG 은닉 상태 (외부 미노출 — Forward/Backward Secrecy)
 //   current_key: Murmur3(state) ^ state 단방향 파생 (역산 불가)
-//   소멸자: internal_state + current_key + 카운터 전체 보안 소거
+//   소멸자: SecureMemory::secureWipe — internal_state/current_key/카운터 (K-5, D-2)
 //   복사/이동: = delete (키 상태 복제 원천 차단)
 //   키 파생: LCG(은닉 상태) → Murmur3 ^ state (Davies-Meyer 유사)
 //
 //  [양산 수정 이력 — 세션 1 (6건) + 세션 5 (7건) = 총 13건]
-//   세션 1: BUG-01~06 (interval=0, Murmur3, pragma O0, C26495,
 //           이전 키 소거, 오버플로)
-//   세션 5: BUG-07~13 (소멸자, move 차단, nodiscard, Doxygen, cstddef,
 //           Forward/Backward Secrecy 상태분리, 데드코드 제거)
 //
 // ─────────────────────────────────────────────────────────────────────────

@@ -1,34 +1,10 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Key_Provisioning.cpp
 // 공장 출하 키 프로비저닝 엔진 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
-// [양산 수정 이력]
-//  v1.0 — 초기 작성
-//    · Pimpl placement new (zero-heap)
-//    · AES-KW 언래핑 → OTP 기록 → Read-Back 검증
-//    · Constant-Time 비교 (타이밍 공격 방지)
-//    · 3중 보안 소거 (volatile + asm clobber + release fence)
-//    · OTP 타임아웃 가드 (무한 루프 방지)
-//    · 디버그 포트 잠금 (RDP Level 2)
-//
-//  BUG-FIX-4 [FATAL] Zero-Key Fallback 취약점 수정
-//    기존: Destroy_Key()가 OTP_KEY_ADDR만 소각, OTP_MAGIC_ADDR 유지
-//          → 재부팅 후 key_destroyed=false, otp_check_magic()=true
-//          → Read_Master_Key()가 0x00 키를 정상 키로 반환 (백도어)
-//    수정: 키 소각 후 OTP_MAGIC_ADDR도 zero_block으로 물리적 소각
-//          → 재부팅 후 otp_check_magic()=false → Is_Provisioned=false
-//          → Zero-Key Fallback Attack 원천 차단
-//
-//  BUG-FIX-5 [CRIT] RDP Lock 상태 하드웨어 확인 누락 수정
-//    기존: debug_locked = RAM 플래그 → 재부팅 후 false로 초기화
-//          → Lock_Debug_Port 재호출 시 RDP Level2 상태에서 OPTCR 재쓰기
-//          → STM32 아키텍처 상 HardFault / PGERR / Brick 발생
-//    수정: set_rdp_level2() 호출 전 FLASH_OPTCR 레지스터 직접 읽어
-//          현재 RDP = 0xCC(Level2)이면 즉시 ALREADY_DONE 반환
-//          → 이중 잠금 시도 원천 차단
-// =========================================================================
 #include "HTS_Key_Provisioning.h"
+#include "HTS_ConstantTimeUtil.h"
 
 #include <atomic>
 #include <cstddef>
@@ -53,20 +29,6 @@ namespace ProtectedEngine {
         __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
-    }
-
-    // =====================================================================
-    //  Constant-Time 비교 (타이밍 사이드채널 차단)
-    //  반환: 0 = 일치, 비0 = 불일치
-    // =====================================================================
-    static uint32_t ct_compare(
-        const uint8_t* a, const uint8_t* b, size_t n) noexcept
-    {
-        uint32_t diff = 0u;
-        for (size_t i = 0u; i < n; ++i) {
-            diff |= static_cast<uint32_t>(a[i] ^ b[i]);
-        }
-        return diff;
     }
 
     // =====================================================================
@@ -323,7 +285,6 @@ namespace ProtectedEngine {
         bool debug_locked = false;
         bool key_destroyed = false;
 
-        // [FIX-DEAD] key_buf 삭제 — Read_Master_Key는 OTP→호출자 직접 복사
         //  캐싱 없이 매번 OTP 직접 읽기 = 키 잔류 표면적 최소화
 
         Impl() noexcept {
@@ -444,13 +405,14 @@ namespace ProtectedEngine {
         uint8_t readback[MASTER_KEY_SIZE] = {};
         otp_read_block(OTP_KEY_ADDR, readback, MASTER_KEY_SIZE);
 
-        const uint32_t diff = ct_compare(plain_key, readback, MASTER_KEY_SIZE);
+        const bool readback_ok = ConstantTimeUtil::compare(
+            plain_key, readback, MASTER_KEY_SIZE);
 
         // 평문 즉시 소거 (사용 완료)
         Key_Prov_Secure_Wipe(plain_key, sizeof(plain_key));
         Key_Prov_Secure_Wipe(readback, sizeof(readback));
 
-        if (diff != 0u) {
+        if (!readback_ok) {
             return KeyProvResult::VERIFY_FAIL;
         }
 
@@ -482,7 +444,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Lock_Debug_Port — JTAG/SWD 영구 잠금
     //
-    //  [BUG-FIX CRIT] RDP 하드웨어 상태 확인 누락 수정
     //
     //  기존 문제:
     //    p->debug_locked(RAM) 만 검사 → 재부팅 시 false 초기화
@@ -498,7 +459,6 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return KeyProvResult::NULL_INPUT; }
 
-        // [BUG-FIX CRIT] 하드웨어 레지스터에서 현재 RDP 레벨 직접 확인
         //  RAM 플래그(p->debug_locked)는 재부팅 시 초기화되므로 신뢰 불가
         //  → FLASH_OPTCR[15:8] = RDP 바이트 직접 읽기
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
@@ -523,17 +483,25 @@ namespace ProtectedEngine {
 
         p->debug_locked = true;
 
-        // [FIX-JTAG] RDP Level 2는 시스템 리셋 후에만 하드웨어 적용
         //  리셋 없이 반환하면 다음 재부팅 전까지 JTAG 열림 (보안 공백)
         //  AIRCR.SYSRESETREQ로 즉시 하드웨어 리셋 강제
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
         static constexpr uint32_t AIRCR_ADDR = 0xE000ED0Cu;
         static constexpr uint32_t AIRCR_VECTKEY = 0x05FA0000u;
         static constexpr uint32_t AIRCR_SYSRESET = 0x00000004u;
-        // [BUG-FIX ①] seq_cst → release: 선행 소거 가시화 목적
         std::atomic_thread_fence(std::memory_order_release);
         *reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR) =
             AIRCR_VECTKEY | AIRCR_SYSRESET;
+#if defined(__GNUC__) || defined(__clang__)
+        static constexpr uint32_t ADDR_DBGMCU_FZ = 0xE0042008u;
+        static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+        static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+        volatile uint32_t* const dbgmcu_fz =
+            reinterpret_cast<volatile uint32_t*>(
+                static_cast<uintptr_t>(ADDR_DBGMCU_FZ));
+        *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+        __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
         // 이 아래 코드는 도달 불가 (리셋 즉시 실행)
         for (;;) {}  // 리셋 대기 (CPU가 리셋될 때까지 홀드)
 #endif
@@ -544,7 +512,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Destroy_Key — 마스터 키 + 프로비저닝 매직 물리적 소각
     //
-    //  [BUG-FIX FATAL] Zero-Key Fallback Attack 차단
     //
     //  기존 문제:
     //    OTP_KEY_ADDR (키 32B) 만 0x00 소각

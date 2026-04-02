@@ -1,3 +1,16 @@
+#pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
+
 void MAKE_FUNC(cbc_enc)(unsigned char *ct, const unsigned char *pt, unsigned int pt_len, const unsigned char *iv, const LEA_KEY *key)
 {
 #ifdef USE_OWN_FUNC
@@ -6,15 +19,15 @@ void MAKE_FUNC(cbc_enc)(unsigned char *ct, const unsigned char *pt, unsigned int
 	unsigned int nBlock1 = pt_len >> 4, i;
 	const unsigned char *iv_ptr = iv;
 
-	if (ct == NULL)
+	if (ct == nullptr)
 		return;
-	else if (pt == NULL)
+	else if (pt == nullptr)
 		return;
 	else if ((pt_len == 0) || (pt_len & 0xf))
 		return;
-	else if (iv == NULL)
+	else if (iv == nullptr)
 		return;
-	else if (key == NULL)
+	else if (key == nullptr)
 		return;
 
 	for(i = 0; i < nBlock1; i++, pt += 16, ct += 16)
@@ -35,15 +48,15 @@ void MAKE_FUNC(cbc_dec)(unsigned char *pt, const unsigned char *ct, unsigned int
 	unsigned char tmp[128];
 #endif
 
-	if (pt == NULL)
+	if (pt == nullptr)
 		return;
-	else if (ct == NULL)
+	else if (ct == nullptr)
 		return;
 	else if ((ct_len == 0) || (ct_len & 0xf))
 		return;
-	else if (iv == NULL)
+	else if (iv == nullptr)
 		return;
-	else if (key == NULL)
+	else if (key == nullptr)
 		return;
 
 	pt += ct_len;
@@ -92,3 +105,5 @@ void MAKE_FUNC(cbc_dec)(unsigned char *pt, const unsigned char *ct, unsigned int
 	XOR8x16(pt, pt, iv);
 
 }
+
+

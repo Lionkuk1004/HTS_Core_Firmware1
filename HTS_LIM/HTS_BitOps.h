@@ -4,7 +4,6 @@
 /// @target STM32F407VGT6 (Cortex-M4F) / PC
 ///
 /// [양산 수정 이력 — 11건]
-///  BUG-01~07 (이전 세션)
 ///  BUG-08 [CRIT] libgcc __popcountsi2 호출 → SWAR 알고리즘 (ALU 12cyc)
 ///  BUG-09 [HIGH] inline → constexpr (static_assert 호환)
 ///  BUG-10 [MED]  <intrin.h> 종속성 제거 (크로스 플랫폼 O(1))
@@ -12,6 +11,17 @@
 ///                (파일명이 역할 미반영 + #pragma once 지시어와 혼동)
 // =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 #include <cstdint>
 
@@ -30,7 +40,6 @@ namespace ProtectedEngine {
     /// @return 0~32 범위의 세트 비트 수
     [[nodiscard]]
     constexpr uint32_t popcount32(uint32_t x) noexcept {
-        // [BUG-FIX CRIT] C++20 std::popcount ARM 분기 차단
         //
         //  기존: C++20이면 무조건 std::popcount(x)
         //  문제: std::popcount → __builtin_popcount → Cortex-M4에 HW 없음

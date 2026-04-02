@@ -1,22 +1,7 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Holo_Tensor_Engine.cpp — 4D 홀로그래픽 텐서 변조/암호화 코어
 // Target: STM32F407 (Cortex-M4) — 순수 정수 연산
 //
-// [양산 수정 — 13건]
-//  BUG-01 [HIGH] XorShift32 → SplitMix64 출력 화이트닝
-//  BUG-02 [HIGH] 4D 순열 4→24가지 (4! 전체)
-//  BUG-03 [LOW]  sec_wipe dead code 제거
-//  BUG-04 [LOW]  int → uint32_t 파라미터
-//  BUG-05 [CRIT] signed overflow → uint32_t 모듈로 산술 (Decode 방어)
-//  BUG-06 [HIGH] >>14 음수 편향 → /= scale 대칭 절사
-//  BUG-07 [HIGH] 64 하드코딩 → chip_count 파라미터화
-//  BUG-08 [HIGH] >>14 고정 → 동적 정규화 log2(N²×4)
-//  BUG-09 [CRIT] 모듈로 랩어라운드 + 나눗셈 충돌 → Encode 클램핑
-//  BUG-10 [CRIT] Encode/Decode 이중 방어 융합
-//    Encode: 입력 클램핑 → signed 연산 안전 (수학적 정합성 완벽)
-//    Decode: 외부 패킷 제어 불가 → uint32_t 안전 산술 (UB 방지)
-//           + 정규화 전 클램핑 복원 (모듈로 랩어라운드 → 나눗셈 충돌 차단)
-// =========================================================================
 #include "HTS_Holo_Tensor_Engine.h"
 #include <cstring>
 #include <atomic>
@@ -69,7 +54,6 @@ namespace ProtectedEngine {
 
     // ── [FIX-CSPRNG] 128비트 시드 → Xoshiro128ss 상태 초기화 ──
     //  SplitMix32 화이트닝: 입력 상관 제거 + 비가역 확산
-    //  [FIX-SYNC] seed==nullptr 폴백 제거 — 호출부에서 거부
     static Holo_Xoshiro128 expand_seed(const uint32_t seed[4]) noexcept {
         Holo_Xoshiro128 rng;
         auto mix32 = [](uint32_t z) noexcept -> uint32_t {
@@ -101,7 +85,6 @@ namespace ProtectedEngine {
         if (chip_count < 2) return 0;
         // chip_count는 2의제곱 보장 (호출자 가드)
         // scale = 4 × N² = 1 << (2 + 2×log2(N))
-        // [BUG-13] 64비트 나눗셈 → 32비트 시프트
         const uint32_t shift = 2u + 2u * log2_pow2(chip_count);
         if (shift >= 31u) return 0;
         return static_cast<int32_t>(0x7FFFFFFFu >> shift);
@@ -109,7 +92,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  FWHT — 이중 모드
-    //  [BUG-10] safe=false: signed 연산 (Encode — 클램핑 보장)
     //           safe=true:  uint32_t 모듈로 (Decode — 악성 패킷 방어)
     // =====================================================================
     static void fwht_signed(int32_t* tensor, uint32_t n) noexcept {
@@ -125,7 +107,6 @@ namespace ProtectedEngine {
         }
     }
 
-    // [BUG-05/10] uint32_t 모듈로 산술 — signed overflow UB 완전 차단
     static void fwht_safe(int32_t* tensor, uint32_t n) noexcept {
         for (uint32_t len = 1; len < n; len <<= 1) {
             for (uint32_t i = 0; i < n; i += 2 * len) {
@@ -163,7 +144,6 @@ namespace ProtectedEngine {
         v[2] = holo_cond_sat_neg_ct(v[2], (gyro_seed >> 2u) & 1u);
         v[3] = holo_cond_sat_neg_ct(v[3], (gyro_seed >> 3u) & 1u);
 
-        // [BUG-11] % 24u → 마스크+조건빼기 (UDIV 제거)
         uint8_t pi = static_cast<uint8_t>((gyro_seed >> 4u) & 0x1Fu);
         if (pi >= 24u) pi -= 24u;
         const uint8_t* p = PERM_TABLE[pi];
@@ -190,7 +170,6 @@ namespace ProtectedEngine {
             static_cast<int32_t>(uw - ux - uy + uz)
         };
 
-        // [BUG-11] % 24u → 마스크+조건빼기 (UDIV 제거)
         uint8_t pi = static_cast<uint8_t>((gyro_seed >> 4u) & 0x1Fu);
         if (pi >= 24u) pi -= 24u;
         const uint8_t* ip = INV_PERM_TABLE[pi];
@@ -207,14 +186,11 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  Encode_Hologram — 송신부
-    //  [BUG-09] 입력 클램핑 → signed 연산 안전 (수학적 정합성 완벽)
     // =====================================================================
     void Holo_Tensor_Engine::Encode_Hologram(
         int32_t* tensor,
         uint32_t chip_count,
         const uint32_t seed[4]) noexcept {
-        // [FIX-OOB] 4의 배수 가드: rotate_4d가 4요소 단위 접근
-        // [FIX-SYNC] seed nullptr 거부: 폴백 시드 → TX/RX 불일치 방지
         if (!tensor || !seed || chip_count < 4 ||
             (chip_count & 3u) != 0 ||
             (chip_count & (chip_count - 1)) != 0)
@@ -228,7 +204,6 @@ namespace ProtectedEngine {
 
         fwht_signed(tensor, chip_count);
 
-        // [FIX-CSPRNG] 128비트 PRNG — 블록별 독립 시드
         Holo_Xoshiro128 rng = expand_seed(seed);
         for (uint32_t i = 0; i < chip_count; i += 4) {
             const uint32_t blk_seed = rng.next();
@@ -240,15 +215,11 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  Decode_Hologram — 수신부
-    //  [BUG-05/10] 외부 패킷 → uint32_t 안전 산술 (UB 완전 차단)
-    //  [BUG-10] 정규화 전 클램핑: 모듈로 랩어라운드 상태에서 나눗셈 방지
-    //  [BUG-08] 동적 정규화 + [BUG-06] /= 대칭 절사
     // =====================================================================
     void Holo_Tensor_Engine::Decode_Hologram(
         int32_t* tensor,
         uint32_t chip_count,
         const uint32_t seed[4]) noexcept {
-        // [FIX-OOB] 4의 배수 가드 + [FIX-SYNC] nullptr 거부
         if (!tensor || !seed || chip_count < 4 ||
             (chip_count & 3u) != 0 ||
             (chip_count & (chip_count - 1)) != 0)
@@ -256,7 +227,6 @@ namespace ProtectedEngine {
 
         fwht_safe(tensor, chip_count);
 
-        // [FIX-CSPRNG] 128비트 PRNG — Encode와 동일 시퀀스
         Holo_Xoshiro128 rng = expand_seed(seed);
         for (uint32_t i = 0; i < chip_count; i += 4) {
             const uint32_t blk_seed = rng.next();
@@ -265,7 +235,6 @@ namespace ProtectedEngine {
 
         fwht_safe(tensor, chip_count);
 
-        // [FIX-SHIFT] 컴파일 타임 상수 시프트 매핑
         //  ARM Cortex-M4: 즉치(Immediate) ASR = 1사이클 확정
         //  chip_count = 2의 거듭제곱 (가드 통과)
         //  shift = 2 + 2×log2(N): N=4→4, N=8→8, N=16→10,

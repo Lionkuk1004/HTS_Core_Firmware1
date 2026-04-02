@@ -1,27 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // AnchorManager.cpp
 // 적응형 앵커 비율 관리자 구현부
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
 //
-// [양산 수정 — 세션 5: 8건 결함 교정]
-//
-//  BUG-01 [CRITICAL] setAnchorRatio abort × 2 → 클램핑
-//    기존: 범위 외 → std::abort() → MCU 정지
-//    수정: 범위 외 → MIN/MAX 클램핑 (양산 원칙: 조용한 보정)
-//
-//  BUG-02 [HIGH]     <string> 헤더 전파 → ARM includer 전체에 STL string
-//    수정: getStatusMessage를 ARM 가드 (#if !ARM) 안으로 이동
-//          <string> include도 조건부
-//
-//  BUG-03 [HIGH]     getStatusMessage std::to_string → ARM newlib 위험
-//    수정: ARM 빌드에서 완전 제외
-//
-//  BUG-04 [MEDIUM]   복사/이동 미차단 → = delete
-//  BUG-05 [MEDIUM]   <iostream>/<cstdlib> → 제거 (abort/cerr 제거)
-//  BUG-06 [LOW]      [[nodiscard]] 미적용
-//  BUG-07 [LOW]      Self-Contained <cstddef> 누락
-//  BUG-08 [LOW]      외부업체 Doxygen 가이드 없음
-// =========================================================================
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
     !defined(__aarch64__)
@@ -30,8 +11,6 @@
 
 #include "AnchorManager.h"
 
-// [BUG-05] <iostream>, <cstdlib> 제거 (abort/cerr 제거에 따라 불필요)
-// [BUG-02/03] <string> PC 전용
 #if !defined(__arm__) && !defined(__TARGET_ARCH_ARM) && !defined(__TARGET_ARCH_THUMB) && !defined(__ARM_ARCH)
 #include <string>
 #endif
@@ -66,7 +45,6 @@ AnchorManager::AnchorManager() noexcept
 }
 
 // =========================================================================
-//  [BUG-01] abort → 클램핑
 //  기존: 범위 외 시 std::abort() → MCU 정지
 //  수정: MIN/MAX 클램핑 (양산 원칙: 조용한 보정)
 // =========================================================================
@@ -88,8 +66,6 @@ SecurityLevel AnchorManager::getSecurityLevel() const noexcept {
     return SecurityLevel::SAFE;
 }
 
-// [BUG-02/03] A55/서버 디버그 전용 — STM32 빌드 제외
-// [BUG-09] try-catch 삭제 + noexcept 제거 (std::string 할당 실패 시 예외 전파)
 #if !defined(__arm__) && !defined(__TARGET_ARCH_ARM) && !defined(__TARGET_ARCH_THUMB) && !defined(__ARM_ARCH)
 std::string AnchorManager::getStatusMessage() const {
     std::string msg = "[Anchor Ratio: " +

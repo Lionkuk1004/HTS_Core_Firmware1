@@ -1,4 +1,4 @@
-/// @file  HTS_Console_Manager.cpp
+﻿/// @file  HTS_Console_Manager.cpp
 /// @brief HTS Console Manager -- STM32 Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 ///
@@ -18,12 +18,13 @@
 
 #include "HTS_Console_Manager.h"
 #include "HTS_IPC_Protocol.h"
+#include "HTS_Role_Auth.h"
+#include "HTS_Secure_Logger.h"
 #include <new>        // placement new
 #include <atomic>
 #include <cstring>    // memcpy (channel_config 원자적 복사용)
 
 // ============================================================
-//  [BUG-FIX CRIT] channel_config Torn R/W 방어용 크리티컬 섹션
 //
 //  channel_config(ChannelConfig, ~28B)는 원자 타입이 아니므로
 //  Apply_Param(IPC ISR 경로) vs Set_Channel_Config(앱 태스크 경로)
@@ -48,6 +49,36 @@ static inline void con_critical_exit(uint32_t) noexcept {}
 #endif
 
 namespace ProtectedEngine {
+
+    namespace {
+        static std::atomic<uint8_t> g_console_auth_fail_count{ 0u };
+        static constexpr uint8_t CONSOLE_AUTH_FAIL_MAX = 8u;
+
+        static bool Is_Privileged_Command(const IPC_Command cmd) noexcept {
+            return (cmd == IPC_Command::CONFIG_SET) || (cmd == IPC_Command::RESET_CMD);
+        }
+
+        static bool Check_Privileged_Access(const IPC_Command cmd) noexcept {
+            if (!Is_Privileged_Command(cmd)) { return true; }
+            if (g_console_auth_fail_count.load(std::memory_order_acquire) >= CONSOLE_AUTH_FAIL_MAX) {
+                SecureLogger::logSecurityEvent("CONSOLE_AUTH_LOCK",
+                    "Console privileged command locked by retry cap.");
+                return false;
+            }
+            if (Role_Auth::Is_Authorized(Service::CONFIG_CHANGE)) {
+                g_console_auth_fail_count.store(0u, std::memory_order_release);
+                return true;
+            }
+
+            const uint8_t cur = g_console_auth_fail_count.load(std::memory_order_relaxed);
+            if (cur < CONSOLE_AUTH_FAIL_MAX) {
+                g_console_auth_fail_count.store(static_cast<uint8_t>(cur + 1u), std::memory_order_release);
+            }
+            SecureLogger::logSecurityEvent("CONSOLE_AUTH_DENY",
+                "Console privileged command rejected: Role_Auth failed.");
+            return false;
+        }
+    } // namespace
 
     // ============================================================
     //  Default Channel Config (constexpr ROM -- ASIC synthesizable)
@@ -117,6 +148,8 @@ namespace ProtectedEngine {
                 const IPC_Error err = ipc->Receive_Frame(
                     cmd, payload, IPC_MAX_PAYLOAD, payload_len);
                 if (err != IPC_Error::OK) { break; }
+                if (payload_len > IPC_MAX_PAYLOAD) { continue; }
+                if (!Check_Privileged_Access(cmd)) { continue; }
 
                 switch (cmd) {
                 case IPC_Command::CONFIG_SET:
@@ -283,7 +316,6 @@ namespace ProtectedEngine {
         // ============================================================
         void Apply_Param(ParamId pid, const uint8_t* val, uint8_t len) noexcept
         {
-            // [BUG-FIX CRIT] channel_config Torn Write 방어
             //  Apply_Param은 IPC 수신 경로(Tick -> Process_IPC_Commands)에서 호출.
             //  Set_Channel_Config는 앱 태스크 경로에서 호출.
             //  두 경로가 channel_config 멤버를 바이트 단위로 동시 수정 시
@@ -554,7 +586,6 @@ namespace ProtectedEngine {
 
     IPC_Error HTS_Console_Manager::Initialize(HTS_IPC_Protocol* ipc) noexcept
     {
-        // [BUG-FIX FATAL] TOCTOU 레이스 컨디션 수정 (2단계 초기화 패턴)
         //
         //  기존 문제:
         //    CAS(false->true) 성공 -> initialized_=true 즉시 공개
@@ -608,7 +639,6 @@ namespace ProtectedEngine {
 
         impl->state = ConsoleState::ONLINE;
 
-        // [BUG-FIX FATAL] Impl 완전 구성 완료 후 initialized_ 공개 (release)
         //  -> 소비자 acquire 로드와 release-acquire 쌍 형성
         //  -> 위의 모든 쓰기가 소비자에게 가시화됨
         initialized_.store(true, std::memory_order_release);
@@ -631,7 +661,6 @@ namespace ProtectedEngine {
 
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — 평문 데이터 잔류 방지
         IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);
@@ -664,7 +693,6 @@ namespace ProtectedEngine {
             return;
         }
         const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
-        // [BUG-FIX CRIT] Torn Read 방어 -- channel_config 전체 복사를 원자적으로 수행
         //  Apply_Param(IPC 경로)과 동시 실행 시 부분 읽기 방지
         const uint32_t pm = con_critical_enter();
         std::memcpy(&out_config, &impl->channel_config, sizeof(ChannelConfig));
@@ -688,7 +716,6 @@ namespace ProtectedEngine {
             return IPC_Error::INVALID_CMD;
         }
 
-        // [BUG-FIX CRIT] Torn Write 방어 -- channel_config 전체 덮어쓰기를 원자적으로 수행
         //  Apply_Param(IPC 경로)과 동시 실행 시 구조체 찢어짐 방지
         //  (RF 주파수 상위/하위 바이트가 각각 다른 설정에서 오는 현상 차단)
         const uint32_t pm = con_critical_enter();

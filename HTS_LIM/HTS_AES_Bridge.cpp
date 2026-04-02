@@ -32,8 +32,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) q[i] = 0u;
 #if defined(__GNUC__) || defined(__clang__)
-        // [BUG-FIX CRIT] "memory" → 경량 "r" 이스케이프 (프로젝트 표준)
-        __asm__ __volatile__("" : : "r"(p));
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -370,7 +369,6 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // [BUG-FIX FATAL] In-Place 차단 로직 삭제
         //  기존: input==output → AES_Secure_Zero(output) → 원본 데이터 파괴
         //  실제: AES_Encrypt/Decrypt_Block은 내부 state[16] 스택 복사 후 연산
         //        → input==output여도 메모리 오버랩 이슈 없음 (In-place 안전)

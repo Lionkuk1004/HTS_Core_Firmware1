@@ -1,4 +1,4 @@
-/// @file  HTS_Device_Profile.cpp
+﻿/// @file  HTS_Device_Profile.cpp
 /// @brief HTS Device Profile Engine -- STM32 Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -14,7 +14,6 @@ namespace ProtectedEngine {
     static constexpr uint32_t PROFILE_INIT_BUSY = 1u;
     static constexpr uint32_t PROFILE_INIT_READY = 2u;
 
-    // [FIX-D2] 보안 소거 — volatile + asm clobber + release fence
     static void Profile_Secure_Wipe(void* p, size_t n) noexcept {
         if (p == nullptr || n == 0u) { return; }
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
@@ -249,7 +248,6 @@ namespace ProtectedEngine {
 
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — 평문 데이터 잔류 방지
         Profile_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         init_state_.store(PROFILE_INIT_NONE, std::memory_order_release);

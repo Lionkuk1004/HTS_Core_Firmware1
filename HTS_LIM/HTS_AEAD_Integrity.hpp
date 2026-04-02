@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_AEAD_Integrity.hpp
 // AEAD 태그 상수 시간 무결성 검증 (헤더 전용)
 // Target: STM32F407 (Cortex-M4)
@@ -31,7 +31,6 @@
 
 namespace ProtectedEngine {
 
-    // [BUG-04] 빌드 타임 검증
     static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
     static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
 
@@ -55,10 +54,8 @@ namespace ProtectedEngine {
         //    EOR R1, R1, R3    // 상위 32비트 XOR
         //    ORRS R0, R0, R1   // 합산 → R0에 직접 반환
         //
-        //  [BUG-01/02] volatile 제거 — 레지스터 격리
         //    SRAM Store 0회 → Write Suppression 공격 불가
         //
-        //  [BUG-06] bool 반환 → uint32_t 반환 (Boolean Coercion 차단)
         //
         //    문제: bool 반환 시 컴파일러가 CMP + MOVEQ/MOVNE 생성
         //      → 글리치로 MOVNE(R0=0) 스킵 → R0에 쓰레기값 잔류
@@ -91,12 +88,10 @@ namespace ProtectedEngine {
                 static_cast<uint32_t>(diff) |
                 static_cast<uint32_t>(diff >> 32);
 
-            // [BUG-06] reduced를 그대로 반환 — CMP/MOV 없음
             // ARM: MOV R0, reduced → BX LR (조건 분기 0개)
             return reduced;
         }
 
-        // [BUG-05] 정적 전용 클래스 — 인스턴스화 차단 (6종)
         AEAD_Integrity_Vault() = delete;
         ~AEAD_Integrity_Vault() = delete;
         AEAD_Integrity_Vault(const AEAD_Integrity_Vault&) = delete;

@@ -1,26 +1,9 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Pointer_Auth.cpp
 // 포인터 인증 코드(PAC) 구현부 — Murmur3 비가역 해시 + 런타임 키
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 22건]
-//  BUG-01~05: XOR→Murmur3, 런타임키, 상수시간비교, iostream제거, 64비트호환
-//
-//  ── 세션 8 전수검사 (BUG-06 ~ BUG-13) ──
-//  BUG-06 [MED]  atomic<int> → atomic<uint32_t> (타입 통일)
-//  BUG-07 [HIGH] std::abort → Halt_PAC_Violation (자가치유+로깅)
-//  BUG-08 [MED]  PAC 불일치 redundant check (FI 방어)
-//  BUG-09 [MED]  0 키 폴백 매직 넘버 → constexpr 상수화
-//  BUG-10 [MED]  g_pac_runtime_key 보안 소거 API (Wipe_Runtime_Key)
-//  BUG-11 [LOW]  #include 파일명 → HTS_Physical_Entropy_Engine.h
-//  BUG-12 [MED]  static_assert (PAC_BITS, ADDR_BITS 정합성)
-//  BUG-13 [LOW]  인스턴스화 차단 6종 완비
-//  BUG-14 [CRIT] 무한 스핀 데드락 → 유한 대기 + 폴백 키 (ISR 안전)
-//
-// [제약] float 0, double 0, try-catch 0, 힙 0
-// =========================================================================
 #include "HTS_Pointer_Auth.hpp"
-// [BUG-22] HTS_Physical_Entropy_Engine.h 제거 — 자동 키 생성 경로 삭제됨
 #include "HTS_Auto_Rollback_Manager.hpp"
 #include "HTS_Secure_Logger.h"
 #include "HTS_Secure_Memory.h"
@@ -38,15 +21,12 @@ namespace ProtectedEngine {
         /// 자가 치유 코드
         constexpr uint32_t HEAL_PAC_TAMPER = 0xDEAD0BA0u;  ///< PAC 변조 코드
 
-        // [BUG-06] 3상 상태: uint32_t (AntiAnalysis_Shield과 통일)
         constexpr uint32_t PAC_UNINIT = 0u;
         constexpr uint32_t PAC_IN_PROGRESS = 1u;
         constexpr uint32_t PAC_DONE = 2u;
     }
 
     // =====================================================================
-    //  [BUG-06] 런타임 키 저장소 — atomic<uint32_t> 3상
-    //  [BUG-14] g_pac_runtime_key → 2×atomic<uint32_t> 분할
     //
     //  문제: uint64_t은 ARM 32비트에서 원자적 읽기/쓰기 불가
     //    → 소유권 스레드(D)와 타임아웃 스레드(B)가 동시에 쓰면
@@ -61,7 +41,6 @@ namespace ProtectedEngine {
     static std::atomic<uint32_t> g_pac_key_lo{ 0u };
 
     // =====================================================================
-    //  [BUG-20] Seqlock 패턴 — hi/lo 찢어짐(Tearing) 방어
     //
     //  문제: hi load → ISR → Store(hi+lo) → ISR 복귀 → lo load
     //        = hi_new + lo_old (찢어진 키 → PAC 전면 붕괴)
@@ -112,7 +91,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-15] Murmur3 fmix32 이중 해시 — 64비트 곱셈 완전 제거
     //
     //  기존: Mix_Key_64 × uint64_t 곱셈 2회 → __aeabi_lmul ~60cyc
     //  수정: fmix32 × 2 독립 실행 → ARM MUL 1cyc × 4 = 4cyc
@@ -140,7 +118,6 @@ namespace ProtectedEngine {
         return lo_half ^ hi_half;
     }
 
-    // [BUG-15] 64비트 키 생성 헬퍼 — 32비트 fmix만 사용
     static uint64_t Mix_Key_64(uint64_t input) noexcept {
         const uint32_t lo = static_cast<uint32_t>(input);
         const uint32_t hi = static_cast<uint32_t>(input >> 32);
@@ -150,7 +127,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-07] PAC 변조 시 자가 치유 + 시스템 정지
     //
     //  기존: std::abort() → ARM에서 _exit() → 시스템 멈춤 (로그 없음)
     //  수정: SecureLogger → Self_Healing → 무한 루프 (WDT 리셋)
@@ -176,7 +152,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Initialize_Runtime_Key — 부팅 시 명시적 PUF 엔트로피 주입
     //
-    //  [BUG-21] 초기화 스위치 미작동 해소
     //
     //  기존 문제:
     //    1. ISR에서 Sign_Pointer 선호출 → Ensure_Key → 랜덤키 PAC_DONE
@@ -212,10 +187,8 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-10] Wipe_Runtime_Key — 세션 종료 시 키 보안 소거
     // =====================================================================
     void PAC_Manager::Wipe_Runtime_Key() noexcept {
-        // [BUG-20] seqlock 보호: 소거 중 Load_Runtime_Key 찢어짐 방지
         g_pac_key_ver.fetch_add(1u, std::memory_order_release);  // 홀수
         g_pac_key_hi.store(0u, std::memory_order_relaxed);
         g_pac_key_lo.store(0u, std::memory_order_relaxed);
@@ -226,7 +199,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-22] Ensure_Key_Initialized — 키 존재 확인 전용
     //
     //  기존 문제 (지연 초기화 우회):
     //    Sign_Pointer → Ensure_Key → 자동 키 생성 → PAC_DONE
@@ -272,7 +244,6 @@ namespace ProtectedEngine {
     //  3. Murmur3 fmix64 통과
     //  4. 64→32비트 XOR 접기 (정보 손실 = 추가 비가역성)
     // =====================================================================
-    // [BUG-19+20] D-1 상수시간 보호 + 32비트 전용
     uint32_t PAC_Manager::Compute_PAC(uint64_t raw_addr) noexcept {
         const uint64_t key64 = Load_Runtime_Key();
         const uint32_t key_hi = static_cast<uint32_t>(key64 >> 32);

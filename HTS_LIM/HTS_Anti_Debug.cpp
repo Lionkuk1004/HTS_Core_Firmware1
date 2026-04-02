@@ -1,46 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Anti_Debug.cpp
 // 디버거/JTAG 연결 탐지 및 강제 시스템 정지 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 26건]
-//
-//  ── 기존 (2건) ──
-//  - 3단 플랫폼 분기, ARM DHCSR 탐지
-//
-//  ── 세션 5 (BUG-01 ~ BUG-12) ──
-//  BUG-01 [CRIT] forceHalt abort → 자가 치유 + 무한 루프
-//  BUG-02 [HIGH] 인스턴스화 차단
-//  BUG-03 [MED]  SecureLogger 호출
-//  BUG-04 [LOW]  Doxygen
-//  BUG-05 [LOW]  DHCSR const
-//  BUG-06 [CRIT] cpsid i 인터럽트 차단
-//  BUG-07 [CRIT] DHCSR 다중 비트 교차 검증
-//  BUG-08 [HIGH] Linux TracerPid 직접 파싱
-//  BUG-09 [CRIT] DBGMCU WDT 프리즈 방지 + 레지스터 분쇄 + AIRCR 리셋
-//  BUG-10 [CRIT] #if 전처리 스코프 정밀 교정
-//  BUG-11 [CRIT] ldr pseudo-instruction → C++ 입력 파라미터 전달
-//  BUG-12 [CRIT] 레지스터 분쇄 vs AIRCR 입력 파라미터 충돌
-//
-//  ── 세션 8 전수검사 (BUG-13 ~ BUG-21) ──
-//  BUG-13 [CRIT] Linux std::ifstream/std::string 힙 할당 → POSIX read
-//  BUG-14 [HIGH] 스택 버퍼 크기 미제한 → char[256] 고정
-//  BUG-15 [CRIT] try-catch → 조건문 (-fno-exceptions 준수)
-//  BUG-16 [MED]  DHCSR 비트 매직 넘버 → constexpr 상수화
-//  BUG-17 [MED]  MMIO 주소 매직 넘버 → constexpr 상수화
-//  BUG-18 [LOW]  TracerPid 파싱 오버플로 방어
-//  BUG-19 [MED]  static_assert 빌드타임 검증 추가
-//  BUG-20 [LOW]  주석 건수 불일치 (14→21)
-//  BUG-21 [CRIT] cpsid i ↔ SecureLogger 데드락 (Phase 순서 재배치)
-//
-//  ── 세션 10+ (BUG-22 ~ BUG-24) ──
-//  BUG-22 [HIGH] ⑭ HTS_PLATFORM_ARM_BAREMETAL → HTS_PLATFORM_ARM 통일
-//                PC 전용 헤더(<iostream>/<cstdlib>) #ifndef 가드
-//  BUG-23 [MED]  D-2: Linux buf[256] SecWipe 누락 → 전 반환경로 소거
-//  BUG-24 [LOW]  J-3: 0xDEAD0DBGu → k_HEAL_CODE_DEBUG constexpr
-//
-// [제약] float 0, double 0, try-catch 0, 힙 0 (ARM 경로)
-// =========================================================================
 #include "HTS_Anti_Debug.h"
 #include "HTS_Auto_Rollback_Manager.hpp"
 #include "HTS_Secure_Logger.h"
@@ -53,7 +15,6 @@
 
 namespace ProtectedEngine {
 
-    // [BUG-24] 자가 치유 트리거 코드 (J-3)
     // 원래 의도: 0xDEAD_DEBUG → 'G'는 16진수 아님
     // 수정: 0xDEAD0DB6u (DEAD + 0xDB6 = 3510)
     static constexpr uint32_t k_HEAL_CODE_DEBUG = 0xDEAD0DB6u;
@@ -61,7 +22,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  forceHalt — 궁극의 안티포렌식 자가 파괴
     //
-    //  [BUG-21 수정] Phase 실행 순서 재배치!
     //
     //  [기존 순서 — 데드락!]
     //    Phase 1: cpsid i (인터럽트 차단)
@@ -103,7 +63,8 @@ namespace ProtectedEngine {
         {
             volatile uint32_t* const dbgmcu =
                 reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
-            *dbgmcu &= ~(DBGMCU_IWDG_STOP | DBGMCU_WWDG_STOP);
+            *dbgmcu &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+            __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
         }
 #endif
 
@@ -144,7 +105,6 @@ namespace ProtectedEngine {
             "1: b 1b             \n\t"
             : "+r"(aircr_addr), "+r"(aircr_val)
             :
-            // [BUG-FIX FATAL] "lr" 클로버 삭제
             //  GCC/Clang: lr(r14)는 프롤로그/에필로그 관리 레지스터
             //  클로버 선언 시 Register Allocator 충돌 → 빌드 에러/기형 코드
             : "r2", "r3", "r4", "r5", "r6", "r7",
@@ -154,6 +114,10 @@ namespace ProtectedEngine {
 
         // 도달 불가 — [[noreturn]] 경고 방지
         while (true) {}
+    }
+
+    [[noreturn]] void AntiDebugManager::trustedHalt(const char* message) noexcept {
+        forceHalt(message ? message : "TRUSTED_HALT");
     }
 
     // =====================================================================

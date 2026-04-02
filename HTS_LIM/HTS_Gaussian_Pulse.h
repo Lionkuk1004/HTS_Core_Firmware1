@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Gaussian_Pulse.h
 // 가우시안 펄스 셰이핑 엔진 (GMSK/GFSK 기반 8-Way 텐서 다중화)
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -27,11 +27,10 @@
 //   IIR 상태: prev_in(8B) + prev_out(8B) = 16B
 //
 //  [양산 수정 이력 — 20건]
-//   세션2: BUG-01~06  세션5: BUG-07~14
 //   BUG-15 [HIGH] seq_cst → release
 //   BUG-16 [CRIT] try-catch 4블록 제거
 //   BUG-17 [CRIT] filter_coeffs vector → int32_t[128] 정적 배열
-//   BUG-18 [CRIT] double → float (ARM 단정밀도 하드웨어 FPU)
+//   BUG-18 [CRIT] fp64 -> fp32 (ARM 단정밀도 하드웨어 FPU)
 //   BUG-19 [HIGH] Raw 포인터 API 추가 (ARM Zero-Heap)
 //   BUG-20 [HIGH] 소멸자: 계수 배열 보안 소거 추가
 //
@@ -50,9 +49,9 @@ namespace ProtectedEngine {
 
         /// @brief 가우시안 필터 생성
         /// @param taps        필터 탭 수 (홀수, 0/짝수 → 31 폴백)
-        /// @param bt_product  대역폭×심볼 주기 (≤0 → 0.3 폴백)
-        /// @note  [BUG-18] ARM: float(하드웨어 FPU), PC: double
-        Gaussian_Pulse_Shaper(size_t taps, double bt_product) noexcept;
+        /// @param bt_q16      대역폭×심볼 주기 Q16 (0.3 => 19661)
+        /// @note              유효 범위 밖/0 입력은 0.3 폴백
+        Gaussian_Pulse_Shaper(size_t taps, uint32_t bt_q16) noexcept;
 
         /// @brief 소멸자 — 계수 + DC 상태 보안 소거
         ~Gaussian_Pulse_Shaper() noexcept;
@@ -85,7 +84,6 @@ namespace ProtectedEngine {
         void Reset_Filter_State() noexcept;
 
     private:
-        // [BUG-17] 정적 배열 (힙 0회)
         int32_t filter_coeffs[MAX_TAPS] = {};     ///< H0 가우시안 메인 로브
         int32_t filter_coeffs_H1[MAX_TAPS] = {};   ///< H1 1차 도함수
         size_t  num_taps = 0;                       ///< 유효 탭 수

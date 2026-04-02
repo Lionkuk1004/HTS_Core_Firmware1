@@ -31,6 +31,9 @@
 //   sizeof ≈ IMPL_BUF_SIZE(512B) + bool(1B)
 //   Impl: 3큐 × 항목(16B) × (4+8+8) = 320B + 상태 48B ≈ 368B
 //
+//  [H-4] NVIC 우선순위는 본 모듈이 아닌 HTS_Hardware_Init::Initialize_System()
+//   및 HTS_Tx_Scheduler.hpp @note 경로에서 설정 — 큐 정책만 담당
+//
 //  @warning sizeof ≈ 516B — 전역/정적 배치 권장
 //
 // ─────────────────────────────────────────────────────────────────────────

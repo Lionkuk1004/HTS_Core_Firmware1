@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="HTS_AMI_Industrial_Field_Stress_Test.cpp">
+    <ClCompile Include="재밍 종합 테스트.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>

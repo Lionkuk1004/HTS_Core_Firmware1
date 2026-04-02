@@ -1,36 +1,9 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_LSH256_Bridge.cpp
 // KCMVP LSH-256 / LSH-224 해시 브릿지 구현부
 // 규격: KS X 3262
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 4건 결함 교정]
-//
-//  BUG-01 [MEDIUM] Secure_Zero: pragma O0 보호 누락
-//    수정: pragma O0 push/pop 추가 (프로젝트 3중 보호 표준)
-//
-//  BUG-02 [MEDIUM] Do_Hash: lsh256_final 실패 시 출력 버퍼 미소거
-//    기존: final 실패 → ctx만 소거, output에 부분 해시 잔존
-//          공격자가 실패 경로를 유도하여 부분 해시 수집 가능
-//    수정: 모든 실패 경로에서 output 보안 소거
-//
-//  BUG-03 [LOW] Do_Hash 호출 시 매직 넘버 32/28 → 명명 상수
-//    수정: LSH256_DIGEST_BYTES / LSH224_DIGEST_BYTES 사용
-//
-//  BUG-04 [LOW] constexpr → static const (MSVC C2131 호환 일관성)
-//    수정: 헤더에서 static const size_t로 변경
-//
-// [NSR LSH-256 API 정리]
-//  lsh256_init(&ctx, algtype):      초기화 → LSH_SUCCESS
-//  lsh256_update(&ctx, data, bitlen): 데이터 주입 (비트 단위!) → LSH_SUCCESS
-//  lsh256_final(&ctx, hashval):      최종 해시 출력 → LSH_SUCCESS
-//  lsh256_digest(algtype, data, bitlen, hashval): 단일 호출 (내부에서 init+update+final)
-//
-// [STM32F407 성능]
-//  Hash_256 (1KB 데이터): ~25K사이클 ≈ 0.15ms @168MHz
-//  Hash_256 (16B 블록):   ~3K사이클 ≈ 0.018ms @168MHz
-//  LSH는 SHA-256 대비 약 1.5배 고속 (ARX 구조 + 워드 병렬)
-// =========================================================================
 #include "HTS_LSH256_Bridge.h"
 #include "HTS_Secure_Memory.h"
 #include <cstring>
@@ -61,7 +34,6 @@ namespace ProtectedEngine {
     //  NSR lsh256_update는 databitlen을 비트 단위로 받음 (API 설계)
     //  → data_len * 8 에서 SIZE_MAX/8 초과 시 오버플로 → 사전 검증
     //
-    //  [BUG-02 수정] 모든 실패 경로에서 output 보안 소거
     //  lsh256_final 실패 시에도 output에 부분 데이터가 남을 수 있음
     //  → Secure_Zero_LSH(output) 후 false 반환
     // =====================================================================
@@ -117,7 +89,6 @@ namespace ProtectedEngine {
         // 내부 상태 보안 소거 (KCMVP Key Zeroization)
         Secure_Zero_LSH(&ctx, sizeof(ctx));
 
-        // [BUG-02] final 실패 시 출력 소거
         if (err != LSH_SUCCESS) {
             Secure_Zero_LSH(output, output_len);
             return LSH_SECURE_FALSE;

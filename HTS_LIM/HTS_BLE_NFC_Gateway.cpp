@@ -1,4 +1,4 @@
-/// @file  HTS_BLE_NFC_Gateway.cpp
+﻿/// @file  HTS_BLE_NFC_Gateway.cpp
 /// @brief HTS BLE/NFC Gateway -- Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -243,7 +243,6 @@ namespace ProtectedEngine {
 
             // Overflow-safe bounds check
             if (data_region < BLE_FRAME_HEADER_SIZE) { return false; }
-            // [BUG-FIX CRIT] 정확한 길이 일치 (프레임 밀반입 차단)
             //  기존: (data_region - HEADER) < plen → 패딩 바이트 허용 → Smuggling
             //  수정: != 정확 일치 → 1바이트라도 불일치 시 거부
             if ((data_region - BLE_FRAME_HEADER_SIZE) != static_cast<uint32_t>(plen)) {
@@ -267,11 +266,9 @@ namespace ProtectedEngine {
                 const uint8_t byte = uart_ring[tail & UART_RING_MASK];
                 tail++;
 
-                // [BUG-FIX CRIT] 바이트 카운팅 모드 (DATA BODY)
                 //  +DATA:<len> 파싱 후 정확히 <len> 바이트를 \n 무시하고 수집
                 //  → 인밴드 AT 인젝션 원천 차단 (개행 파싱 중단)
                 if (uart_data_remaining > 0u) {
-                    // [BUG-FIX FATAL] \r 후 트레일링 \n 소각
                     //  "+DATA:10\r\n<binary>" → \r에서 라인 분할 → 데이터 모드 진입
                     //  다음 바이트 \n은 CRLF 잔여 → 페이로드 아님 → 1회 소각
                     if (uart_skip_trailing_lf) {
@@ -308,10 +305,8 @@ namespace ProtectedEngine {
                     }
                     if (uart_line_pos > 0u) {
                         Process_UART_Line(uart_line_buf, uart_line_pos);
-                        // [BUG-FIX FATAL] \r 분할 후 데이터 모드 진입 시 \n 소각 예약
                         if (uart_data_remaining > 0u) {
                             uart_skip_trailing_lf = true;
-                            // [BUG-FIX CRIT] 데이터 모드 커서 보호
                             //  Process_UART_Line이 인라인 페이로드를 uart_line_buf에
                             //  복사하고 uart_line_pos = inline_avail로 설정한 경우,
                             //  여기서 0으로 덮어쓰면 선행 바이트 영구 파괴
@@ -375,7 +370,6 @@ namespace ProtectedEngine {
                 return;
             }
 
-            // [BUG-FIX CRIT] +DATA:<len> 파싱 + 인라인 페이로드 즉시 소비
             //
             //  기존: 길이만 파싱 → uart_data_remaining = dlen
             //        → 이미 line_buf에 있는 페이로드 증발 → 위상 편이
@@ -457,7 +451,6 @@ namespace ProtectedEngine {
 
         void Handle_Disconnect_Event() noexcept
         {
-            // [BUG-FIX CRIT] 묻지마 세션 암살(Blind Assassination) 완화
             //
             //  기존: 정순(i=0→N) 탐색 → 첫 번째 활성 세션 무조건 파괴
             //        → 다중 세션 시 50% 확률로 엉뚱한 세션 암살
@@ -573,7 +566,6 @@ namespace ProtectedEngine {
         impl->ipc = nullptr;
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — 평문 데이터 잔류 방지
         IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         init_state_.store(BLE_INIT_NONE, std::memory_order_release);
@@ -602,7 +594,6 @@ namespace ProtectedEngine {
         // Drain UART ring (processes +CONN, +DISC, +DATA etc.)
         impl->Drain_UART_Ring();
 
-        // [BUG-FIX CRIT] 일괄 세션 갱신 삭제 (좀비 세션 무한 연장 차단)
         //  기존: has_uart_activity → 모든 활성 세션 tick 갱신
         //        → BLE 사용자 통신으로 NFC 세션까지 수명 연장 → 좀비 세션
         //  수정: 삭제. 세션 tick은 해당 세션이 식별된 문맥에서만 개별 갱신:
@@ -619,7 +610,6 @@ namespace ProtectedEngine {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
-        // [BUG-FIX HIGH] Nested ISR 경쟁 조건 방어 (PRIMASK 크리티컬 섹션)
         //
         //  기존: SPSC Lock-free → 단일 ISR에서는 안전
         //        BUT: DMA완료 ISR + UART RX ISR 중첩 시 head 포인터 경합
@@ -668,7 +658,6 @@ namespace ProtectedEngine {
             return;
         }
 
-        // [BUG-FIX CRIT] 국가지점번호 검증 (오라우팅/망 교란 차단)
         //  기존: loc 추출 후 미검증 → 타 안내판 프레임도 무단 릴레이
         //  수정: loc.code ≠ local → Drop (자기 위치 프레임만 수용)
         //  예외: loc.code == 0 → 브로드캐스트 (전체 안내판 대상)
@@ -676,11 +665,9 @@ namespace ProtectedEngine {
             return;  // 타 안내판 프레임 → 폐기
         }
 
-        // [BUG-FIX HIGH] 세션 검증
         BLE_Session* s = impl->Find_Session(session_id);
         if (s == nullptr) { return; }
 
-        // [BUG-FIX FATAL] msg_type 기반 프로토콜 분기
         //  기존: msg_type 무시 → 모든 패킷 AT+SEND 릴레이 (바보 파이프)
         //  수정: TEXT/VOICE → AT+SEND, SESSION_CLOSE → 세션 파기 + AT+DISC
         switch (msg_type) {
@@ -754,7 +741,6 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
-        // [BUG-FIX CRIT] 세션 검증 게이트키퍼 (아웃바운드 위조 차단)
         //  기존: 전송 완료 후 마지막에 Find_Session → 유령 세션도 망으로 송신
         //  수정: 전송 전 선검증 → nullptr이면 즉각 거부
         BLE_Session* s = impl->Find_Session(session_id);
@@ -783,7 +769,6 @@ namespace ProtectedEngine {
         impl->Transition_State(BLE_GW_State::CONNECTED);
 
         // Update session activity (outbound data = real activity)
-        // [BUG-FIX HIGH] 중복 Find_Session 제거 → 게이트키퍼에서 확보한 s 재사용
         s->last_activity_tick = impl->current_tick;
 
         return IPC_Error::OK;
@@ -796,7 +781,6 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
-        // [BUG-FIX CRIT] 세션 검증 게이트키퍼
         BLE_Session* sv_check = impl->Find_Session(session_id);
         if (sv_check == nullptr) { return IPC_Error::CFI_VIOLATION; }
 
@@ -835,7 +819,6 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
-        // [BUG-FIX CRIT] 세션 검증 게이트키퍼
         BLE_Session* se_check = impl->Find_Session(session_id);
         if (se_check == nullptr) { return IPC_Error::CFI_VIOLATION; }
 

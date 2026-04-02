@@ -1,29 +1,11 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Anchor_Vault.cpp
 // 5% 위상 닻(Anchor) 보안 금고 구현부
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
 //
-// [양산 수정 — 8건]
-//  BUG-01 Clear_Vault:
-//  BUG-02 [CRIT] pragma O0 삭제 → asm clobber + volatile
-//  BUG-04 [MED]  ratio_percent > 100 클램핑
-//  BUG-07 [CRIT] 전 메서드 std::mutex 동기화 (A55 멀티스레드 SIGSEGV 차단)
-//         · std::map Red-Black Tree 동시 삽입/삭제 시 포인터 tearing → SIGSEGV
-//         · 해결: lock_guard<mutex>로 전 메서드 직렬화
-//         · STM32: 해당 없음 (#error 가드)
-//  BUG-08 [MED]  Vault_Secure_Wipe while 루프 → for 루프 (프로젝트 표준 통일)
-//         · 기존: while (size--) *p++ = 0; (BB1/TensorCodec/ECCM과 불일치)
-//         · 수정: for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
-//         · 기능 동등, 코드 리뷰 시 "다른 구현?" 의문 제거
-//
-//  1. Clear_Vault: secret_enclave.clear() 전에 모든 앵커 데이터 보안 소거
-//     기존: clear()만 호출 → 힙 메모리 해제만 수행 → 데이터 RAM에 잔존
-//     수정: 각 벡터를 volatile 소거 후 clear() → 콜드 부트 공격 방어
-// =========================================================================
 #include "HTS_Anchor_Vault.hpp"
 
 // ARM(STM32) 빌드 차단 — A55/서버 전용 모듈
-// [BUG-21] STM32 (Cortex-M) 빌드 차단 — 프로젝트 표준 4종 매크로
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
     !defined(__aarch64__)
@@ -32,13 +14,16 @@
 
 #include <atomic>
 #include <mutex>   // [BUG-07] lock_guard 멀티스레드 직렬화
+#include <cstring>
+
+#include "HTS_HMAC_Bridge.hpp"
+#include "HTS_Session_Gateway.hpp"
+#include "HTS_Secure_Memory.h"
 
 namespace ProtectedEngine {
 
     // =====================================================================
     //  보안 메모리 소거 (인라인, DCE 차단)
-    //  [BUG-02] pragma O0 삭제 → volatile + asm clobber로 DCE 차단
-    //  [BUG-08] while 루프 → for 루프 (프로젝트 표준 통일)
     // =====================================================================
     static void Vault_Secure_Wipe(void* ptr, size_t size) noexcept {
         if (ptr == nullptr || size == 0u) { return; }
@@ -49,7 +34,6 @@ namespace ProtectedEngine {
         // [PEND FIX] 프로젝트 보안 소거 표준 통일: memory clobber
         __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
-        // [BUG-05] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
 
@@ -68,10 +52,8 @@ namespace ProtectedEngine {
 
         std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
         if (ratio_percent == 0) return;
-        // [BUG-04] 범위 클램핑 (최대 100%)
         if (ratio_percent > 100u) ratio_percent = 100u;
 
-        // [BUG-FIX CRIT] Bresenham 오차 누적기 — 정수 나눗셈 왜곡 제거
         //  기존: anchor_step = 100/ratio → 80% 요청 시 step=1 → 100% 추출(20% 낭비)
         //  수정: 오차 누적(Bresenham): 임의 퍼센티지에서 소수점 오차 0으로 균등 추출
         //  원리: total개 중 target = total*ratio/100 개를 균등 선택
@@ -96,7 +78,6 @@ namespace ProtectedEngine {
             }
         }
 
-        // [BUG-06] 기존 앵커 보안 소거 후 덮어쓰기
         // std::vector 대입은 기존 버퍼를 소거 없이 해제 → 메모리 잔존
         auto it = secret_enclave.find(block_id);
         if (it != secret_enclave.end() && !it->second.empty()) {
@@ -119,12 +100,10 @@ namespace ProtectedEngine {
         if (ratio_percent == 0) return;
         if (ratio_percent > 100u) ratio_percent = 100u;
 
-        // [BUG-05] try-catch 삭제
         auto it = secret_enclave.find(block_id);
         if (it == secret_enclave.end()) return;
         const auto& anchors = it->second;
 
-        // [BUG-FIX CRIT] Bresenham 복원 (Sequestrate와 동일 알고리즘)
         //  동일 ratio_percent + 동일 tensor.size() → 동일 인덱스 선택 보장
         const size_t total = damaged_tensor.size();
         // 산술 가드: size_t 곱셈 오버플로우 시 fail-closed
@@ -150,12 +129,67 @@ namespace ProtectedEngine {
     // =====================================================================
     std::vector<uint8_t> Anchor_Vault::Export_Anchor(uint64_t block_id) noexcept {
         std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
-        // [BUG-05] try-catch 삭제
         auto it = secret_enclave.find(block_id);
-        if (it != secret_enclave.end()) {
-            return it->second;
+        if (it == secret_enclave.end()) return {};
+        if (it->second.empty()) return {};
+
+        const std::vector<uint8_t>& payload = it->second;
+
+        // [HTS-12] export: payload||HMAC(tag) appended (fail-closed if session/key unavailable)
+        uint8_t masterSeed[MAX_SEED_SIZE] = {};
+        const size_t seed_len = Session_Gateway::Get_Master_Seed_Raw(
+            masterSeed, MAX_SEED_SIZE);
+        if (seed_len < 32u) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return {};
         }
-        return {};
+
+        uint8_t block_id_be[8] = {};
+        for (size_t i = 0u; i < 8u; ++i) {
+            block_id_be[7u - i] = static_cast<uint8_t>(
+                static_cast<uint64_t>(block_id >> (i * 8u)) & 0xFFu);
+        }
+
+        HMAC_Context ctx;
+        uint32_t r = HMAC_Bridge::Init(ctx, masterSeed, 32u);
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return {};
+        }
+        r = HMAC_Bridge::Update(ctx, block_id_be, sizeof(block_id_be));
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return {};
+        }
+        r = HMAC_Bridge::Update(ctx, payload.data(), payload.size());
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return {};
+        }
+
+        uint8_t mac_tag[ANCHOR_HMAC_TAG_SIZE_BYTES] = {};
+        r = HMAC_Bridge::Final(ctx, mac_tag);
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            SecureMemory::secureWipe(mac_tag, sizeof(mac_tag));
+            return {};
+        }
+
+        SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+
+        std::vector<uint8_t> out;
+        out.resize(payload.size() + ANCHOR_HMAC_TAG_SIZE_BYTES);
+        if (!payload.empty()) {
+            std::memcpy(out.data(), payload.data(), payload.size());
+        }
+        std::memcpy(
+            out.data() + payload.size(),
+            mac_tag,
+            ANCHOR_HMAC_TAG_SIZE_BYTES);
+
+        SecureMemory::secureWipe(mac_tag, sizeof(mac_tag));
+
+        return out;
     }
 
     // =====================================================================
@@ -166,20 +200,68 @@ namespace ProtectedEngine {
         const std::vector<uint8_t>& external_anchor) noexcept {
 
         std::lock_guard<std::mutex> lock(mtx_);  // [BUG-07]
-        // [BUG-06] 기존 앵커 보안 소거 후 덮어쓰기
+        if (external_anchor.empty()) return;
+        if (external_anchor.size() <= ANCHOR_HMAC_TAG_SIZE_BYTES) return;
+
+        const size_t payload_len =
+            external_anchor.size() - ANCHOR_HMAC_TAG_SIZE_BYTES;
+        if (payload_len == 0u) return;
+
+        const uint8_t* const payload_ptr = external_anchor.data();
+        const uint8_t* const recv_tag_ptr = payload_ptr + payload_len;
+
+        // [HTS-12] import: verify (block_id||payload) HMAC first
+        uint8_t masterSeed[MAX_SEED_SIZE] = {};
+        const size_t seed_len = Session_Gateway::Get_Master_Seed_Raw(
+            masterSeed, MAX_SEED_SIZE);
+        if (seed_len < 32u) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return;
+        }
+
+        uint8_t block_id_be[8] = {};
+        for (size_t i = 0u; i < 8u; ++i) {
+            block_id_be[7u - i] = static_cast<uint8_t>(
+                static_cast<uint64_t>(block_id >> (i * 8u)) & 0xFFu);
+        }
+
+        HMAC_Context ctx;
+        uint32_t r = HMAC_Bridge::Init(ctx, masterSeed, 32u);
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return;
+        }
+        r = HMAC_Bridge::Update(ctx, block_id_be, sizeof(block_id_be));
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return;
+        }
+        r = HMAC_Bridge::Update(ctx, payload_ptr, payload_len);
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+            return;
+        }
+        r = HMAC_Bridge::Verify_Final(ctx, recv_tag_ptr);
+        SecureMemory::secureWipe(masterSeed, sizeof(masterSeed));
+        if (r != HMAC_Bridge::SECURE_TRUE) {
+            // fail-closed: do not overwrite existing payload
+            return;
+        }
+
         auto it = secret_enclave.find(block_id);
         if (it != secret_enclave.end() && !it->second.empty()) {
             Vault_Secure_Wipe(it->second.data(),
                 it->second.size() * sizeof(uint8_t));
         }
 
-        secret_enclave[block_id] = external_anchor;
+        secret_enclave[block_id] = std::vector<uint8_t>(
+            payload_ptr,
+            payload_ptr + payload_len);
     }
 
     // =====================================================================
     //  [6] 처리 완료 앵커 보안 소거 + 맵 삭제 (OOM 방지)
     //
-    //  [BUG-FIX FATAL] secret_enclave 무한 증식 방지
     //   기존: Sequestrate + Import만 존재, 개별 삭제 로직 없음
     //   → 패킷 처리 후 앵커가 영구 잔존 → RAM 무한 증식 → OOM Killer
     //   수정: ACK 수신 후 해당 block_id 앵커를 보안 소거 + erase

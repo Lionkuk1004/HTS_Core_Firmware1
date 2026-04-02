@@ -31,7 +31,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -86,7 +86,6 @@ namespace ProtectedEngine {
 
     // ── 링버퍼 공통 연산 (인라인, 타입 안전) ──
 
-    // [FIX-C4100] ring_push: head 미사용 → 파라미터 제거
     static bool ring_push(QueueItem* items, uint8_t cap,
         uint8_t& tail, uint8_t& count,
         const QueueItem& item) noexcept
@@ -110,7 +109,6 @@ namespace ProtectedEngine {
         return true;
     }
 
-    // [FIX-PEEK] head 항목 읽기 전용 (비파괴)
     static const QueueItem* ring_peek(
         const QueueItem* items, uint8_t head, uint8_t count) noexcept
     {
@@ -128,7 +126,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [FIX-RACE] PRIMASK 크리티컬 섹션 (ISR 동시 접근 방어)
     //
     //  Enqueue: 메인 루프 또는 APP 콜백에서 호출
     //  Dequeue: TX 타이머 ISR에서 호출 가능
@@ -251,7 +248,6 @@ namespace ProtectedEngine {
         item.len = static_cast<uint8_t>(len);
         item.orig_priority = static_cast<uint8_t>(priority);
 
-        // [FIX-RACE] PRIMASK 크리티컬 섹션
         const uint32_t pm = critical_enter();
         bool ok = false;
 
@@ -292,7 +288,6 @@ namespace ProtectedEngine {
 
         QueueItem item = {};
 
-        // [FIX-RACE] PRIMASK 크리티컬 섹션
         const uint32_t pm = critical_enter();
 
         // P0: SOS (항상 최우선)
@@ -351,14 +346,12 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        // [FIX-RACE] PRIMASK 크리티컬 섹션
         const uint32_t pm = critical_enter();
 
         // NF 기반 DATA 억제 정책
         p->last_nf = current_nf;
         p->data_suppressed = (current_nf > NF_SUPPRESS_TH);
 
-        // [FIX-PEEK] DATA 큐 에이징: Peek-first → Check-then-Act
         //  기존: pop 먼저 → VOICE 풀 시 tail 재삽입 → FIFO 역전
         //  수정: peek으로 조건 확인 → VOICE 빈칸 있을 때만 pop+push
         const QueueItem* peek =
@@ -380,7 +373,6 @@ namespace ProtectedEngine {
                 ring_push(p->q_voice.items, static_cast<uint8_t>(VOICE_CAP),
                     p->q_voice.tail, p->q_voice.count, aged);
 
-                // [FIX-JITTER] Wipe를 크리티컬 밖에서 수행
                 critical_exit(pm);
                 PriSched_Secure_Wipe(&aged, sizeof(aged));
                 return;  // pm 이미 해제됨 → 아래 exit 건너뜀
@@ -398,7 +390,6 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        // [FIX-RACE] Flush 중 ISR 선점 → 반쯤 지워진 큐 접근 방지
         const uint32_t pm = critical_enter();
         ring_flush(p->q_sos.items, sizeof(p->q_sos.items),
             p->q_sos.head, p->q_sos.tail, p->q_sos.count);

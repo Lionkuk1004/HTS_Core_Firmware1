@@ -3,21 +3,6 @@
 // B-CDMA CFAR 기반 동기화 피크 검출기 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
-// [양산 수정 이력 — 10건]
-//  BUG-01~08 (이전 세션)
-//  BUG-09 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//         · impl_buf_[256] alignas(8) 정적 배치
-//           Impl = HTS_Phy_Config(36B) + int32_t(4B) ≈ 48B → 여유 충분
-//         · 생성자: impl_buf_ SecWipe → ::new Impl(tier) → impl_valid_=true
-//           Impl 생성자는 noexcept → 예외 없이 안전
-//         · 소멸자: = default 제거 → 명시적 p->~Impl() + SecWipe_Sync
-//  BUG-10 [CRIT] int64_t / int64_t 나눗셈 2곳 → 32비트 HW SDIV
-//         · noise_floor = energy_sum/positive_count
-//           → CLZ + 배럴시프트: 시프트량 O(1) 산출 → 루프 완전 소멸
-//         · snr_raw = max_value/noise_floor
-//           → 양변 int32_t 범위 보장 → static_cast<int32_t> 후 SDIV 직접
-//         · __aeabi_ldivmod (~200cyc×2) → CLZ+UDIV+SDIV (~30cyc) = 13× 가속
-// =========================================================================
 #include "HTS_Rx_Sync_Detector.h"
 
 // 내부 전용 includes (헤더에 미노출)
@@ -42,13 +27,12 @@ static_assert(sizeof(size_t) >= 2,
     "[HTS_Sync] size_t too narrow for expected buffer sizes");
 
 namespace ProtectedEngine {
-    // [FIX-WIPE] 3중 방어 보안 소거 — impl_buf_ 전체 파쇄
     static void Rx_Sync_Detector_Secure_Wipe(void* p, size_t n) noexcept {
         if (p == nullptr || n == 0u) { return; }
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -64,9 +48,8 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p));
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
-        // [BUG-01] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
 
@@ -84,7 +67,6 @@ namespace ProtectedEngine {
             : current_config(HTS_Phy_Config_Factory::make(tier))
             , threshold_multiplier(current_config.cfar_default_mult)
         {
-            // [FIX-03] 팩토리에서 0 이하 배수 방어
             if (threshold_multiplier < MIN_CFAR_MULTIPLIER) {
                 threshold_multiplier = MIN_CFAR_MULTIPLIER;
             }
@@ -94,7 +76,6 @@ namespace ProtectedEngine {
     };
 
     // =====================================================================
-    //  [BUG-09] 컴파일 타임 크기·정렬 검증 + get_impl()
     // =====================================================================
     HTS_Rx_Sync_Detector::Impl*
         HTS_Rx_Sync_Detector::get_impl() noexcept {
@@ -114,7 +95,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-09] 생성자 — placement new (zero-heap)
     // =====================================================================
     HTS_Rx_Sync_Detector::HTS_Rx_Sync_Detector(
         HTS_Phy_Tier tier) noexcept
@@ -126,13 +106,11 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-09] 소멸자 — 명시적 (= default 제거)
     // =====================================================================
     HTS_Rx_Sync_Detector::~HTS_Rx_Sync_Detector() noexcept {
         Impl* p = get_impl();
         if (p != nullptr) {
             p->~Impl();
-            // [FIX-WIPE] impl_buf_ 전체 3중 방어 소거
             Rx_Sync_Detector_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
         }
         SecWipe_Sync(impl_buf_, sizeof(impl_buf_));
@@ -158,7 +136,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-04/10] Get_Config() 대체 — 개별 접근자
     //  uint8_t → uint32_t (향후 256+ 칩 확장 대비)
     // =====================================================================
     uint32_t HTS_Rx_Sync_Detector::Get_Chip_Count() const noexcept {
@@ -177,18 +154,13 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Detect_Sync_Peak — CFAR 피크 검출
     //
-    //  [BUG-08] 노이즈 플로어 분모 수정:
     //    energy_sum(양수) / buffer_size(전체) → 과소평가
     //    → 음수 50% 시 noise_floor가 절반 → 임계치 절반 → 오탐 폭증
     //    수정: energy_sum(양수) / positive_count(양수만) → 정확한 평균
     //
-    //  [BUG-09] 단일 O(N) 패스: 노이즈 + 피크 동시 추적
     //    기존: O(2N) 두 번 순회 → SRAM 이중 로드 → 대역폭 50% 낭비
     //    수정: 1회 순회로 energy_sum + max_value/max_index 동시 추적
     //
-    //  [FIX-01] nullptr 가드
-    //  [FIX-02] buffer_size == 0 가드
-    //  [FIX-05] 반환값 = 피크 인덱스 (값 아님)
     // =====================================================================
     int32_t HTS_Rx_Sync_Detector::Detect_Sync_Peak(
         const int32_t* correlation_buffer,
@@ -231,8 +203,6 @@ namespace ProtectedEngine {
             return -1;
         }
 
-        // [BUG-08] 분모 = positive_count (양수만) → 정확한 노이즈 플로어
-        // [BUG-10] int64_t / int64_t → CLZ + 배럴시프트 + 32비트 HW UDIV
         //
         //  [문제]
         //   energy_sum: 양수 int32_t 누적 → 최대 buffer_size × INT32_MAX ≈ 2^43
@@ -275,7 +245,6 @@ namespace ProtectedEngine {
             // ARM Cortex-M4: CLZ = 1사이클 하드웨어 명령어
             shift = 33u - static_cast<uint32_t>(__builtin_clz(hi));
 #elif defined(_MSC_VER)
-            // [FIX-MSVC] _BitScanReverse: 1사이클 (while 루프 제거)
             //  idx = MSB 위치 (0~31), CLZ = 31 - idx
             //  shift = 33 - (31 - idx) = idx + 2
             unsigned long idx = 0;
@@ -305,7 +274,6 @@ namespace ProtectedEngine {
         }
 
         nf_num >>= shift;
-        // [FIX-MATH] nf_den 언더플로 방지: shift가 nf_den 비트폭 초과 시 비시프트
         //  기존: nf_den >>= shift → nf_den=1,shift=1 → nf_den=0 → 가드=1 → 2배 왜곡
         //  수정: nf_den가 shift를 수용 가능할 때만 시프트
         //  불가 시: nf_den 유지 → 결과는 noise_floor 과소추정 (보수적 CFAR, 안전)
@@ -325,7 +293,6 @@ namespace ProtectedEngine {
             static_cast<int64_t>(p->threshold_multiplier);
 
         // ── SNR 프록시 계산 + metrics 기록 ───────────────────────────
-        // [BUG-10] max_value, noise_floor_32 모두 int32_t 범위 → SDIV 직접
         //   max_value: correlation_buffer[i]의 최대 → ≤ INT32_MAX (int32_t 원소)
         //   noise_floor_32: 양수 평균 → ≤ INT32_MAX
         //   snr_raw: max_value / noise_floor → ≤ INT32_MAX → 클램핑 불필요

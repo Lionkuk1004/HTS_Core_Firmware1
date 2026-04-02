@@ -1,4 +1,4 @@
-#include "lea.h"
+﻿#include "lea.h"
 #include "lea_locl.h"
 
 #include <stdio.h>
@@ -799,3 +799,5 @@ void lea_decrypt(unsigned char *pt, const unsigned char *ct, const LEA_KEY *key)
 	_pt[2] = loadU32(X2);
 	_pt[3] = loadU32(X3);
 }
+
+

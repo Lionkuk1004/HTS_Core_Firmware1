@@ -1,38 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Hardware_Auto_Scaler.cpp
 // 텐서 자동 스케일링 구현부
 // Target: STM32F407 (Cortex-M4, DMA SRAM 128KB)
 //
-// [양산 수정 — 5건 결함 교정]
-//
-//  BUG-01 [MEDIUM] Get_Free_System_Memory: 모든 플랫폼에서 128KB 고정
-//    기존: #define IOT_MCU_TOTAL_SRAM (128*1024) → return 항상 128KB
-//          PC 테스트: 16GB RAM에서도 텐서 16384개 (인위적 제한)
-//          → Dual_Tensor_Pipeline이 과소 할당 → 대량 데이터 테스트 불가
-//    수정: 3단 플랫폼 분기 (HTS_Dynamic_Config의 Get_System_Physical_RAM 패턴)
-//          ARM:     128KB DMA SRAM (정적 상수)
-//          Windows: GlobalMemoryStatusEx
-//          Linux:   sysconf
-//
-//  BUG-02 [MEDIUM] #define IOT_MCU_TOTAL_SRAM 매크로
-//    기존: .cpp 내 #define — 타입 안전성 없음, 디버거 불투명
-//    수정: namespace 내 constexpr 상수로 교체
-//
-//  BUG-03 [LOW] 상수 정의: 헤더 선언 + .cpp 정의 분리
-//    기존: static const 헤더 선언 → .cpp에서 별도 정의 필요
-//    수정: 헤더에서 인라인 초기화 (static const size_t X = N;)
-//          → .cpp에서 정의 불필요 (C++17 implicit inline / C++14 ODR safe)
-//
-//  BUG-04 [LOW] 텐서 개수 2의 제곱수 정렬 없음
-//    기존: 16384 → 이미 2^14이지만, PC에서 다른 값이 나올 수 있음
-//    수정: floor_power_of_two 내림 정렬 (DMA 버스트 + 모듈러 연산 최적)
-//
-//  BUG-05 [LOW] 문서화 — HTS_Config와의 관계 미기록
-//    수정: 헤더에 관계 설명 추가
-//
-// [최종 확정값 (STM32F407)]
-//  DMA SRAM 128KB → 50% = 64KB → / 4B = 16384 텐서 (2^14)
-// =========================================================================
 #include "HTS_Hardware_Auto_Scaler.h"
 #include <algorithm>
 
@@ -92,7 +62,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Get_Free_System_Memory — 플랫폼별 가용 메모리 감지
     //
-    //  [BUG-01 수정] 3단 플랫폼 분기
     //  ARM:     DMA SRAM 정적 상수 (OS 없음 → 감지 API 없음)
     //  Windows: GlobalMemoryStatusEx → ullAvailPhys
     //  Linux:   sysconf(_SC_AVPHYS_PAGES) × page_size
@@ -159,8 +128,6 @@ namespace ProtectedEngine {
         if (optimal_tensors < MIN_TENSORS) optimal_tensors = MIN_TENSORS;
         if (optimal_tensors > MAX_TENSORS) optimal_tensors = MAX_TENSORS;
 
-        // [BUG-04] 2의 제곱수 내림 (DMA 버스트 + 모듈러 연산 최적)
-        // [BUG-FIX CRIT] MIN/MAX가 2의제곱이므로:
         //   Floor(optimal) ≥ MIN 항상 성립 (optimal ≥ MIN이고 MIN=2^k)
         //   재클리핑은 EMI 비트플립 방어용 방어적 코드
         size_t aligned = Floor_Power_Of_Two(optimal_tensors);

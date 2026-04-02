@@ -1,4 +1,4 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <stdlib.h> 
 #include "util.h"
 
@@ -78,3 +78,5 @@ void word2byte(unsigned char* dst, const unsigned int src, const int srcLen)
 	}
 }
 // EOF
+
+

@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_OTA_AMI_Manager.cpp
 // AMI 보안 일제 무선 펌웨어 갱신 (Secure FUOTA) 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -13,14 +13,27 @@
 //
 //  BUG-42 [CRIT] 로컬 OTA_Secure_Wipe 제거 → SecureMemory::secureWipe (D-2/X-5-1)
 //         소멸자: busy 락 미획득 조기 return 제거, 스핀 상한 + 타임아웃 파쇄
+//  BUG-AIRCR-WDT [HIGH] AIRCR 폴백 전 DBGMCU IWDG/WWDG 프리즈 해제
+//         (HTS_Anti_Debug forceHalt Phase 3 동일 패턴)
+//  BUG-43 [CRIT] 소멸자 op_busy_ 대기: Cortex-M 단일코어 PRIMASK (ISR·스핀 데드락 차단)
 // =========================================================================
 #include "HTS_OTA_AMI_Manager.h"
+#include "HTS_ConstantTimeUtil.h"
 #include "HTS_Secure_Memory.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <new>
+
+// Cortex-M 임베디드: atomic_flag 스핀 중 ISR 재진입 시 데드락 → PRIMASK (Key_Rotator 동일 판별)
+#if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
+    !defined(__aarch64__)
+#define HTS_OTA_AMI_PRIMASK_DESTRUCTOR 1
+#else
+#define HTS_OTA_AMI_PRIMASK_DESTRUCTOR 0
+#endif
 
 namespace ProtectedEngine {
     struct OTA_Busy_Guard {
@@ -41,19 +54,8 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  보안 유틸리티 — D-2 / X-5-1: 소거는 SecureMemory::secureWipe 단일화 (BUG-42)
+    //  HMAC/논스 비교: ConstantTimeUtil::compare (KCMVP 단일화)
     // =====================================================================
-
-    /// @brief Constant-Time 비교 (타이밍 부채널 방어)
-    ///  비트마스크 OR 누적 → 전 바이트 비교 후 판정
-    static uint32_t ct_compare(
-        const uint8_t* a, const uint8_t* b, size_t len) noexcept
-    {
-        uint32_t diff = 0u;
-        for (size_t i = 0u; i < len; ++i) {
-            diff |= static_cast<uint32_t>(a[i] ^ b[i]);
-        }
-        return diff;  // 0 = 일치
-    }
 
     // CRC32 (기존 유지 — 전송 무결성)
     static uint32_t sw_crc32_block(
@@ -86,6 +88,16 @@ namespace ProtectedEngine {
         static constexpr uint32_t AIRCR = 0xE000ED0Cu;
         static constexpr uint32_t KEY = 0x05FA0004u;
         *reinterpret_cast<volatile uint32_t*>(AIRCR) = KEY;
+#if defined(__GNUC__) || defined(__clang__)
+        static constexpr uint32_t ADDR_DBGMCU_FZ = 0xE0042008u;
+        static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+        static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+        volatile uint32_t* const dbgmcu_fz =
+            reinterpret_cast<volatile uint32_t*>(
+                static_cast<uintptr_t>(ADDR_DBGMCU_FZ));
+        *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+        __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
         for (;;) {}
     }
 #else
@@ -175,10 +187,16 @@ namespace ProtectedEngine {
     }
 
     HTS_OTA_AMI_Manager::~HTS_OTA_AMI_Manager() noexcept {
-        // [BUG-42] op_busy_ 미보유 상태에서 impl_buf 파쇄 금지(UAF/레이스).
         //          타임아웃으로 조기 return 하면 다른 컨텍스트가 Impl 사용 중인데
         //          버퍼를 지울 수 있음(H-2/H-3). 단일 스핀으로 배타 획득 후 파쇄.
         //          멀티스레드 시 소멸 전 Shutdown() 또는 외부 동기화 필수.
+        //          인터럽트 차단 후 획득·파쇄·해제까지 동일 임계구역 유지.
+#if HTS_OTA_AMI_PRIMASK_DESTRUCTOR && (defined(__GNUC__) || defined(__clang__))
+        uint32_t primask_saved;
+        __asm__ __volatile__("mrs %0, primask\n\t"
+            "cpsid i"
+            : "=r"(primask_saved) :: "memory");
+#endif
         while (op_busy_.test_and_set(std::memory_order_acquire)) {
             // Busy-wait — RTOS에서는 이 루프에 yield 훅 삽입 권장
         }
@@ -187,6 +205,9 @@ namespace ProtectedEngine {
         if (p != nullptr) { p->~Impl(); }
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
         op_busy_.clear(std::memory_order_release);
+#if HTS_OTA_AMI_PRIMASK_DESTRUCTOR && (defined(__GNUC__) || defined(__clang__))
+        __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
+#endif
     }
 
     void HTS_OTA_AMI_Manager::Register_Crypto(
@@ -232,7 +253,8 @@ namespace ProtectedEngine {
         //  session_nonce = 직전 OTA에서 사용한 논스
         //  동일 논스 재사용 → 재전송 공격 거부
         if (p->nonce_set) {
-            if (ct_compare(nonce, p->session_nonce, OTA_NONCE_SIZE) == 0u) {
+            if (ConstantTimeUtil::compare(
+                    nonce, p->session_nonce, OTA_NONCE_SIZE)) {
                 p->reject = AMI_OtaReject::NONCE_REPLAY;
                 return false;
             }
@@ -334,13 +356,13 @@ namespace ProtectedEngine {
             }
 
             // 4B 절삭 Constant-Time 비교
-            const uint32_t mac_diff =
-                ct_compare(chunk_mac, full_mac, OTA_CHUNK_MAC_SIZE);
+            const bool mac_ok = ConstantTimeUtil::compare(
+                chunk_mac, full_mac, OTA_CHUNK_MAC_SIZE);
 
             SecureMemory::secureWipe(full_mac, sizeof(full_mac));
             SecureMemory::secureWipe(mac_input, sizeof(mac_input));
 
-            if (mac_diff != 0u) {
+            if (!mac_ok) {
                 p->reject = AMI_OtaReject::CHUNK_MAC_FAIL;
                 return false;
             }
@@ -450,7 +472,7 @@ namespace ProtectedEngine {
     //  [보안 5] HMAC-LSH256 전체 검증
     //   hmac_init(fw_key) → hmac_update(nonce‖version) →
     //   Tick에서 hmac_update(flash_block×N) →
-    //   hmac_final(computed_mac) → ct_compare(expected)
+    //   hmac_final(computed_mac) → ConstantTimeUtil::compare(expected)
     // =====================================================================
     bool HTS_OTA_AMI_Manager::Verify() noexcept {
         OTA_Busy_Guard guard(op_busy_);
@@ -642,11 +664,11 @@ namespace ProtectedEngine {
                     uint8_t computed[OTA_HMAC_SIZE] = {};
                     p->crypto.hmac_final(computed);
 
-                    const uint32_t hmac_diff = ct_compare(
+                    const bool hmac_ok = ConstantTimeUtil::compare(
                         computed, p->expected_hmac, OTA_HMAC_SIZE);
                     SecureMemory::secureWipe(computed, sizeof(computed));
 
-                    if (hmac_diff != 0u) {
+                    if (!hmac_ok) {
                         p->reject = AMI_OtaReject::HMAC_FAIL;
                         p->state = AMI_OtaState::FAILED;
                         return;

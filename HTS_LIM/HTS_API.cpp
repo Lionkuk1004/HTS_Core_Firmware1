@@ -1,19 +1,17 @@
+#if __cplusplus >= 202002L || \\
+    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   HTS_LIKELY
+#define HTS_UNLIKELY HTS_UNLIKELY
+#else
+#define HTS_LIKELY
+#define HTS_UNLIKELY
+#endif
 // =========================================================================
 // HTS_API.cpp
 // 외부 파트너사 연동 API 구현부
 // Target: STM32F407VGT6 (Cortex-M4F) / PC
 //
-// [양산 수정 이력 — 24건]
-//  BUG-01~19 (이전 세션)
-//  BUG-20 [CRIT] C2440: POST void 반환 → void 호출 + 성공 가정
-//  BUG-21 [HIGH] C4273: HTS_API_BUILD 미정의 → cpp 상단 정의
-//  BUG-22 [LOW]  [[likely]]/[[unlikely]] → C++20 가드 매크로 (U-D)
-//  BUG-23 [HIGH] A-3: DCLP 이중 atomic(g_init_lock+g_is_initialized)
-//                → 단일 CAS(g_is_initialized) 전환 (U-C 패턴 통일)
-//  BUG-24 [LOW]  H-11: 전역 포인터 = nullptr 명시 제거 (BSS 영초기화)
-// =========================================================================
 
-// [BUG-21] DLL 빌드 시 export/import 방향 결정
 // 이 파일이 라이브러리 구현부이므로 반드시 BUILD 매크로 선행 정의
 #if !defined(HTS_API_BUILD)
 #define HTS_API_BUILD
@@ -21,15 +19,15 @@
 
 #include "HTS_API.h"
 #include "HTS_POST_Manager.h"
+#include "HTS_Secure_Boot_Verify.h"
 // [C-REF-1] #include "HTS_PHY_Receiver.h" 삭제 — V400 대체 완료, dead code
 #include "HTS_Sparse_Recovery.h"
 
 #include <atomic>
 
-// [BUG-22] C++20 속성 가드 — C++14/17 빌드 호환
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_API_LIKELY   [[likely]]
-#define HTS_API_UNLIKELY [[unlikely]]
+#define HTS_API_LIKELY   HTS_LIKELY
+#define HTS_API_UNLIKELY HTS_UNLIKELY
 #else
 #define HTS_API_LIKELY
 #define HTS_API_UNLIKELY
@@ -38,7 +36,6 @@
 namespace HTS_API {
 
     namespace {
-        // [BUG-FIX FATAL] 초기화 플래그: bool → 3상 상태머신
         //  기존: CAS(false→true) 즉시 → 포인터 미할당 상태에서 true 노출
         //        → 외부 스레드가 nullptr 참조 → HardFault
         //  수정: NONE(0) → BUSY(1) → READY(2)
@@ -52,7 +49,6 @@ namespace HTS_API {
         std::atomic<uint32_t> g_active_medium{
             static_cast<uint32_t>(HTS_CommMedium::B_CDMA_RAW_RF) };
 
-        // [BUG-24] = nullptr 명시 제거: BSS 영초기화 보장 (C++11 이후)
         volatile uint32_t* g_hw_irq_status;
         volatile uint32_t* g_hw_irq_clear;
         volatile int16_t* g_hw_rx_fifo;
@@ -76,7 +72,12 @@ namespace HTS_API {
         volatile int16_t* hw_rx_fifo_addr,
         HTS_CommMedium     target_medium) noexcept {
 
-        // [BUG-FIX FATAL] 3상 초기화: NONE→BUSY→READY
+        // [R-1] Secure Boot 선행 강제:
+        // startup 단계 검증 결과가 실패/미검증이면 초기화 진입 차단.
+        if (HTS_Secure_Boot_Is_Verified() != 1) {
+            return HTS_Status::ERR_TAMPERED;
+        }
+
         //  CAS(NONE→BUSY): 단일 컨텍스트만 초기화 진입
         //  BUSY 상태: 외부 스레드가 포인터 접근 불가 (READY가 아니므로)
         //  READY 설정: 모든 포인터 할당 + release 배리어 후에만
@@ -100,7 +101,6 @@ namespace HTS_API {
             return HTS_Status::ERR_UNSUPPORTED_MEDIUM;
         }
 
-            // [BUG-20] POST는 void 반환
         ProtectedEngine::POST_Manager::executePowerOnSelfTest();
 
         g_hw_irq_status = hw_irq_status_reg;
@@ -111,7 +111,6 @@ namespace HTS_API {
             static_cast<uint32_t>(target_medium),
             std::memory_order_relaxed);
 
-        // [BUG-FIX FATAL] READY 설정: 모든 포인터 할당 완료 후
         //  release 배리어 → 다른 스레드에서 READY를 보면 포인터도 반드시 가시
         g_init_state.store(INIT_READY, std::memory_order_release);
         return HTS_Status::OK;
@@ -120,7 +119,6 @@ namespace HTS_API {
     HTS_Status Fetch_And_Heal_Rx_Payload(
         uint32_t* out_buffer, size_t required_size) noexcept {
 
-        // [BUG-FIX FATAL] READY 상태만 허용 (BUSY 상태 포인터 접근 차단)
         if (g_init_state.load(std::memory_order_acquire) != INIT_READY) {
             return HTS_Status::ERR_NOT_INITIALIZED;
         }
@@ -133,20 +131,85 @@ namespace HTS_API {
             return HTS_Status::ERR_NOT_INITIALIZED;
         }
 
-        // [치명 모순 수정] 영구 ERR_BUFFER_UNDERFLOW 반환 제거
-        // 현재 연동 범위에서는 페이로드 복구 엔진 미연결 상태이므로
-        // API 계약상 최소 정상 경로(입력 검증 통과 시 OK)를 보장한다.
-        // 실제 복구/디코드 파이프라인은 상위 모듈 통합 시 연결.
-        (void)out_buffer;
-        (void)required_size;
+        // BUG-25 [CRIT] RX→복구: HW 폴링 → FIFO → uint32 패킹 → IRQ ACK → L1 힐링
+        static constexpr size_t RX_WORDS_STACK = 1024u;  // int16 슬롯 수 (스택 배열 크기)
+        static constexpr size_t RX_MAX_WORDS = 512u;    // uint32 슬롯 상한 (= required_size max)
+        static_assert(RX_MAX_WORDS * 2u <= RX_WORDS_STACK,
+            "rx_words[RX_WORDS_STACK] must hold 2 int16 per uint32 output slot");
+
+        // BUG-E: required_size 초과는 버퍼 상한 위반 — HTS_Status에 전용 코드 없음.
+        //  ERR_BUFFER_UNDERFLOW로 임시 매핑(의미: 요청 거부). 향후 ERR_INVALID_SIZE 권고.
+        if (required_size > RX_MAX_WORDS) HTS_API_UNLIKELY{
+            return HTS_Status::ERR_BUFFER_UNDERFLOW;
+        }
+
+        // STEP 1 — IRQ status: bit[0] set = RX 준비, 최대 1024회 폴링 (무한 루프 금지)
+        bool rx_ready = false;
+        for (uint32_t poll = 0u; poll < 1024u; ++poll) {
+            const uint32_t st = *g_hw_irq_status;
+            if ((st & 1u) != 0u) {
+                rx_ready = true;
+                break;
+            }
+#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
+            __asm__ volatile("nop" ::: "memory");
+#endif
+        }
+        if (!rx_ready) HTS_API_UNLIKELY{
+            return HTS_Status::ERR_BUFFER_UNDERFLOW;
+        }
+
+        // STEP 2 — FIFO → 스택 버퍼 (힙 0)
+        int16_t rx_words[RX_WORDS_STACK] = {};
+        {
+            volatile int16_t* const fifo = g_hw_rx_fifo;
+            const size_t n = required_size << 1u;
+            for (size_t i = 0u; i < n; ++i) {
+                rx_words[i] = fifo[i];
+            }
+        }
+
+        // STEP 3 — int16 쌍 → uint32 패킹 (out_buffer 채움; L1 입력)
+        for (size_t i = 0u; i < required_size; ++i) {
+            const uint16_t lo = static_cast<uint16_t>(rx_words[i << 1u]);
+            const uint16_t hi = static_cast<uint16_t>(rx_words[(i << 1u) + 1u]);
+            out_buffer[i] =
+                (static_cast<uint32_t>(hi) << 16) | static_cast<uint32_t>(lo);
+        }
+
+        // STEP 4 — session_id 스냅샷 (IRQ 클리어 전, 레지스터 소거 전 상태)
+        const uint64_t session_id =
+            static_cast<uint64_t>(*g_hw_irq_status)
+            ^ 0xB0CDABCD00000000ULL;
+
+        // STEP 5 — IRQ 클리어 + release fence
+        *g_hw_irq_clear = 1u;
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // STEP 6 — L1 스파스 복구 (in-place)
+        ProtectedEngine::RecoveryStats stats{};
+        const bool healed =
+            ProtectedEngine::Sparse_Recovery_Engine::Execute_L1_Reconstruction<uint32_t>(
+                out_buffer,
+                required_size,
+                session_id,
+                4u,
+                false,
+                false,
+                stats);
+
+        if (!healed) HTS_API_UNLIKELY{
+            return HTS_Status::ERR_RECOVERY_FAILED;
+        }
+
         return HTS_Status::OK;
     }
 
-    HTS_Status Is_System_Operational() noexcept {
-        if (g_init_state.load(std::memory_order_acquire) != INIT_READY) {
-            return HTS_Status::ERR_NOT_INITIALIZED;
-        }
-        return HTS_Status::OK;
+    uint32_t Is_System_Operational() noexcept {
+        const bool ok =
+            (g_init_state.load(std::memory_order_acquire) == INIT_READY);
+        return ok ? SECURE_TRUE : SECURE_FALSE;
     }
 
 } // namespace HTS_API

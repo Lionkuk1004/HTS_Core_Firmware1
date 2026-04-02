@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Dual_Tensor_16bit.h
 // B-CDMA 듀얼 레인 텐서 파이프라인 — 공개 인터페이스
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -24,10 +24,10 @@
 //   }
 //
 //  [메모리 요구량]
-//   sizeof(Dual_Tensor_Pipeline) ≈ IMPL_BUF_SIZE(20KB) + metadata(8B)
+//   sizeof(Dual_Tensor_Pipeline) ≈ IMPL_BUF_SIZE(ARM 64KB / PC 576KB) + metadata(8B)
 //   Impl 내부: Gaussian_Pulse_Shaper, Security_Pipeline 등 서브모듈
 //   dual_lane_buffer: uint32_t[4096] = 16KB (정적, 힙 0회)
-//   ⚠ 반드시 전역/정적 변수로 배치 (스택 배치 시 20KB 스택 소모)
+//   ⚠ 반드시 전역/정적 변수로 배치 (스택 배치 시 IMPL_BUF_SIZE만큼 스택 소모)
 //
 //  [보안 설계]
 //   중간 암호 파생 데이터: RAII_Secure_Wiper로 모든 경로 소거 보장
@@ -36,13 +36,14 @@
 //   Get_Master_Seed: Raw API (힙 0회, ARM Zero-Heap 준수)
 //
 //  [양산 수정 이력 — 21건]
-//   BUG-01~14 (이전 세션: RAII UAF, clamp, RotL64, Pimpl placement new)
 //   BUG-15 [CRIT] Impl try-catch 제거 (-fno-exceptions)
 //   BUG-16 [CRIT] Execute try-catch 래퍼 제거
 //   BUG-17 [CRIT] dual_lane_buffer vector → 정적 배열[4096]
 //   BUG-18 [HIGH] seq_cst → release (배리어 정책 통일)
 //   BUG-19 [HIGH] Get_Master_Seed → Get_Master_Seed_Raw
-//   BUG-20 [PENDING] double/vector 외부 API 의존 (3D_FEC 검수 후 전환)
+//   BUG-20 [PENDING] fp64/vector 외부 API 의존 (3D_FEC 검수 후 전환)
+//   BUG-22 [검수 KB] static_assert 실측: IMPL_BUF_SIZE ARM=65536B(64KB), PC=589824B;
+//          sizeof(Impl) ≤ IMPL_BUF_SIZE (get_impl)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -56,12 +57,11 @@ namespace ProtectedEngine {
     class Dual_Tensor_Pipeline {
     public:
         /// @brief 듀얼 레인 텐서 파이프라인 생성
-        /// @param bt_product  대역폭 × 심볼 주기 (GMSK 표준: 0.3)
+        /// @param bt_q16       대역폭 × 심볼 주기 Q16 (0.3 => 19661)
         /// @param filter_taps 가우시안 필터 탭 수 (홀수, 예: 31)
-        /// @note  [PENDING] bt_product double → Q16 고정소수점 전환 예정
-        ///        (Gaussian_Pulse_Shaper API 변경 후)
+        /// @note  유효 범위 밖/0 입력은 Gaussian 계수 생성 시 0.3 폴백
         Dual_Tensor_Pipeline(
-            double bt_product, size_t filter_taps) noexcept;
+            uint32_t bt_q16, size_t filter_taps) noexcept;
 
         /// @brief 소멸자 — Impl 소멸자 호출 후 impl_buf_ 전체 SecWipe
         ~Dual_Tensor_Pipeline() noexcept;
@@ -103,13 +103,11 @@ namespace ProtectedEngine {
 
     private:
         // ── [BUG-14/17/20] Pimpl In-Place Storage ──────────────────────
-        //  [BUG-20+FIX] vector/double 완전 제거 → 정적 int8_t 워킹 버퍼
         //   ARM: work_A(17.2KB) + work_B(17.2KB) + temp_sec(6KB)
         //        + dual_lane(16KB) + sub-modules(~3KB) ≈ 60KB
         //        INTLV_DIM=26 → dim³=17,576 ≥ MAX_RAW_BITS(16,384)
         //   PC:  work_A(256KB) + fec_bits(256KB) + tx_signal(16KB) + temp_sec(12KB)
         //        + dual_lane(16KB) + sub-modules(~3KB) ≈ 559KB
-        //   [BUG-FIX] union→독립배열 분리로 +16KB 증가 (fec_bits/tx_signal 수명 격리)
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
         static constexpr size_t IMPL_BUF_SIZE = 65536u;   // 64KB
 #else

@@ -28,7 +28,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) q[i] = 0u;
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -64,7 +64,6 @@ namespace ProtectedEngine {
         const uint8_t* salt, uint8_t* out_32) noexcept {
 
         // HMAC(key=salt, message=password) → 32바이트 해시
-        // [FIX-C6031] [[nodiscard]] 반환값 검사 — 실패 시 출력 제로화
         if (HMAC_Bridge::Generate(password, len, salt, Role_Auth::SALT_LEN, out_32)
             != HMAC_Bridge::SECURE_TRUE) {
             RA_Wipe(out_32, 32u);  // 실패 시 부분 기록 방지

@@ -1,30 +1,10 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Security_Session.cpp
 // KCMVP 암호/인증 통합 오케스트레이터 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz) / PC
 //
-// [양산 수정 — 19건]
-//
-//  ── 기존 수정 (BUG-01 ~ BUG-10) ──
-//  BUG-01~10: HMAC 소거, Pimpl, DCE, LEA 절삭, pragma, Doxygen,
-//    CTR partial, O(1) counter, header, nothrow
-//
-//  ── 세션 8 전수검사 (BUG-11 ~ BUG-22) ──
-//  BUG-12 [MED]  ARIA keystream[16] 보안 소거 → SecureWipe
-//  BUG-14 [HIGH] partial_len 의미론 주석 → 명확화
-//  BUG-15 [MED]  ARIA_Bridge 소거 주석 → 명시
-//  BUG-17 [MED]  static_assert → key/counter/block 검증
-//  BUG-18 [CRIT] unique_ptr → 고정버퍼 placement new (힙0)
-//  BUG-19 [CRIT] 더티 메모리 0클린 + 소멸 시 전체 소거
-//  BUG-20 [CRIT] ~15u 제로 확장 → size_t 캐스트 (64비트 안전)
-//  BUG-21 [CRIT] 키 확장 반복 → Initialize 1회 캐싱 (DoS 방지)
-//  BUG-22 [CRIT] MAC 실패 시 세션 미종료 → 즉시 Terminate (CCA 차단)
-//
-// [제약] try-catch 0, float/double 0, 힙 0
-// =========================================================================
 #include "HTS_Security_Session.h"
 
-// [BUG-02] .cpp에서만 내부 암호 모듈 include
 #include "HTS_HMAC_Bridge.hpp"
 #include "HTS_ARIA_Bridge.hpp"
 #include "HTS_LEA_Bridge.h"
@@ -42,7 +22,6 @@
 
 namespace ProtectedEngine {
     // =====================================================================
-    //  [BUG-08] CTR 카운터 고속 덧셈 (Big-Endian)
     //  루프 오버헤드를 없애고 N개의 블록을 한 번에 더하는 O(1) 알고리즘
     // =====================================================================
     static void Add_To_Counter(uint8_t* counter, uint64_t blocks) noexcept {
@@ -56,7 +35,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-02] Pimpl 구현 구조체
     // =====================================================================
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -71,19 +49,18 @@ namespace ProtectedEngine {
         alignas(4) uint8_t session_mac_key[32] = {};
         alignas(4) uint8_t tx_counter[16] = {};
         alignas(4) uint8_t rx_counter[16] = {};
+        alignas(4) uint8_t last_init_iv[16] = {};
+        bool last_iv_valid = false;
 
-        // [BUG-07] 스트리밍 상태 유지를 위한 잔여 키스트림 버퍼
         alignas(4) uint8_t tx_partial_block[16] = {};
         size_t tx_partial_len = 0;
 
         alignas(4) uint8_t rx_partial_block[16] = {};
         size_t rx_partial_len = 0;
 
-        // [BUG-01] HMAC 컨텍스트 — 소멸 시 반드시 소거
         HMAC_Context tx_mac_ctx;
         HMAC_Context rx_mac_ctx;
 
-        // [BUG-21] 캐시된 암호 컨텍스트 — Initialize에서 1회 키 확장
         // Do_CTR_Chunk에서는 Process_Block만 호출 (키 확장 0회)
         // ARIA: 라운드 키 테이블 (~1KB), LEA: 확장 키 (~800B)
         ARIA_Bridge cached_aria;
@@ -93,15 +70,12 @@ namespace ProtectedEngine {
         LEA_KEY     cached_lea_key{};  // [C26495] 제로 초기화
         bool        crypto_ctx_ready = false;  // 키 확장 완료 플래그
 
-        // [FIX-TIMING] MAC 실패 → 지연 종료 플래그
         //  Unprotect_Verify에서 즉시 Terminate 안 함 → 타이밍 일정
         //  다음 API 호출 시 거부 + 종료 (백그라운드 디커플링)
         bool deferred_terminate = false;
 
-        // [FIX-STACK] CTR 스크래치패드 (ctr_copy 로컬 제거)
         alignas(4) uint8_t scratch_ctr[16] = {};
 
-        // [BUG-17] 빌드 타임 검증
         static_assert(sizeof(session_enc_key) == 32,
             "AES/ARIA/LEA-256 key must be 32 bytes");
         static_assert(sizeof(tx_counter) == 16,
@@ -115,6 +89,8 @@ namespace ProtectedEngine {
             SecureMemory::secureWipe(session_mac_key, sizeof(session_mac_key));
             SecureMemory::secureWipe(tx_counter, sizeof(tx_counter));
             SecureMemory::secureWipe(rx_counter, sizeof(rx_counter));
+            SecureMemory::secureWipe(last_init_iv, sizeof(last_init_iv));
+            last_iv_valid = false;
 
             // 스트리밍 버퍼 소거
             SecureMemory::secureWipe(tx_partial_block, sizeof(tx_partial_block));
@@ -126,7 +102,6 @@ namespace ProtectedEngine {
             SecureMemory::secureWipe(&tx_mac_ctx, sizeof(tx_mac_ctx));
             SecureMemory::secureWipe(&rx_mac_ctx, sizeof(rx_mac_ctx));
 
-            // [BUG-21] 캐시된 암호 컨텍스트 보안 소거
             SecureMemory::secureWipe(&cached_lea_key, sizeof(cached_lea_key));
             // cached_aria: ARIA_Bridge 소멸자가 라운드 키 소거 보장 (계약)
             crypto_ctx_ready = false;
@@ -148,7 +123,6 @@ namespace ProtectedEngine {
 
             // 1. 남은 잔여 키스트림(Residue) 우선 소진
             //
-            // [BUG-14] partial_len 의미론:
             //   partial_len = "이미 소비된 바이트 수" (= 다음 사용 오프셋)
             //   partial_block[partial_len] = 다음에 XOR할 키스트림 바이트
             //   partial_len=0: 잔여 없음 (while 진입 안 함)
@@ -167,7 +141,6 @@ namespace ProtectedEngine {
             if (offset == length) return true;
 
             size_t remaining = length - offset;
-            // [BUG-20] ~15u → ~static_cast<size_t>(15u)
             // 문제: ~15u = 0xFFFFFFF0 (32비트)
             //   64비트 size_t로 제로 확장 → 0x00000000FFFFFFF0
             //   → 4GB 이상 데이터에서 상위 32비트 증발!
@@ -176,7 +149,6 @@ namespace ProtectedEngine {
             size_t full_blocks_bytes = remaining & ~static_cast<size_t>(15u);
 
             // 2. 16바이트 정렬된 전체 블록 고속 처리
-            // [BUG-21] 키 확장 캐싱: Initialize에서 1회 확장 → 여기서는 Process_Block만
             if (full_blocks_bytes > 0) {
                 if (!crypto_ctx_ready) return false;  // Initialize 미호출 방어
 
@@ -206,8 +178,6 @@ namespace ProtectedEngine {
                 }
 #endif
                 else {
-                    // [BUG-21] cached_lea_key 사용 (키 확장 0회)
-                    // [FIX-STACK] scratch_ctr 재활용 (로컬 ctr_copy 제거)
                     std::memcpy(scratch_ctr, counter, 16);
 
                     size_t rem = full_blocks_bytes;
@@ -230,7 +200,6 @@ namespace ProtectedEngine {
             }
 
             // 3. 마지막 1~15 바이트 처리 (새 키스트림 생성 후 보관)
-            // [FIX-OOB] remaining < 16 보장 — partial_block[16] OOB 방지
             //   full_blocks_bytes = remaining & ~15 이므로 이론적으로 항상 <16
             //   이중 안전: 계산 오류/패딩 공격 시에도 메모리 파괴 0%
             if (remaining >= 16u) { return false; }
@@ -246,7 +215,6 @@ namespace ProtectedEngine {
                 }
 #endif
                 else {
-                    // [FIX-STACK] scratch_ctr 재활용
                     std::memcpy(scratch_ctr, counter, 16);
                     uint8_t zeros[16] = { 0 };
                     lea_ctr_enc(partial_block, zeros, 16, scratch_ctr, &cached_lea_key);
@@ -265,14 +233,12 @@ namespace ProtectedEngine {
 #pragma warning(pop)
 #endif
 
-    // [BUG-18] Impl 크기 검증 — 생성자 내부에서 수행 (private 접근 가능)
     // 아래 static_assert는 get_impl() 함수 내부로 이동
 
     // =====================================================================
     //  In-Place Pimpl 접근자
     // =====================================================================
     HTS_Security_Session::Impl* HTS_Security_Session::get_impl() noexcept {
-        // [BUG-18] 빌드 타임 검증 — 멤버 함수 내부에서 private 접근 가능
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
             "Impl exceeds IMPL_BUF_SIZE — increase buffer or reduce Impl");
         static_assert(alignof(Impl) <= 8,
@@ -290,8 +256,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  생성자 / 소멸자
-    //  [BUG-18] unique_ptr → placement new (힙 할당 0)
-    //  [BUG-19] 더티 메모리 방어: placement new 전 전체 버퍼 0클린
     //
     //  문제: 스택에 HTS_Security_Session이 할당되면 impl_buf_는
     //        이전 함수의 쓰레기값(암호키 찌꺼기 포함)으로 오염됨.
@@ -306,7 +270,6 @@ namespace ProtectedEngine {
     // =====================================================================
     HTS_Security_Session::HTS_Security_Session() noexcept
         : impl_valid_(false) {
-        // [BUG-19] 더티 메모리 클린 — 패딩/찌꺼기 원천 제거
         // volatile 기반 SecureWipe → 컴파일러가 "어차피 덮어쓸 거니까" 생략 불가
         SecureMemory::secureWipe(impl_buf_, sizeof(impl_buf_));
 
@@ -322,7 +285,6 @@ namespace ProtectedEngine {
             p->Clean_State();       // 멤버 필드 보안 소거
             p->~Impl();
         }
-        // [BUG-19] 패딩 포함 전체 버퍼 소거 — Clean_State가 못 닿는 패딩까지
         SecureMemory::secureWipe(impl_buf_, sizeof(impl_buf_));
     }
 
@@ -346,6 +308,16 @@ namespace ProtectedEngine {
 
         if (impl->is_session_active) Terminate_Session();
 
+        // [R-2] nonce/IV 재사용 차단: 직전 세션과 동일 IV 금지.
+        // 동일 IV 반복은 CTR keystream 재사용으로 이어져 세션 하이재킹/평문 노출 위험.
+        if (impl->last_iv_valid) {
+            uint8_t iv_diff = 0u;
+            for (size_t i = 0u; i < 16u; ++i) {
+                iv_diff |= static_cast<uint8_t>(impl->last_init_iv[i] ^ iv_16bytes[i]);
+            }
+            if (iv_diff == 0u) { return false; }
+        }
+
         impl->cipher_alg = c_alg;
         impl->mac_alg = m_alg;
 
@@ -353,8 +325,9 @@ namespace ProtectedEngine {
         std::memcpy(impl->session_mac_key, mac_key, 32);
         std::memcpy(impl->tx_counter, iv_16bytes, 16);
         std::memcpy(impl->rx_counter, iv_16bytes, 16);
+        std::memcpy(impl->last_init_iv, iv_16bytes, 16);
+        impl->last_iv_valid = true;
 
-        // [BUG-21] 키 확장 1회 캐싱 — Do_CTR_Chunk에서 반복 호출 제거
         // ARIA-256: 라운드 키 테이블 생성 (~수천 사이클)
         // LEA-256: 확장 키 생성 (~수천 사이클)
         // 이후 Do_CTR_Chunk에서는 Process_Block/lea_ctr_enc만 호출
@@ -398,7 +371,6 @@ namespace ProtectedEngine {
             !plaintext_chunk || !ciphertext_out || chunk_len == 0)
             return false;
 
-        // [BUG-07] 잔여 키스트림 버퍼 연동
         if (!get_impl()->Do_CTR_Chunk(plaintext_chunk, chunk_len,
             ciphertext_out, get_impl()->tx_counter,
             get_impl()->tx_partial_block, get_impl()->tx_partial_len))
@@ -447,7 +419,6 @@ namespace ProtectedEngine {
             get_impl()->rx_mac_ctx, received_mac_tag)
             == HMAC_Bridge::SECURE_TRUE);
         if (!mac_ok) {
-            // BUG-22 규약: MAC 실패 시 즉시 세션 종료(키/컨텍스트 즉시 소거)
             Terminate_Session();
             return false;
         }
@@ -462,7 +433,6 @@ namespace ProtectedEngine {
             !ciphertext_chunk || !plaintext_out || chunk_len == 0)
             return false;
 
-        // [BUG-07] 잔여 키스트림 버퍼 연동
         return get_impl()->Do_CTR_Chunk(ciphertext_chunk, chunk_len,
             plaintext_out, get_impl()->rx_counter,
             get_impl()->rx_partial_block, get_impl()->rx_partial_len);

@@ -1,4 +1,4 @@
-/// @file  HTS_IPC_Protocol.cpp
+﻿/// @file  HTS_IPC_Protocol.cpp
 /// @brief HTS IPC Protocol Engine -- STM32 SPI Slave Implementation
 /// @details
 ///   Pimpl implementation of HTS_IPC_Protocol for STM32F407VGT6.
@@ -8,6 +8,9 @@
 /// @note  ARM-only. No PC/server code. Pure ASCII.
 /// @author Lim Young-jun
 /// @copyright INNOViD 2026. All rights reserved.
+///
+/// BUG-AIRCR-WDT [HIGH] AIRCR 폴백 전 DBGMCU IWDG/WWDG 프리즈 해제
+///   (HTS_Anti_Debug forceHalt Phase 3 동일 — 디버거 STOP 시 IWDG 리셋 보장)
 
 #include "HTS_IPC_Protocol.h"
 #include <cstring>    // memset (secure wipe uses volatile loop instead)
@@ -826,6 +829,19 @@ namespace ProtectedEngine {
             static constexpr uint32_t AIRCR_SYSRESET = (1u << 2u);
             HW_REG(SCB_AIRCR) = AIRCR_VECTKEY | AIRCR_SYSRESET;
 
+#if defined(__GNUC__) || defined(__clang__)
+            // DBGMCU IWDG/WWDG 프리즈 해제 — AIRCR 리셋 지연 시 IWDG가 WDT 리셋을 보장
+            // HTS_Anti_Debug.h / Phase 3와 동일 (DBGMCU_APB1_FZ @ 0xE0042008, bit11·12)
+            static constexpr uint32_t ADDR_DBGMCU_FZ = 0xE0042008u;
+            static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+            static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+            volatile uint32_t* const dbgmcu_fz =
+                reinterpret_cast<volatile uint32_t*>(
+                    static_cast<uintptr_t>(ADDR_DBGMCU_FZ));
+            *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+            __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
+
             // Should not reach here; infinite loop as fallback
             for (;;) {
 #if defined(__GNUC__) || defined(__clang__)
@@ -1068,7 +1084,6 @@ namespace ProtectedEngine {
         // Explicit destructor call (placement new cleanup)
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — IPC 프레임 잔류 방지
         IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);

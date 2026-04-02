@@ -1,3 +1,11 @@
+#if __cplusplus >= 202002L || \\
+    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   HTS_LIKELY
+#define HTS_UNLIKELY HTS_UNLIKELY
+#else
+#define HTS_LIKELY
+#define HTS_UNLIKELY
+#endif
 // =========================================================================
 // BB1_Core_Engine.cpp
 // HTS 최상위 코어 엔진 구현부 (Pimpl 은닉)
@@ -6,7 +14,6 @@
 //
 // ─────────────────────────────────────────────────────────────────────────
 //  [양산 수정 이력 — 누적 59건]
-//  BUG-01~46 (이전 세션)
 //  BUG-47 [CRIT] unique_ptr Pimpl → placement new (zero-heap)
 //  BUG-48 [HIGH] Secure_Wipe_BB1 pragma O0 제거
 //  BUG-49 [HIGH] Secure_Wipe_BB1 seq_cst → release
@@ -14,7 +21,7 @@
 //  BUG-51 [CRIT] Scramble_XOR LCG 31비트 마스킹 제거
 //  BUG-52 [CRIT] Impl vector 6개 → 정적 배열 (힙 완전 제거)
 //  BUG-53 [MED]  static_assert 메시지 "1024B" 잔류 → "81920B" 수정
-//  BUG-54 [LOW]  [[unlikely]]/[[likely]] C++20 가드 매크로 (C++14/17 호환)
+//  BUG-54 [LOW]  HTS_UNLIKELY/HTS_LIKELY C++20 가드 매크로 (C++14/17 호환)
 //  BUG-55 [CRIT] noise_to_q16 uint64_t 나눗셈 → uint32_t 다운캐스트
 //         · MAX_TENSOR_ELEMENTS=2048 → 2048<<16=134M < UINT32_MAX ✓
 //         · __aeabi_uldivmod 100+cyc → UDIV 2~12cyc
@@ -31,6 +38,8 @@
 //         · 기존: 주석 증명만 존재 ("2048<<16=134M < UINT32_MAX")
 //         · 수정: static_assert로 컴파일 타임 보장
 //         · MAX_TENSOR_ELEMENTS 변경 시 주석 미갱신 위험 원천 차단
+//  BUG-60 [검수 KB] static_assert 실측: BB1_STATIC_ARRAYS < 80*1024;
+//         IMPL_BUF_SIZE=20480B — sizeof(Impl)≤IMPL_BUF_SIZE(메시지 문자열은 참고용)
 // =========================================================================
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -43,7 +52,6 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
-// [BUG-52] <vector> 제거: Impl 멤버가 정적 배열로 전환됨
 #include <algorithm>
 
 #include "HTS_Gyro_Engine.h"
@@ -62,12 +70,11 @@
 #include "HTS_Holo_Tensor_Engine.h"
 
 // =========================================================================
-//  [BUG-54] C++20 속성 가드 — C++14/17 빌드 호환
 //  프로젝트 표준 패턴 (HTS_Universal_Adapter, HTS_Entropy_Arrow 등과 통일)
 // =========================================================================
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_BB1_UNLIKELY [[unlikely]]
-#define HTS_BB1_LIKELY   [[likely]]
+#define HTS_BB1_UNLIKELY HTS_UNLIKELY
+#define HTS_BB1_LIKELY   HTS_LIKELY
 #else
 #define HTS_BB1_UNLIKELY
 #define HTS_BB1_LIKELY
@@ -84,7 +91,6 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
-        // [BUG-49] seq_cst → release: 소거 완료 가시성만 필요 (HTS_Secure_Memory.cpp 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
 
@@ -104,7 +110,6 @@ namespace ProtectedEngine {
     //  · V400 Walsh/HARQ/AJC 성능: 영향 0 (독립 계층)
     static constexpr size_t MAX_TENSOR_ELEMENTS = 2048;
 
-    // [BUG-52+65] 힙 할당 전면 제거 → 정적 배열 + TX/RX 공유
     // shared: state_map(8KB) + temp_vec(8KB) = 16KB (TX/RX 반이중 공유)
     // rx_only: erased_bits(256B) — 비트 패킹 (uint8_t[2048] → uint32_t[64])
     // erasure_idx: 완전 제거 (2-pass → 1-pass 인라인)
@@ -113,10 +118,9 @@ namespace ProtectedEngine {
         MAX_TENSOR_ELEMENTS * sizeof(uint32_t) * 2   // state_map + temp_vec (공유)
         + (MAX_TENSOR_ELEMENTS / 32u) * sizeof(uint32_t);  // erased_bits
 
-    static_assert(BB1_STATIC_ARRAYS < 80u * 1024u,
-        "BB1 static arrays exceed 80KB SRAM budget");
+    static_assert(BB1_STATIC_ARRAYS < 37u * 1024u,
+        "BB1 static arrays exceed 37KB SRAM budget");
 
-    // [BUG-59] noise_to_q16 uint32_t 오버플로우 안전 증명 — 컴파일 타임 보장
     //  MAX_TENSOR_ELEMENTS << 16 이 UINT32_MAX를 초과하면 빌드 실패
     //  향후 MAX_TENSOR_ELEMENTS 증가 시 주석이 아닌 빌드 에러로 즉시 검출
     static_assert(
@@ -131,22 +135,18 @@ namespace ProtectedEngine {
     static constexpr uint32_t  AIRCR_VECTKEY = 0x05FA0000u;  // 쓰기 허가 키
     static constexpr uint32_t  AIRCR_SYSRST = 0x04u;        // SYSRESETREQ 비트
 
-    // [BUG-50→55] double 산술 완전 제거 → 정수 기반 Q16 변환
-    // [BUG-55] uint64_t 나눗셈 → uint32_t 다운캐스트 (64비트 UDIV 잔재 제거)
     //   기존: (uint64_t)(destroyed) << 16 / total → __aeabi_uldivmod 100+cyc
     //   수정: (uint32_t)(destroyed) << 16 / (uint32_t)total → UDIV 2~12cyc
     //   안전 증명: BUG-59 static_assert로 컴파일 타임 보장
     static int32_t noise_to_q16(size_t destroyed, size_t total) noexcept {
         if (total == 0u || destroyed == 0u) return 0;
         if (destroyed >= total) return Q16_ONE;
-        // [BUG-55] uint32_t 하드웨어 UDIV (Cortex-M4 단일명령어)
         const uint32_t d32 = static_cast<uint32_t>(destroyed);
         const uint32_t t32 = static_cast<uint32_t>(total);
         return static_cast<int32_t>((d32 << 16u) / t32);
     }
 
     // =====================================================================
-    //  [BUG-52] Impl — 정적 배열 기반 (힙 할당 0회, OOM 불가)
     //
     //  기존: vector<T> 6개 + Reserve_Buffers(resize) → 데드코드
     //   · -fno-exceptions에서 resize OOM = std::terminate 즉시 → 반환값 검사 도달 불가
@@ -177,8 +177,6 @@ namespace ProtectedEngine {
         Entropy_Time_Arrow     tx_time_arrow = Entropy_Time_Arrow(3600u);
 
         // ── RX 전용 상태 (경량) ──────────────────────────────────
-        //  [BUG-65] erased: uint8_t[4096] → uint32_t[128] 비트 패킹 (−3.5KB)
-        //  [BUG-65] erasure_idx: 완전 제거 (−8KB) — 1-pass 인라인으로 대체
         static constexpr size_t ERASED_WORDS = MAX_TENSOR_ELEMENTS / 32u;
         mutable uint32_t erased_bits[ERASED_WORDS] = {};
 
@@ -199,17 +197,14 @@ namespace ProtectedEngine {
         }
 
         // ── 공유 (Lock-free) ────────────────────────────────────
-        // [BUG-44] SeqLock: last_stats 찢어짐 읽기 방지
         std::atomic<uint32_t>  stats_seq{ 0 };
         RecoveryStats          last_stats = {};
         std::atomic<int32_t>   moving_avg_noise_q16{ 0 };
 
-        // [BUG-52] Reserve_Buffers 완전 삭제
         //  정적 배열 → 생성자에서 placement new만으로 초기화 완료
         //  OOM 경로 자체가 소멸 → 데드코드 0, 거짓 안전 패턴 0
 
         // ── 궤적 소거 (고정 크기 — 조건 분기 없음) ────────────────
-        // [FIX-LOW] shared 이중 소거 제거: Wipe_Shared 분리
         void Wipe_Shared() const noexcept {
             Secure_Wipe_BB1(shared.state_map, sizeof(shared.state_map));
             Secure_Wipe_BB1(shared.temp_vec, sizeof(shared.temp_vec));
@@ -292,7 +287,6 @@ namespace ProtectedEngine {
         }
 
         // ── [BUG-45] 인터리버 상태맵: % → 뺄셈 강도 절감 ────────
-        // [BUG-52] std::vector& → uint32_t* (정적 배열 직접 참조)
         static void Build_Map(uint32_t* buf,
             size_t n, uint32_t fa) noexcept {
             if (fa <= 1u || n % static_cast<size_t>(fa) != 0u) {
@@ -352,11 +346,9 @@ namespace ProtectedEngine {
     };
 
     // =====================================================================
-    //  [BUG-47] 컴파일 타임 크기·정렬 검증 + get_impl()
     // =====================================================================
     BB1_Core_Engine::Impl* BB1_Core_Engine::get_impl() noexcept {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
-            // [BUG-53] 메시지 수정: 1024B → 81920B (BUG-52에서 버퍼 확장 후 미갱신)
             "Impl이 IMPL_BUF_SIZE(81920B)를 초과합니다 — 버퍼 크기를 늘려주세요");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas(8)을 초과합니다");
@@ -370,7 +362,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-52] 생성자 — placement new만으로 초기화 완료 (OOM 경로 소멸)
     //
     //  기존: Reserve_Buffers(resize) → 실패 검사 → 데드코드
     //   · -fno-exceptions에서 resize OOM = std::terminate 즉시 호출
@@ -387,7 +378,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-47] 소멸자 — 명시적 (= default 제거)
     // =====================================================================
     BB1_Core_Engine::~BB1_Core_Engine() noexcept {
         Impl* p = get_impl();
@@ -397,7 +387,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-44] SeqLock 원자적 스냅샷 읽기
     // =====================================================================
     RecoveryStats BB1_Core_Engine::Get_Last_Recovery_Stats() const noexcept {
         const Impl* p = get_impl();
@@ -447,7 +436,6 @@ namespace ProtectedEngine {
             if (AntiAnalysis_Shield::Is_Under_Observation()) HTS_BB1_UNLIKELY{
                 AntiAnalysis_Shield::Trigger_Deceptive_Collapse(
                     tensor_data, elements);
-                // [BUG-56] AIRCR 타격: JTAG 감지 시 즉시 하드 리셋 (램 덤프 차단)
                 *reinterpret_cast<volatile uint32_t*>(
                     static_cast<uintptr_t>(AIRCR_ADDR)) =
                     (AIRCR_VECTKEY | AIRCR_SYSRST);
@@ -468,7 +456,6 @@ namespace ProtectedEngine {
         Impl::Build_Map(m.shared.state_map, elements, fa32);  // [BUG-65] tx→shared
         for (size_t i = 0u; i < elements; ++i)
             m.shared.temp_vec[i] = static_cast<uint32_t>(tensor_data[i]);
-        // [BUG-52] raw 포인터 오버로드 (정적 배열 직접 전달, vector 래핑 제거)
         Orbital_Mapper::Apply_Orbital_Clouding(
             m.shared.temp_vec, elements, m.shared.state_map, elements);
         for (size_t i = 0u; i < elements; ++i)
@@ -506,7 +493,6 @@ namespace ProtectedEngine {
 
         {
             static constexpr uint32_t HOLO_CHIP = 64u;
-            // [FIX-CSPRNG] 128비트 암호학적 시드 생성
             //  기존: (uint32_t)(vs ^ (vs>>32)) = 32비트 → GPU 4초 해독
             //  수정: vs 64비트 전체 + 골든 래셔 혼합 = 128비트 시드 기반
             const uint32_t vs_lo = static_cast<uint32_t>(vs);
@@ -575,7 +561,6 @@ namespace ProtectedEngine {
             if (AntiAnalysis_Shield::Is_Under_Observation()) HTS_BB1_UNLIKELY{
                 AntiAnalysis_Shield::Trigger_Deceptive_Collapse(
                     damaged_tensor, elements);
-                // [BUG-56] AIRCR 리셋 (constexpr 상수)
                 *reinterpret_cast<volatile uint32_t*>(
                     static_cast<uintptr_t>(AIRCR_ADDR)) =
                     (AIRCR_VECTKEY | AIRCR_SYSRST);
@@ -590,7 +575,6 @@ namespace ProtectedEngine {
         // 0. 홀로그래픽 텐서 수렴 (역FWHT + 역4D 회전)
         {
             static constexpr uint32_t HOLO_CHIP = 64u;
-            // [FIX-CSPRNG] TX와 동일한 128비트 시드 재생성
             const uint32_t vs_lo = static_cast<uint32_t>(vs);
             const uint32_t vs_hi = static_cast<uint32_t>(vs >> 32);
 
@@ -620,7 +604,6 @@ namespace ProtectedEngine {
         }
 
         // 1. PLL (RX 전용 버퍼)
-        // [BUG-65] erased 비트 패킹 초기화
         m.clear_erased(elements);
         m.PLL(damaged_tensor, elements, fa32);
 
@@ -655,15 +638,12 @@ namespace ProtectedEngine {
         Impl::Build_Map(m.shared.state_map, elements, fa32);  // [BUG-65] rx→shared
         for (size_t i = 0u; i < elements; ++i)
             m.shared.temp_vec[i] = static_cast<uint32_t>(damaged_tensor[i]);
-        // [BUG-52] raw 포인터 오버로드
         Orbital_Mapper::Reverse_Orbital_Collapse(
             m.shared.temp_vec, elements, m.shared.state_map, elements);
         for (size_t i = 0u; i < elements; ++i)
             damaged_tensor[i] = static_cast<T>(m.shared.temp_vec[i]);
 
-        // [BUG-65] erasure 좌표 변환 — 비트맵 기반 (데이터 값 의존 제거)
         //
-        //  [FIX-PILOT] 기존: damaged_tensor[i] == EM 으로 삭제 판별
         //   → EM(0xFFFF)이 유효 데이터와 충돌 시 파일럿 복원에서 데이터 파괴
         //  수정: erased_bits 비트맵을 역인터리빙 좌표로 재구축
         //   → 비트맵은 데이터 값과 무관한 확정적 삭제 상태
@@ -693,7 +673,6 @@ namespace ProtectedEngine {
 
         // 4. [VDF 삭제] Reverse_Quantum_Decoy 제거 (TX Apply와 대칭 삭제)
 
-        // [BUG-FIX FATAL] "5. 파일럿 복원" 유령 로직 물리 삭제
         //
         //  삭제 사유:
         //   (a) TX에 대응하는 파일럿 주입 로직이 존재하지 않음 (TX는 0x7FFF 앵커만)
@@ -710,7 +689,6 @@ namespace ProtectedEngine {
             damaged_tensor, elements, vs, fa32,
             is_test_mode, strict_mode, temp_stats);
 
-        // [BUG-FIX CRIT] SeqLock Writer: 첫 번째 증가 release → acq_rel
         //  기존: release만 → 데이터 쓰기(B)가 시퀀스 증가(A) 위로 재배치 가능
         //        → Reader가 짝수 seq 보고 안전 판단 → 반쯤 쓰인 데이터 읽기(Tearing)
         //  수정: acq_rel → acquire가 (B)의 상방 재배치 차단

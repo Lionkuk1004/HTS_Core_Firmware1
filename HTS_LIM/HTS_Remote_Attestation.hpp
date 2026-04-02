@@ -3,35 +3,28 @@
 // Remote Attestation — FNV-1a firmware/memory integrity quote
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 22건]
-//  01~08: 100% coverage, FNV-1a+Murmur3, Verify_Quote, UID binding,
-//         DWT nonce, noexcept, nullptr guard, pragma
-//  09~18: volatile removal (Write Suppression), bool->uint32_t (FI),
-//         nullptr standardization, Murmur3 constants, golden ratio,
-//         test key constant, static_assert, delete 6, Doxygen
-//
-// [Usage]
-//  uint64_t q = Remote_Attestation::Generate_Enclave_Quote(flash, size);
-//  uint32_t r = Remote_Attestation::Verify_Quote(q, expected);
-//  if (r != 0u) { /* tamper detected */ }
-//
-//  WARNING: Verify_Quote returns uint32_t (0=match, non-zero=mismatch)
-//           Do NOT use: if (Verify_Quote(...)) — Boolean Coercion FI!
-//           MUST use:   if (result != 0u) — safe pattern
-// =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 #include <cstdint>
 #include <cstddef>
 
 namespace ProtectedEngine {
 
-    // [BUG-08] Build-time validation
     static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
 
     class Remote_Attestation {
     private:
-        // [BUG-11] 내부 구현 → cpp static 함수로 이동 (헤더 미노출)
 
     public:
         /// @brief Generate device-bound integrity quote for memory region
@@ -52,7 +45,6 @@ namespace ProtectedEngine {
         [[nodiscard]]
         static uint32_t Verify_Quote_With_Server(uint64_t quote) noexcept;
 
-        // [BUG-09] Static-only — instantiation blocked
         Remote_Attestation() = delete;
         ~Remote_Attestation() = delete;
         Remote_Attestation(const Remote_Attestation&) = delete;

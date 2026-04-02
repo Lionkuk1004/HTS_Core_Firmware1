@@ -15,6 +15,7 @@
 #include "HTS_ARIA_Bridge.hpp"
 #include "HTS_LEA_Bridge.h"
 #include "HTS_HMAC_Bridge.hpp"
+#include "HTS_Secure_Memory.h"
 
 #if defined(HTS_CRYPTO_FIPS) || defined(HTS_CRYPTO_DUAL)
 #include "HTS_AES_Bridge.h"
@@ -28,16 +29,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  유틸리티
     // =====================================================================
-    static void CST_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) return;
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) q[i] = 0u;
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
-    }
-
     static bool CST_CT_Eq(const uint8_t* a,
         const uint8_t* b, size_t n) noexcept {
         volatile uint8_t d = 0u;
@@ -72,7 +63,7 @@ namespace ProtectedEngine {
             ARIA_Bridge enc;
             if (!enc.Initialize_Encryption(key, key_bits)) return false;
             if (!enc.Process_Block(pt, ct)) {
-                CST_Wipe(ct, sizeof(ct));
+                SecureMemory::secureWipe(ct, sizeof(ct));
                 return false;
             }
         }
@@ -81,19 +72,19 @@ namespace ProtectedEngine {
         {
             ARIA_Bridge dec_bridge;
             if (!dec_bridge.Initialize_Decryption(key, key_bits)) {
-                CST_Wipe(ct, sizeof(ct));
+                SecureMemory::secureWipe(ct, sizeof(ct));
                 return false;
             }
             if (!dec_bridge.Process_Block(ct, dec)) {
-                CST_Wipe(ct, sizeof(ct));
-                CST_Wipe(dec, sizeof(dec));
+                SecureMemory::secureWipe(ct, sizeof(ct));
+                SecureMemory::secureWipe(dec, sizeof(dec));
                 return false;
             }
         }
 
         bool ok = CST_CT_Eq(dec, pt, 16);
-        CST_Wipe(ct, sizeof(ct));
-        CST_Wipe(dec, sizeof(dec));
+        SecureMemory::secureWipe(ct, sizeof(ct));
+        SecureMemory::secureWipe(dec, sizeof(dec));
         return ok;
     }
 
@@ -123,7 +114,7 @@ namespace ProtectedEngine {
             if (enc.Initialize(key, key_len_bytes, iv_16) != LEA_Bridge::SECURE_TRUE) return false;
             if (enc.Encrypt_Payload(
                 reinterpret_cast<uint32_t*>(work), 4u) != LEA_Bridge::SECURE_TRUE) {
-                CST_Wipe(work, sizeof(work));
+                SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
         }
@@ -132,18 +123,18 @@ namespace ProtectedEngine {
         {
             LEA_Bridge dec;
             if (dec.Initialize(key, key_len_bytes, iv_16) != LEA_Bridge::SECURE_TRUE) {
-                CST_Wipe(work, sizeof(work));
+                SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
             if (dec.Decrypt_Payload(
                 reinterpret_cast<uint32_t*>(work), 4u) != LEA_Bridge::SECURE_TRUE) {
-                CST_Wipe(work, sizeof(work));
+                SecureMemory::secureWipe(work, sizeof(work));
                 return false;
             }
         }
 
         bool ok = CST_CT_Eq(work, pt_raw, 16);
-        CST_Wipe(work, sizeof(work));
+        SecureMemory::secureWipe(work, sizeof(work));
         return ok;
     }
 
@@ -169,26 +160,26 @@ namespace ProtectedEngine {
             AES_Bridge enc;
             if (!enc.Initialize_Encryption(key, key_bits)) return false;
             if (!enc.Process_Block(pt, ct)) {
-                CST_Wipe(ct, sizeof(ct));
+                SecureMemory::secureWipe(ct, sizeof(ct));
                 return false;
             }
         }
         {
             AES_Bridge dec_bridge;
             if (!dec_bridge.Initialize_Decryption(key, key_bits)) {
-                CST_Wipe(ct, sizeof(ct));
+                SecureMemory::secureWipe(ct, sizeof(ct));
                 return false;
             }
             if (!dec_bridge.Process_Block(ct, dec)) {
-                CST_Wipe(ct, sizeof(ct));
-                CST_Wipe(dec, sizeof(dec));
+                SecureMemory::secureWipe(ct, sizeof(ct));
+                SecureMemory::secureWipe(dec, sizeof(dec));
                 return false;
             }
         }
 
         bool ok = CST_CT_Eq(dec, pt, 16);
-        CST_Wipe(ct, sizeof(ct));
-        CST_Wipe(dec, sizeof(dec));
+        SecureMemory::secureWipe(ct, sizeof(ct));
+        SecureMemory::secureWipe(dec, sizeof(dec));
         return ok;
     }
 #endif
@@ -227,7 +218,7 @@ namespace ProtectedEngine {
 
         while (offset < flash_size) {
             if (flash_base > (0xFFFFFFFFu - offset)) {
-                CST_Wipe(chunk, sizeof(chunk));
+                SecureMemory::secureWipe(chunk, sizeof(chunk));
                 return false;
             }
             const size_t remain = static_cast<size_t>(flash_size - offset);
@@ -236,28 +227,28 @@ namespace ProtectedEngine {
             const size_t actual = flash_read(
                 flash_base + offset, chunk, read_len);
             if (actual != read_len) {
-                CST_Wipe(chunk, sizeof(chunk));
+                SecureMemory::secureWipe(chunk, sizeof(chunk));
                 return false;
             }
 
             if (!HMAC_Bridge::Update(ctx, chunk, read_len)) {
-                CST_Wipe(chunk, sizeof(chunk));
+                SecureMemory::secureWipe(chunk, sizeof(chunk));
                 return false;
             }
 
             offset += static_cast<uint32_t>(read_len);
         }
 
-        CST_Wipe(chunk, sizeof(chunk));
+        SecureMemory::secureWipe(chunk, sizeof(chunk));
 
         uint8_t computed_hmac[32] = {};
         if (!HMAC_Bridge::Final(ctx, computed_hmac)) {
-            CST_Wipe(computed_hmac, sizeof(computed_hmac));
+            SecureMemory::secureWipe(computed_hmac, sizeof(computed_hmac));
             return false;
         }
 
         bool ok = CST_CT_Eq(computed_hmac, expected_hmac, 32);
-        CST_Wipe(computed_hmac, sizeof(computed_hmac));
+        SecureMemory::secureWipe(computed_hmac, sizeof(computed_hmac));
         return ok;
     }
 

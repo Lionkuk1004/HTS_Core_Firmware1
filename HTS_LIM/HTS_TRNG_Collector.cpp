@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_TRNG_Collector.cpp
 // TRNG Raw 데이터 수집기 구현부
 // Target: STM32F407 (Cortex-M4)
@@ -229,3 +229,5 @@ namespace ProtectedEngine {
 #endif
 
 } // namespace ProtectedEngine
+
+

@@ -1,17 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Entropy_Monitor.cpp
 // TRNG 건강성 감시 구현부 — NIST SP 800-90B RCT + APT
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 9건]
-//  BUG-01~06 (이전 세션)
-//  BUG-07 [CRIT] NIST RCT Off-By-One: count 0 기반 → 1 기반 (규격 정합)
-//  BUG-08 [HIGH] PC WDT 부재: while(true) → std::abort() (CI/CD 프리징 방지)
-//  BUG-09 [CRIT] APT 추가 (NIST SP 800-90B §4.4.2 — 필수 건강 테스트 2/2)
-//         · 윈도우 W=512 내 특정 값 과잉 출현 감지
-//         · 기대치 2회(512/256) → 41회 초과 시 TRNG Bias Fault 확정
-//         · RCT와 독립 실행 (동일 healthCheck 호출로 양쪽 동시 검사)
-// =========================================================================
 #include "HTS_Entropy_Monitor.h"
 #include "HTS_Auto_Rollback_Manager.hpp"
 

@@ -1,46 +1,11 @@
-// =========================================================================
+﻿// =========================================================================
 // TensorCodec.cpp
 // 3D 텐서 FEC 코덱 구현부 (Pimpl 은닉)
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
 //
-// [양산 수정 이력 — 25건]
-//  BUG-01~19 (이전 세션)
-//  BUG-20 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//         · impl_buf_[2048] alignas(64) 정적 배치 (BUG-39)
-//         · Impl = AnchorManager(값) + AnchorEncoder(값) + AnchorDecoder(값)
-//           sizeof(Impl): get_impl() static_assert로 컴파일 타임 검증
-//           초과 시 즉시 빌드 실패 → IMPL_BUF_SIZE를 늘릴 것
-//         · 생성자: try-catch 제거 → impl_buf_ SecWipe → ::new Impl()
-//           Impl 생성자(AnchorManager/Encoder/Decoder 초기화)는
-//           예외를 던질 수 있으므로 noexcept + terminate 허용
-//           (-fno-exceptions ARM: 예외 시 abort — 코덱 없이 동작 불가)
-//         · 소멸자: = default 제거 → 명시적 p->~Impl() + SecWipe_Tensor
-//  BUG-24 [CRIT] DecodePacket 터보 루프 내 힙 할당 폭풍 제거
-//         · 기존: anc_slice + fixed 벡터를 루프 내부에서 매회 생성/소멸
-//           → 3 iter × 6144 라인 × 2 alloc = ~36,864회 malloc/free
-//         · 수정: anc_slice를 루프 외부 사전 할당 → assign() 재사용
-//           → anc_slice malloc 0회 (reserve 1회 + assign 재사용)
-//         · 잔여: fixed = decode() 반환값 — AnchorDecoder API 변경 없이
-//           할당 제거 불가. 향후 decode(out_buf) 오버로드 추가 시 완전 제거
-//  BUG-25 [HIGH] decode_inplace 전환 (PENDING-1 해결)
-//         · AnchorDecoder::decode_inplace() API 추가 완료
-//         · 터보 루프 내 fixed 벡터 할당 완전 제거 → fixed_buf 사전 할당
-//         · 힙 할당: 36,864 → 2 (reserve 2회) = 99.99% 절감
-//  BUG-39 [CRIT] Secure_Wipe_Tensor → SecureMemory::secureWipe, impl_buf_ alignas(64),
-//         impl_valid_ atomic, DecodePacket turbo_iters<0 방어, provideFeedback 음수 클램프
-//  BUG-40 [CRIT] vector secureWipe: size→capacity 전체 힙 블록; DecodePacket 앵커 평탄
-//         count×len ↔ flat.size() 무결성 검증 후 reserve (거짓 메타 DoS 차단)
-//  BUG-41 [CRIT] RAII secureWipe: ptr/size 명시 가드(H-1); u16_vec wipe: cap·data 검증
-//  BUG-26 [CRIT] STM32 빌드 가드 → 프로젝트 표준 4종 매크로
-//         · 기존: __arm__ 단독 → ARMCC(Keil)/IAR 누락
-//         · 수정: __arm__ + __TARGET_ARCH_ARM + __TARGET_ARCH_THUMB + __ARM_ARCH
-//         · _MSC_VER 예외 삭제 (MSVC는 __arm__ 미정의 → 불필요)
-// =========================================================================
 
-// [BUG-15] AnchorManager.h = 전역 네임스페이스 → ProtectedEngine 밖에서 include
 #include "AnchorManager.h"
 
-// [BUG-26] STM32 (Cortex-M) 빌드 차단 — 프로젝트 표준 4종 매크로
 // 기존: __arm__ 단독 + _MSC_VER 예외 → ARMCC(Keil)/IAR/GCC Thumb-only 누락
 // A55 (aarch64): __aarch64__ 정의 → 정상 통과
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
@@ -51,7 +16,6 @@
 
 #include "TensorCodec.hpp"
 
-// [BUG-15] AnchorEncoder/Decoder = ProtectedEngine 안
 #include "AnchorEncoder.h"
 #include "AnchorDecoder.h"
 #include "HTS_Secure_Memory.h"
@@ -85,9 +49,7 @@ namespace ProtectedEngine {
         }
     } // namespace
 
-    // [BUG-39] 보안 소거 — SecureMemory::secureWipe 단일화 (D-2)
 
-    // [BUG-14] RAII 보안 소거
     struct RAII_Secure_Wiper_Tensor {
         void* ptr;
         size_t size;
@@ -110,7 +72,6 @@ namespace ProtectedEngine {
     //  TensorPacket 소멸자 [BUG-01]
     // =====================================================================
     TensorPacket::~TensorPacket() noexcept {
-        // [BUG-40] 할당 블록 전체(capacity) 소거 — size만 지우면 잉여 capacity에 잔상
         secure_wipe_u16_vec(tensor_data);
         secure_wipe_u16_vec(row_anchors_flat);
         secure_wipe_u16_vec(col_anchors_flat);
@@ -125,7 +86,6 @@ namespace ProtectedEngine {
     static constexpr size_t DEPTH = 16u;
 
     // =====================================================================
-    //  [BUG-02/15] Pimpl 구현 구조체
     //  AnchorManager는 전역 네임스페이스(::AnchorManager)
     //  AnchorEncoder/Decoder는 ProtectedEngine 네임스페이스
     // =====================================================================
@@ -231,7 +191,6 @@ namespace ProtectedEngine {
     };
 
     // =====================================================================
-    //  [BUG-20] 컴파일 타임 크기·정렬 검증 + get_impl()
     //
     //  static_assert가 get_impl() 내부 → Impl 완전 정의 후 평가 안전
     //  sizeof(Impl) 초과 시 빌드 실패 → IMPL_BUF_SIZE 값을 늘릴 것
@@ -253,7 +212,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-20] 생성자 — placement new (zero-heap)
     //
     //  기존: std::make_unique<Impl>() + try-catch
     //  수정: impl_buf_ SecWipe → ::new Impl() → impl_valid_ = true
@@ -271,7 +229,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-20] 소멸자 — 명시적 (= default 제거)
     // =====================================================================
     TensorCodec::~TensorCodec() noexcept {
         Impl* p = get_impl();
@@ -291,13 +248,11 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return pkt; }
 
-        // [BUG-05] OOB 방어
         if (buffer.empty() || offset >= buffer.size() ||
             total_size > buffer.size() || offset >= total_size) {
             return pkt;
         }
 
-        // [BUG-21] try-catch 삭제 (-fno-exceptions)
         auto& impl = *p;
         const size_t chunk_size = DEPTH * ROWS * COLS;
         const size_t current_chunk =
@@ -314,7 +269,6 @@ namespace ProtectedEngine {
                 static_cast<unsigned char>(buffer[offset + i]));
         }
 
-        // [BUG-14] RAII 바인딩 — reserve 직후 즉시
         std::vector<uint16_t> temp_line;
         temp_line.reserve(std::max({ ROWS, COLS, DEPTH }));
         RAII_Secure_Wiper_Tensor wipe_temp(
@@ -361,7 +315,6 @@ namespace ProtectedEngine {
             if (i == 0u) { anc = std::move(first_anchor); }
             else { anc = impl.encoder.encode(temp_line); }
 
-            // [BUG-22/40] D-2: 패리티 벡터 힙 잔상 — capacity 전체
             RAII_Secure_Wiper_Tensor wipe_anc(
                 anc.data(), anc.capacity() * sizeof(uint16_t));
 
@@ -383,7 +336,6 @@ namespace ProtectedEngine {
             if (i == 0u) { anc = std::move(first_col_anc); }
             else { anc = impl.encoder.encode(temp_line); }
 
-            // [BUG-22/40] D-2: 패리티 벡터 힙 잔상 — capacity 전체
             RAII_Secure_Wiper_Tensor wipe_anc(
                 anc.data(), anc.capacity() * sizeof(uint16_t));
 
@@ -405,7 +357,6 @@ namespace ProtectedEngine {
             if (i == 0u) { anc = std::move(first_dep_anc); }
             else { anc = impl.encoder.encode(temp_line); }
 
-            // [BUG-22/40] D-2: 패리티 벡터 힙 잔상 — capacity 전체
             RAII_Secure_Wiper_Tensor wipe_anc(
                 anc.data(), anc.capacity() * sizeof(uint16_t));
 
@@ -422,20 +373,17 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  DecodePacket — [BUG-17] 크기 검증 + [BUG-18] OOB 방어
-    //                 [BUG-14] RAII 소거 + [BUG-19] capacity→size
     // =====================================================================
     void TensorCodec::DecodePacket(
         TensorPacket& pkt, int turbo_iterations) noexcept
     {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        // [BUG-17] 기형 패킷 방어: 텐서 크기 불일치 → 즉시 탈출
         if (pkt.tensor_data.size() != ROWS * COLS * DEPTH) { return; }
         int turbo_iters = turbo_iterations;
         if (turbo_iters < 0) { turbo_iters = 0; }
         auto& impl = *p;
 
-        // [BUG-40] 수신 메타 vs 평탄 벡터 무결성 — 불일치·오버플로 시 즉시 반환
         // (거짓 depth/col/row_anchor_len → max_anc_len 폭주 → bad_alloc/DoS 차단)
         {
             size_t expected = 0u;
@@ -453,16 +401,13 @@ namespace ProtectedEngine {
             }
         }
 
-        // [BUG-21] try-catch 삭제 (-fno-exceptions)
         std::vector<uint16_t> temp_line;
         temp_line.reserve(std::max({ ROWS, COLS, DEPTH }));
 
-        // [BUG-14/19] reserve 직후 size()가 0이므로 capacity() 기준
         RAII_Secure_Wiper_Tensor wipe_temp(
             temp_line.data(),
             temp_line.capacity() * sizeof(uint16_t));
 
-        // [BUG-24] 앵커 슬라이스 + 복원 버퍼 사전 할당 — 루프 내 malloc 0회
         //  기존: 매 반복 anc_slice 복사 + fixed 반환 = ~36,000 malloc/free
         //  수정: reserve(max_dim) 후 assign/decode_inplace 재사용 → 2회 할당
         const size_t max_anc_len = std::max({
@@ -472,7 +417,6 @@ namespace ProtectedEngine {
         std::vector<uint16_t> anc_slice;
         anc_slice.reserve(max_anc_len);
 
-        // [PENDING-1 해결] decode() 반환 벡터 → decode_inplace() 재사용 버퍼
         const size_t max_line_len = std::max({ ROWS, COLS, DEPTH });
         std::vector<uint16_t> fixed_buf;
         fixed_buf.reserve(max_line_len);
@@ -497,12 +441,10 @@ namespace ProtectedEngine {
 
                 if (erasures > 0u && erasures <= pkt.depth_anchor_len) {
                     const size_t off = i * pkt.depth_anchor_len;
-                    // [BUG-18] 앵커 슬라이스 OOB 방어
                     if (off + pkt.depth_anchor_len >
                         pkt.depth_anchors_flat.size()) {
                         continue;
                     }
-                    // [BUG-24] assign 재사용
                     anc_slice.assign(
                         pkt.depth_anchors_flat.begin() +
                         static_cast<ptrdiff_t>(off),
@@ -510,7 +452,6 @@ namespace ProtectedEngine {
                         static_cast<ptrdiff_t>(
                             off + pkt.depth_anchor_len));
 
-                    // [PENDING-1] decode_inplace: fixed_buf capacity 재사용
                     if (impl.decoder.decode_inplace(
                         temp_line, anc_slice, fixed_buf) == ProtectedEngine::AnchorDecoder::SECURE_TRUE) {
                         if (Impl::insertDepthFast(
@@ -590,7 +531,6 @@ namespace ProtectedEngine {
             }
         } // for iter
 
-        // [BUG-24/40] 사전 할당 버퍼 보안 소거 — capacity 전체 (마지막 assign 길이 ≠ 힙 블록)
         secure_wipe_u16_vec(anc_slice);
         secure_wipe_u16_vec(fixed_buf);
         // wipe_temp 소멸자: temp_line 자동 보안 소거

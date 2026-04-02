@@ -1,27 +1,12 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Antipodal_Core.cpp — 안티포달 텐서 변환 유틸리티
 // Target: STM32F407 (Cortex-M4, 168MHz) / PC
 //
-// [양산 수정 이력 — 18건]
-//  BUG-01~11 (이전 세션 완료)
-//  BUG-12 [CRIT] 32비트 워드 단위 Dual-MAC 내적 (버스 효율 400%)
-//  BUG-13 [HIGH] 함수 속성(pure, leaf) 추가 — 컴파일러 최적화 가이드
-//  BUG-14 [MED]  루프 잔여분(Tail) 처리 최적화
-//  BUG-15 [CRIT] Parallel Subtraction 수학 오류 발견 → 바이트 루프 유지
-//                (32비트 감산은 바이트 간 borrow 전파 → 혼합 입력 시 오염)
-//  BUG-16 [HIGH] Dual-MAC 구조 — SMLAD DSP 명령어 최적화 가이드
-//  BUG-17 [CRIT] Strict Aliasing 위반(reinterpret_cast int8→int32) UB 제거
-//                → memcpy 4B 로드 (컴파일러 LDR 단일 명령어 치환)
-//  BUG-18 [LOW]  MSVC C6297 경고 해소: w << 2u → size_t 승격 후 곱셈
-//                · uint32_t << 2 결과가 64비트 포인터 산술 전에 오버플로우 가능
-//                · static_cast<size_t>(w) * sizeof(int32_t) 로 안전 확장
-// =========================================================================
 #include "HTS_Antipodal_Core.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>  // [BUG-17] memcpy (Strict Aliasing 준수 워드 로드)
 
-// [BUG-11+13] GCC/Clang: 함수 레벨 속성 매크로
 #if defined(__GNUC__) || defined(__clang__)
 #define HTS_UNROLL __attribute__((optimize("unroll-loops")))
 #define HTS_PURE   __attribute__((pure, leaf))
@@ -37,12 +22,10 @@ namespace ProtectedEngine {
     // =====================================================================
     //  convertToAntipodal — 바이너리(0/1) → 안티포달(±1)
     //
-    //  [BUG-15] Parallel Subtraction 불가 증명:
     //   (word << 1) - 0x01010101 → 바이트 간 borrow 전파
     //   입력 [0,1,1,0]: byte[1] = 0x02-0x01-borrow(1) = 0x00 ≠ +1
     //   → 바이트 루프가 유일한 정확 해법
     //
-    //  [BUG-10] (LSL #1) → (SUB #1) 브랜치리스 산술
     // =====================================================================
     HTS_UNROLL
         void AntipodalTensor::convertToAntipodal(
@@ -50,7 +33,6 @@ namespace ProtectedEngine {
             int8_t* __restrict out, size_t len) noexcept {
         if (!in || !out || len == 0u) return;
 
-        // [BUG-FIX FATAL] HTS_ALIGNED 제거 — 비정렬 포인터 UsageFault 방지
         //  기존: __builtin_assume_aligned(in, 4) → 컴파일러가 LDRD/LDM 생성
         //        → 비정렬 포인터 전달 시 HardFault(UsageFault) 즉사
         //  수정: 바이트 단위 루프는 정렬 무관 → 정렬 가정 불필요
@@ -74,7 +56,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  calculateOrthogonality — 안티포달 텐서 내적
     //
-    //  [BUG-12+16] 32비트 워드 단위 Dual-MAC:
     //   4바이트를 한 워드로 로드 → 8비트 개별 곱셈+누적
     //   → 개별 곱셈이므로 바이트 간 간섭 없음 (수학적 정확)
     //   → Cortex-M4 SMLAD 활용 유도
@@ -89,7 +70,6 @@ namespace ProtectedEngine {
         uint32_t i = 0u;
         const uint32_t u_len = static_cast<uint32_t>(len);
 
-        // [BUG-FIX FATAL] 정렬 게이트 삭제 → 무조건 고속 경로
         //  기존: (a & 3) == 0 검사 → 비정렬 시 1바이트 잔여분 루프 강제 (400% 성능 추락)
         //  수정: std::memcpy가 정렬 무관하게 안전한 LDR 생성 (C++ 표준 보장)
         //        Cortex-M4도 비정렬 LDR 하드웨어 지원 (1~2cyc 페널티, 400% 추락 대비 극소)
@@ -104,7 +84,6 @@ namespace ProtectedEngine {
             std::memcpy(&ua, a + byte_off, sizeof(uint32_t));
             std::memcpy(&ub, b + byte_off, sizeof(uint32_t));
 
-            // [BUG-FIX HIGH] SWAR 곱셈: 4비트 합산을 3명령어로 극한 압축
             //
             //  기존: UBFX×3 + LSR + ADD×3 = 7명령어 (~7cyc)
             //  수정: LSR + MUL + LSR = 3명령어 (~3cyc, 2.3x 가속)
@@ -125,7 +104,6 @@ namespace ProtectedEngine {
         }
         i = word_count << 2u;
 
-        // [BUG-14] 잔여분 처리
         for (; i < u_len; ++i) {
             dot += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
         }

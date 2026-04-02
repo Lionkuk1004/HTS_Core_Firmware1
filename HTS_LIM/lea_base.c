@@ -1,4 +1,4 @@
-#include "lea.h"
+﻿#include "lea.h"
 #include "lea_locl.h"
 
 #ifndef NO_SIMD
@@ -434,3 +434,5 @@ void lea_memcmp(void *src1, void *src2, int count)
 }
 
 #endif
+
+

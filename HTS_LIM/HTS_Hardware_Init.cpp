@@ -3,34 +3,6 @@
 // 하드웨어 초기화 매니저 구현부
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 4건 결함 교정]
-//
-//  BUG-01 [MEDIUM] 레지스터 주소 선언 이중화
-//    기존: .cpp 내부 constexpr + fputc에서 ProtectedEngine:: 접근
-//          → 헤더에 선언이 없어 다른 모듈에서 접근 불가
-//          → fputc (extern "C")가 namespace 상수에 의존하는 불투명 구조
-//    수정: 레지스터 주소를 헤더로 이동 (ARM 가드 내부)
-//          → fputc에서 ProtectedEngine:: 접근 투명
-//          → 다른 모듈(SecureLogger UART 직접 출력 등)에서도 사용 가능
-//
-//  BUG-02 [LOW] Cache 함수가 DMA 배리어만 수행하나 명칭이 "Cache"
-//    STM32F407 (Cortex-M4)에는 I/D 캐시 없음
-//    수정: 함수명 변경 없이 (API 호환) 주석 보강
-//
-//  BUG-03 [LOW] AMI 커스텀 레지스터 vs STM32 표준 구분 미문서화
-//    수정: 헤더 + .cpp에 파트너사 교체 가이드 추가
-//
-//  BUG-04 [LOW] fputc EMCON 모드 의도 미문서화
-//    수정: HTS_MILITARY_GRADE_EW 정의 시 모든 UART 출력 묵살 = Zero-Emission
-//
-// [기존 설계 100% 보존]
-//  - 3단 플랫폼 분기 (ARM/Windows/Linux)
-//  - WDT 활성화 + DWT CYCCNT 활성화
-//  - DMB/ISB DMA 배리어
-//  - UART fputc 리타겟팅 + 타임아웃
-//  - EMCON 스텔스 모드
-//  - 매크로 클린업
-// =========================================================================
 #include "HTS_Hardware_Init.h"
 #include <cstdio>
 
@@ -39,6 +11,10 @@
 // =========================================================================
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
 #define HTS_TARGET_ARM_BAREMETAL
+#endif
+
+#ifdef HTS_TARGET_ARM_BAREMETAL
+extern uint32_t __stack_bottom__ __attribute__((weak));
 #endif
 
 namespace ProtectedEngine {
@@ -65,14 +41,15 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  Initialize_System — WDT + DWT CYCCNT 활성화
+    //  Initialize_System — WDT → NVIC(플레이스홀더) → MPU → DWT CYCCNT
     //
     //  [호출 시점] main() 진입 직후, POST 이전
-    //  [ARM 동작]
+    //  [ARM 동작 순서 — H-2]
     //    1. WDT 활성화: WDT_CTRL_REG에 0x01 쓰기
     //       → 이후 주기적으로 Kick_Watchdog() 미호출 시 하드웨어 리셋
-    //    2. DWT CYCCNT 활성화:
-    //       DEMCR TRCENA(bit24) → DWT_CTRL CYCCNTENA(bit0) → 카운터 리셋
+    //    2. NVIC: Tx 스케줄러 IRQ 우선순위 플레이스홀더 (BUG-NVIC)
+    //    3. MPU: Initialize_MPU() 8리전 (K-1/R-11)
+    //    4. DWT CYCCNT: DEMCR TRCENA → DWT_CTRL CYCCNTENA → 카운터 리셋
     //       → Hardware_Bridge::Get_Physical_CPU_Tick() 사용 가능
     //  [PC 동작] no-op (시뮬레이션 환경)
     // =====================================================================
@@ -84,6 +61,63 @@ namespace ProtectedEngine {
         HW_BARRIER();
         *wdt_ctrl = 0x01u;
         HW_ISB();
+
+        // Tx_Scheduler 타임슬롯 마감 보장 — NVIC 우선순위 일괄 설정
+        // 파트너사: TIM_IRQn / DMA_IRQn 번호를 보드 설계에 맞게 교체
+        {
+            typedef int32_t IRQn_Type;
+            static constexpr IRQn_Type TIM_IRQn = static_cast<IRQn_Type>(28);  // 예: STM32 TIM2 — 교체
+            static constexpr IRQn_Type DMA_IRQn = static_cast<IRQn_Type>(56);  // 예: DMA2_Stream1 — 교체
+            auto NVIC_SetPriority = [](IRQn_Type irq, uint32_t prio) noexcept {
+                if (static_cast<int32_t>(irq) < 0) { return; }
+                volatile uint8_t* ipr = reinterpret_cast<volatile uint8_t*>(
+                    0xE000E400u + static_cast<uintptr_t>(static_cast<uint32_t>(irq)));
+                *ipr = static_cast<uint8_t>((prio << 4u) & 0xFFu);
+            };
+            auto NVIC_EnableIRQ = [](IRQn_Type irq) noexcept {
+                if (static_cast<int32_t>(irq) < 0) { return; }
+                const uint32_t u = static_cast<uint32_t>(irq);
+                volatile uint32_t* iser = reinterpret_cast<volatile uint32_t*>(
+                    0xE000E100u + (u >> 5u) * 4u);
+                *iser = 1u << (u & 31u);
+            };
+// ⚠════════════════════════════════════════════════════════
+// [외부업체 필수 확인] IRQ 번호 교체 필요 — 양산 사용 금지
+//
+// STM32F407 RM0090 벡터 테이블:
+//   TIM2=28, TIM3=29, TIM4=30, TIM5=50
+//   DMA1_Stream0=11 ~ DMA1_Stream7=47
+//   DMA2_Stream0=56 ~ DMA2_Stream7=70
+//   SPI1=35, SPI2=36, SPI3=51
+//   USART1=37, USART2=38, USART3=39
+//
+// ※ IPC_Protocol이 DMA2_Stream0(56번)을 SPI1 RX로 사용 중.
+//   Tx 스케줄러 DMA는 반드시 다른 Stream 번호로 설정하세요.
+// ⚠════════════════════════════════════════════════════════
+TIM_IRQn, 2u);   // Tx 심볼 타이머 — 높은 우선순위
+// ⚠════════════════════════════════════════════════════════
+// [외부업체 필수 확인] IRQ 번호 교체 필요 — 양산 사용 금지
+//
+// STM32F407 RM0090 벡터 테이블:
+//   TIM2=28, TIM3=29, TIM4=30, TIM5=50
+//   DMA1_Stream0=11 ~ DMA1_Stream7=47
+//   DMA2_Stream0=56 ~ DMA2_Stream7=70
+//   SPI1=35, SPI2=36, SPI3=51
+//   USART1=37, USART2=38, USART3=39
+//
+// ※ IPC_Protocol이 DMA2_Stream0(56번)을 SPI1 RX로 사용 중.
+//   Tx 스케줄러 DMA는 반드시 다른 Stream 번호로 설정하세요.
+// ⚠════════════════════════════════════════════════════════
+DMA_IRQn, 3u);   // Tx DMA 완료 — Tx 타이머 다음
+            NVIC_EnableIRQ(TIM_IRQn);
+            NVIC_EnableIRQ(DMA_IRQn);
+        }
+
+        const uintptr_t sb_raw = reinterpret_cast<uintptr_t>(&__stack_bottom__);
+        const uint32_t stack_bot = (sb_raw != 0u)
+            ? static_cast<uint32_t>(sb_raw)
+            : 0x2001C000u;
+        Hardware_Init_Manager::Initialize_MPU(stack_bot);
 
         // ── DWT CYCCNT 활성화 (Cortex-M3/M4/M7 공통) ────────────────
         //  레지스터 주소: ARM CoreSight 아키텍처 표준
@@ -111,6 +145,86 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
+    //  Initialize_MPU — STM32F407 MPU 8개 리전 (K-1, R-11)
+    //
+    //  Region 5·1 중복(0x20000000): 번호 큰 리전 우선 → 하위 4KB는 Region 5
+    //    Region 5: Strongly-ordered 분리(TEX=0,S=1,C=0,B=0) — Region 1 Normal WB와 구분
+    //  Region 4: 스택 가드 SIZE=7(256B) — 예외 8워드 push(32B) 한 번에 가드 우회 방지
+    //  Region 7: 원안 512MB는 Flash(0x08000000)와 중첩 위험 → SIZE=26(128MB)로
+    //            [0, 0x08000000)만 No Access (저주소/널 가드, Flash 제외)
+    // =====================================================================
+    void Hardware_Init_Manager::Initialize_MPU(uint32_t stack_bottom_addr) noexcept {
+#ifdef HTS_TARGET_ARM_BAREMETAL
+        volatile uint32_t* const MPU_CTRL = reinterpret_cast<volatile uint32_t*>(
+            static_cast<uintptr_t>(MPU_CTRL_ADDR));
+        volatile uint32_t* const MPU_RNR = reinterpret_cast<volatile uint32_t*>(
+            static_cast<uintptr_t>(MPU_RNR_ADDR));
+        volatile uint32_t* const MPU_RBAR = reinterpret_cast<volatile uint32_t*>(
+            static_cast<uintptr_t>(MPU_RBAR_ADDR));
+        volatile uint32_t* const MPU_RASR = reinterpret_cast<volatile uint32_t*>(
+            static_cast<uintptr_t>(MPU_RASR_ADDR));
+
+        *MPU_CTRL = 0u;
+        HW_BARRIER();
+
+        // Region 0: Flash — RO Both, XN=0, 1MB
+        *MPU_RNR = 0u;
+        *MPU_RBAR = 0x08000000u;
+        *MPU_RASR = (0u << 28) | (6u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
+            | (19u << 1) | (1u);
+
+        // Region 1: SRAM1+2 — RW Both, XN=1, 128KB
+        *MPU_RNR = 1u;
+        *MPU_RBAR = 0x20000000u;
+        *MPU_RASR = (1u << 28) | (3u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
+            | (16u << 1) | (1u);
+
+        // Region 2: CCM — RW Both, XN=1, 64KB
+        *MPU_RNR = 2u;
+        *MPU_RBAR = 0x10000000u;
+        *MPU_RASR = (1u << 28) | (3u << 24) | (0u << 19) | (1u << 17) | (1u << 16)
+            | (15u << 1) | (1u);
+
+        // Region 3: APB/AHB — RW Priv only, XN=1, 512MB, device (C=0,B=0)
+        *MPU_RNR = 3u;
+        *MPU_RBAR = 0x40000000u;
+        *MPU_RASR = (1u << 28) | (1u << 24) | (0u << 19) | (0u << 18) | (0u << 17)
+            | (0u << 16) | (28u << 1) | (1u);
+
+        // Region 4: 스택 가드 256B — No Access, XN=1, SIZE=7 (예외 진입 32B push 대비)
+        const uint32_t guard_base =
+            (stack_bottom_addr + 255u) & ~static_cast<uint32_t>(255u);
+        *MPU_RNR = 4u;
+        *MPU_RBAR = guard_base;
+        *MPU_RASR = (1u << 28) | (0u << 24) | (7u << 1) | (1u);
+
+        // Region 5: DMA 버퍼 4KB @ SRAM 선두 — RW Both, XN=1
+        //   TEX=0,S=1,C=0,B=0 → Shareable Device (Region 1 Normal WBWA와 속성 분리)
+        *MPU_RNR = 5u;
+        *MPU_RBAR = 0x20000000u;
+        *MPU_RASR = (1u << 28) | (3u << 24) | (0u << 19) | (1u << 18) | (0u << 17)
+            | (0u << 16) | (11u << 1) | (1u);
+
+        // Region 6: CoreSight/시스템 — RO Priv, XN=1, 256MB
+        *MPU_RNR = 6u;
+        *MPU_RBAR = 0xE0000000u;
+        *MPU_RASR = (1u << 28) | (5u << 24) | (0u << 19) | (0u << 17) | (0u << 16)
+            | (27u << 1) | (1u);
+
+        // Region 7: 저주소 No Access — SIZE=26(128MB): Flash 시작 미포함
+        *MPU_RNR = 7u;
+        *MPU_RBAR = 0x00000000u;
+        *MPU_RASR = (1u << 28) | (0u << 24) | (26u << 1) | (1u);
+
+        HW_BARRIER();
+        *MPU_CTRL = MPU_CTRL_FULL;
+        HW_ISB();
+#else
+        (void)stack_bottom_addr;
+#endif
+    }
+
+    // =====================================================================
     //  Kick_Watchdog — WDT 타이머 피드
     //
     //  [호출 주기] 메인 루프 1사이클당 1회 (WDT 타임아웃 이내)
@@ -120,7 +234,6 @@ namespace ProtectedEngine {
     // =====================================================================
     void Hardware_Init_Manager::Kick_Watchdog() noexcept {
 #ifdef HTS_TARGET_ARM_BAREMETAL
-        // [BUG-FIX FATAL] WDT 킥 DSE/LICM 방어 (3중 보장)
         //
         //  위협: 공격적 최적화(-O3/LTO)가 volatile 쓰기를 LICM로 루프 외부 이동
         //        또는 연속 호출 시 중간 쓰기를 DSE로 제거할 가능성
@@ -222,7 +335,6 @@ extern "C" int fputc(int ch, FILE* f) {
         static_cast<uintptr_t>(ProtectedEngine::UART0_FR_REG));
 
     // TX FIFO Full 폴링 + 타임아웃
-    // [BUG-06] 매직넘버 → constexpr 상수
     static constexpr uint32_t UART_TX_TIMEOUT = 100000u;
     uint32_t timeout = UART_TX_TIMEOUT;
     while (((*uart_fr) & ProtectedEngine::UART_TXFF) != 0) {
@@ -233,6 +345,35 @@ extern "C" int fputc(int ch, FILE* f) {
     *uart_tx = static_cast<uint32_t>(ch);
     return ch;
 #endif
+}
+#endif
+
+#ifdef HTS_TARGET_ARM_BAREMETAL
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void MemManage_Handler(void)
+#else
+extern "C" void MemManage_Handler(void)
+#endif
+{
+    static constexpr uintptr_t ADDR_AIRCR = 0xE000ED0Cu;
+    static constexpr uint32_t  AIRCR_RESET =
+        (0x05FAu << 16) | (1u << 2);
+    volatile uint32_t* const aircr =
+        reinterpret_cast<volatile uint32_t*>(ADDR_AIRCR);
+    *aircr = AIRCR_RESET;
+#if defined(__GNUC__) || defined(__clang__)
+    // DBGMCU_APB1_FZ — 디버거 WDT STOP 시 AIRCR 지연 동안 IWDG 동작 보장 (HTS_Anti_Debug Phase 3 동일)
+    static constexpr uintptr_t ADDR_DBGMCU_FZ = 0xE0042008u;
+    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);
+    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12);
+    volatile uint32_t* const dbgmcu_fz =
+        reinterpret_cast<volatile uint32_t*>(ADDR_DBGMCU_FZ);
+    *dbgmcu_fz &= ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
+    __asm__ __volatile__("dsb sy\n\t" "isb\n\t" ::: "memory");
+#endif
+    for (;;) {
+        __asm__ __volatile__("nop");
+    }
 }
 #endif
 

@@ -1,4 +1,4 @@
-/// @file  HTS_IPC_Protocol_A55.cpp
+﻿/// @file  HTS_IPC_Protocol_A55.cpp
 /// @brief HTS IPC Protocol Engine -- A55 SPI Master Implementation (Linux aarch64)
 /// @details
 ///   Pimpl implementation of HTS_IPC_Protocol_A55 for Cortex-A55 Linux.
@@ -728,7 +728,6 @@ namespace ProtectedEngine {
         // Explicit destructor
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — SPI 페이로드 잔류 방지
         IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);

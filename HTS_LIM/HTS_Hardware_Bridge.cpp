@@ -3,25 +3,6 @@
 // CPU 물리 틱 추출 및 보안 메모리 소거 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 세션 3-4 (6건) + 세션 5 (1건) = 총 7건 결함 교정]
-//
-//  ── 세션 3-4 기수정 (BUG-01 ~ BUG-06) ──
-//  BUG-01 [MEDIUM]   Secure_Erase: pragma O0 보호 누락 → push/pop 추가
-//  BUG-02 [MEDIUM]   Secure_Erase: atomic_thread_fence 누락 → seq_cst 추가
-//  BUG-03 [MEDIUM]   raw 포인터 소거 API 없음 → Secure_Erase_Raw 추가
-//  BUG-04 [LOW]      미지원 플랫폼 return 0 → #error 컴파일 차단
-//  BUG-05 [LOW]      DWT 래핑 문서화 부족 → 25.56초 계산 근거 추가
-//  BUG-06 [LOW]      Secure_Erase_Memory 미사용 → API 유지 문서화
-//
-//  ── 세션 5 신규 (BUG-07) ──
-//  BUG-07 [LOW]      .cpp에 <cstddef>/<cstdint> Self-Contained 누락
-//    기존: 헤더 경유 전이 포함에 의존
-//    수정: 명시적 포함 추가 (Self-Contained #include 원칙)
-//
-// [STM32F407 성능]
-//  Get_Physical_CPU_Tick: 1사이클 (DWT CYCCNT 레지스터 읽기)
-//  Secure_Erase_Raw (256B): ~256사이클 + fence ≈ 1.5µs @168MHz
-// =========================================================================
 #include "HTS_Hardware_Bridge.hpp"
 
 // ── Self-Contained 표준 헤더 [BUG-07] ───────────────────────────────
@@ -53,7 +34,6 @@
 #define HTS_TICK_ARM_DWT
 #elif defined(__aarch64__)
     // ARM Cortex-A55 (통합콘솔 INNOVID CORE-X Pro): POSIX vDSO 타이머
-    // [BUG-FIX FATAL] cntvct_el0 직접 접근 제거 (SIGILL 위험)
     //  Linux 4.12+ 보안 커널: CNTKCTL_EL1.EL0VCTEN=0 → EL0에서
     //  mrs cntvct_el0 트랩 → SIGILL(Illegal Instruction) 프로세스 즉사
     //  수정: clock_gettime(CLOCK_MONOTONIC) — vDSO 경유 커널 안전 읽기
@@ -102,7 +82,6 @@ namespace ProtectedEngine {
 
 #elif defined(HTS_TICK_AARCH64_VDSO)
         // 통합콘솔 (Cortex-A55 Linux): POSIX clock_gettime vDSO
-        // [BUG-FIX FATAL] cntvct_el0 직접 접근 → SIGILL 위험 제거
         //  clock_gettime(CLOCK_MONOTONIC)은 Linux vDSO를 통해 커널 타이머를
         //  유저스페이스에서 안전하게 읽음 (syscall 오버헤드 0, ~20ns)
         //  나노초 해상도: 엔트로피 수집/타이밍 방어에 충분
@@ -148,14 +127,13 @@ namespace ProtectedEngine {
             p[i] = 0x00;
         }
 
-        // [BUG-08] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
 
         // 컴파일러 배리어: 포인터 주소 참조로 분석 회피
 #if defined(_MSC_VER)
         _ReadWriteBarrier();
 #elif defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(ptr));
+        __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
     }
 

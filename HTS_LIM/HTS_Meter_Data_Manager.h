@@ -17,6 +17,17 @@
 //  @warning sizeof ≈ 512B — 전역/정적 배치 권장
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 // ARM Cortex-M (STM32) 전용 모듈: 비대상 플랫폼 빌드 차단
 // Visual Studio Windows 정적 라이브러리(HTS_LIM.vcxproj)는 _WIN32 로 호스트 단위검증 빌드 허용.
@@ -61,6 +72,10 @@ namespace ProtectedEngine {
         uint8_t  pad[2];
     };
 
+    /// A-4: 외부 무결성(HMAC/서명 등) — 통과 시에만 Update_Reading 저장. nullptr=생략.
+    using MeterReading_VerifyFn =
+        bool (*)(const MeterReading& r, void* user) noexcept;
+
     class HTS_Meter_Data_Manager {
     public:
         static constexpr size_t  PROFILE_SLOTS = 96u;   // 15분 × 96 = 24시간
@@ -81,9 +96,15 @@ namespace ProtectedEngine {
         void Update_Reading(const MeterReading& reading) noexcept;
         void Log_Event(MeterEvent event, uint32_t timestamp) noexcept;
 
+        /// A-4: HMAC/서명 검증을 훅으로 주입(nullptr이면 IEEE CRC32 저장 무결성만).
+        void Register_Meter_Reading_Verify(
+            MeterReading_VerifyFn fn, void* user) noexcept;
+
         // ─── 데이터 조회 ─────────────────────────────────
 
         [[nodiscard]] MeterReading Get_Latest() const noexcept;
+        /// A-4: 저장 CRC 불일치 또는 조회 시 변조 감지 래치
+        [[nodiscard]] bool Is_Meter_Integrity_Fault() const noexcept;
         [[nodiscard]] uint32_t Get_Profile_Value(size_t slot) const noexcept;
         [[nodiscard]] size_t Get_Event_Log(
             MeterLogEntry* out, size_t cap) const noexcept;
@@ -96,7 +117,7 @@ namespace ProtectedEngine {
         void Shutdown() noexcept;
 
     private:
-        static constexpr size_t IMPL_BUF_SIZE = 512u;
+        static constexpr size_t IMPL_BUF_SIZE = 544u;
         static constexpr size_t IMPL_BUF_ALIGN = 8u;
         struct Impl;
         alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];

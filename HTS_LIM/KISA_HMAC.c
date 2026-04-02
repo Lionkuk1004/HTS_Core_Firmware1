@@ -1,4 +1,4 @@
-#include "KISA_HMAC.h"
+﻿#include "KISA_HMAC.h"
 
 
 void HMAC_SHA256(const u8 *message, u32 mlen, const u8 *key, u32 klen, u8 hmac[SHA256_DIGEST_VALUELEN])
@@ -68,3 +68,5 @@ int Verify_HMAC_SHA256(const u8* message, u32 mlen, const u8* key, u32 klen, u8 
 
 	return 0;
 }
+
+

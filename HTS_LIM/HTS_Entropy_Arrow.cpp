@@ -1,42 +1,16 @@
+#if __cplusplus >= 202002L || \\
+    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   HTS_LIKELY
+#define HTS_UNLIKELY HTS_UNLIKELY
+#else
+#define HTS_LIKELY
+#define HTS_UNLIKELY
+#endif
 // =========================================================================
 // HTS_Entropy_Arrow.cpp
 // 엔트로피 시간 화살 구현부 — DWT 틱 타이머(ARM) / steady_clock(PC)
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 6건 결함 교정]
-//
-//  BUG-01 [CRITICAL] ARM: <chrono> / steady_clock 미지원
-//    기존: steady_clock::now() → ARM 베어메탈에서 링크 에러 또는 epoch(0) 반환
-//          → 모든 세션이 즉시 만료 또는 영원히 미만료 (둘 다 치명적)
-//    수정: ARM 경로에서 DWT CYCCNT 기반 틱 타이머 사용
-//          32비트 래핑을 wrap_count로 64비트 확장
-//          168MHz 기준: 1초 = 168,000,000 틱
-//          3600초(1시간) = 604,800,000,000 틱 (uint64_t 안전)
-//
-//  BUG-02 [HIGH] [[unlikely]] — C++20 전용 속성
-//    기존: if (...) [[unlikely]] → C++14/17에서 컴파일 에러
-//    수정: C++20 가드 매크로 HTS_UNLIKELY
-//
-//  BUG-03 [MEDIUM] Fast_RotL64(x, 0) → x >> 64 = UB
-//    수정: k &= 63u + k==0 조기 반환
-//
-//  BUG-04 [MEDIUM] Generate_Chaos_Seed가 steady_clock 재호출
-//    기존: ARM에서 steady_clock 없음 → 비가역 해시 입력이 항상 0
-//          → 동일 session_id → 동일 파쇄 결과 = 결정적 → 위험
-//    수정: ARM: DWT 틱, A55/PC: steady_clock 시점 각각 혼합
-//
-//  BUG-05 [LOW] double 생성자 → 정수 변환 오버플로 가능
-//    기존: lifespan_seconds * 1000.0 → uint64_t (음수 또는 극대 → UB)
-//    수정: 범위 검증 + 클램핑
-//
-//  BUG-06 [LOW] C26495 — creation_time 초기화 리스트 누락
-//    수정: 헤더에서 모든 멤버 기본값 할당 + 초기화 리스트 정비
-//
-// [STM32F407 성능]
-//  Validate_Or_Destroy (미만료): ~20사이클 (DWT 읽기 + 비교)
-//  Validate_Or_Destroy (만료):   ~40사이클 (+ Chaos_Seed)
-//  Flash: ~300바이트
-// =========================================================================
 #include "HTS_Entropy_Arrow.hpp"
 #include <atomic>
 
@@ -56,10 +30,10 @@
 #endif
 
 // =========================================================================
-//  [[unlikely]] C++20 가드
+//  HTS_UNLIKELY C++20 가드
 // =========================================================================
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
-#define HTS_UNLIKELY [[unlikely]]
+#define HTS_UNLIKELY HTS_UNLIKELY
 #else
 #define HTS_UNLIKELY
 #endif
@@ -97,7 +71,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  생성자
     //
-    //  [BUG-05] 범위 검증: 음수/극대 lifespan 클램핑
     //  double → uint64_t 변환 시 오버플로 방지
     //  최대 수명: 30일(2,592,000초) — 그 이상은 키 갱신 정책으로 처리
     // =====================================================================
@@ -113,7 +86,6 @@ namespace ProtectedEngine {
         }
 
 #ifdef HTS_ENTROPY_ARROW_ARM
-        // [BUG-11] ARM: 델타 누적 타이머 초기화
         max_lifespan_ticks = static_cast<uint64_t>(lifespan_seconds * 1000.0)
             * TICKS_PER_MS;
         last_tick = Read_DWT_Tick();
@@ -128,7 +100,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Validate_Or_Destroy — 수명 검증 + 만료 시 키 파쇄
     //
-    //  [BUG-FIX FATAL] 32비트 DWT 래핑 Fail-Open → Fail-Safe 전환
     //   기존: "래핑 1회 누락 → 수명 단축 = fail-safe" (착각)
     //   실제: 30초 미호출 시 delta = 4.4초(래핑) → 수명 연장 = fail-OPEN
     //   수정: MAX_SILENT_TICKS(15초) 초과 delta → 즉시 자폭 (fail-safe)
@@ -137,7 +108,6 @@ namespace ProtectedEngine {
     //         · 래핑 공격(25~40초): delta 왜곡되더라도 아키텍처 명세에 의해
     //           감시 태스크가 15초 이내 폴링 강제 → 이 경로 진입 불가
     //
-    //  [BUG-FIX CRIT] 64비트 Data Tearing 방지
     //   Cortex-M4: uint64_t RMW는 LDR+ADDS+ADC+STR 4명령어
     //   ISR 선점 시 상위/하위 32비트 엇갈림 → 수백 시간 뻥튀기 → 즉시 자폭
     //   수정: PRIMASK 크리티컬 섹션으로 원자적 갱신
@@ -153,12 +123,10 @@ namespace ProtectedEngine {
         }
 
 #ifdef HTS_PLATFORM_ARM
-            // [BUG-FIX FATAL] 15초 폴링 임계 (168MHz × 15 = 2,520,000,000)
             //  uint32_t 최대 = 4,294,967,295 → 25.5초 래핑
             //  15초 임계 → 래핑 공격 윈도우를 40.5초 이상으로 밀어냄
         static constexpr uint32_t MAX_SILENT_TICKS = 2520000000u;  // 15초 @168MHz
 
-        // [BUG-FIX CRIT] PRIMASK 크리티컬 섹션: 64비트 tearing 방지
         uint32_t primask;
         __asm__ __volatile__("mrs %0, primask\n\tcpsid i"
             : "=r"(primask) : : "memory");
@@ -167,7 +135,6 @@ namespace ProtectedEngine {
         const uint32_t delta = now_tick - last_tick;
         last_tick = now_tick;
 
-        // [BUG-FIX FATAL] 지연 감지: delta > 15초 → fail-safe 즉시 자폭
         const bool collapse_now = (delta > MAX_SILENT_TICKS);
         total_elapsed_ticks += static_cast<uint64_t>(delta);
         const bool expired = (total_elapsed_ticks > max_lifespan_ticks);
@@ -221,7 +188,6 @@ namespace ProtectedEngine {
     //  → Fast_RotL64 최종 비트 회전
     //  → 출력에서 원본 session_id 역산 수학적 불가
     //
-    //  [BUG-04 수정] ARM: DWT 틱 / A55·PC: steady_clock 각각 사용
     // =====================================================================
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC push_options

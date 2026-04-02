@@ -15,13 +15,23 @@
 ///   ★ 최상단 MCU_DMA_SRAM_KB 하나만 변경하면 전체 자동 재계산
 ///
 /// [양산 수정 이력 — 17건]
-///  BUG-01~13 (이전 세션)
 ///  BUG-14 [HIGH] FINAL_* 매직넘버 → 체인 파생 (자동 스케일링)
 ///  BUG-15 [MED]  >= 32u 절사 방어 + __attribute__((used)) LTO 방어
 ///  BUG-16 [HIGH] 나눗셈/곱셈 → 비트 시프트 100% 대체 (⑨ 컨벤션 일관성)
 ///  BUG-17 [MED]  1024u/8u/32u 매직넘버 → constexpr 명명 상수 (J-3 MISRA)
 // =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 #include <cstdint>
 #include <cstddef>
@@ -53,7 +63,6 @@ namespace ProtectedEngine {
             SINGLE_TENSOR_BUF_BYTES << 3u;                        // × BITS_PER_BYTE
 
         // ── 최종 확정값 (매직넘버 0 — 체인 파생) ──────────────────
-        // [BUG-14] 하드코딩 제거 → 상위 파생 체인 100% 동기화
         static constexpr size_t FINAL_NODE_COUNT = BASE_MIN_NODES;
         static constexpr size_t FINAL_PACKED_SIZE =
             FINAL_NODE_COUNT >> 5u;                               // ÷ BITS_PER_WORD
@@ -86,7 +95,6 @@ namespace ProtectedEngine {
     };
 
     // ── 컴파일 타임 무결성 검증 ─────────────────────────────────
-    // [BUG-17] 단위 변환 상수가 2의 거듭제곱인지 빌드 타임 보장
     static_assert(HTS_Static_Config::BYTES_PER_KB == (1u << 10u),
         "BYTES_PER_KB must be 1024 (2^10)");
     static_assert(HTS_Static_Config::BITS_PER_BYTE == (1u << 3u),
@@ -94,14 +102,12 @@ namespace ProtectedEngine {
     static_assert(HTS_Static_Config::BITS_PER_WORD == (1u << 5u),
         "BITS_PER_WORD must be 32 (2^5)");
 
-    // [BUG-15] >= 32u: 32 미만이면 PACKED_SIZE=0 → 0바이트 텐서 → 하드폴트
     static_assert(
         HTS_Static_Config::FINAL_NODE_COUNT >= 32u &&
         (HTS_Static_Config::FINAL_NODE_COUNT &
             (HTS_Static_Config::FINAL_NODE_COUNT - 1u)) == 0u,
         "FINAL_NODE_COUNT must be >= 32 and a power of two");
 
-    // [BUG-16] static_assert 내부도 시프트 통일
     static_assert(
         HTS_Static_Config::FINAL_PACKED_SIZE ==
         (HTS_Static_Config::FINAL_NODE_COUNT >> 5u),

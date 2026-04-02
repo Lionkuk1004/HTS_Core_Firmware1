@@ -1,47 +1,12 @@
-// =========================================================================
+﻿// =========================================================================
 // AnchorDecoder.cpp
 // GF(2^8) Cauchy Reed-Solomon 이레이저 복구 디코더 구현부
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
 //
-// [양산 수정 — 세션 5+6+11+14: 24건 결함 교정]
-//
-//  BUG-01~12 (이전 세션)
-//  BUG-13 [CRIT] CRC-32 엔디안 독립: reinterpret_cast → 비트 시프트
-//  BUG-14 [CRIT] 사후 CRC 검증: restoreBlock 결과 무결성 최종 확인
-//  BUG-15 [CRIT] 복구 실패 → 빈 벡터 반환 통일 (훼손 원본 전파 차단)
-//  BUG-16 [HIGH] CRC-32 헬퍼 함수 분리 (DRY: Pre/Post-check 재사용)
-//  BUG-22 [HIGH] decode_inplace + restoreBlock_inplace 추가
-//         · TensorCodec 터보 루프 내 decode() 반환 벡터 할당 완전 제거
-//         · decode()는 decode_inplace 래퍼로 리팩토링 (기존 API 100% 호환)
-//         · restoreBlock_inplace: data 직접 수정 (복사 0회)
-//  BUG-23 [HIGH] restoreBlock (non-inplace) 데드코드 제거
-//         · decode()가 decode_inplace 래퍼로 리팩토링 완료 (BUG-22)
-//         · restoreBlock()의 호출자가 0 → private 데드코드
-//         · 헤더에서 선언 제거 + .cpp에서 구현 제거
-//  BUG-24 [HIGH] masterSeed 보안 소거 4회 중복 → RAII 1회로 통일
-//         · 기존: 4개 exit 경로마다 동일한 volatile+asm+fence 블록 복사
-//         · 수정: 로컬 RAII_Seed_Wiper 사용 → 소멸자에서 1회 자동 소거
-//         · DRY 원칙 준수 + 경로 추가 시 소거 누락 위험 원천 차단
-//
-//  BUG-01 [CRITICAL] std::abort() × 7회 → 빈 벡터/원본 반환
-//  BUG-02 [HIGH]     dead include 8개 전부 제거
-//  BUG-03 [HIGH]     GF8Bit_DEC magic statics → 명시적 bool 플래그
-//  BUG-04 [MEDIUM]   divide(a,b) b==0 시 abort → return 0
-//  BUG-05 [LOW]      getCauchyCoefficient xor_val==0 방어 가드
-//  BUG-06 [MEDIUM]   복사/이동 미차단 → = delete
-//  BUG-07 [MEDIUM]   AnchorManager.h → 전방 선언 + .cpp include
-//  BUG-08 [MEDIUM]   CRC32 byteChunk 벡터 → Zero-copy 인라인
-//  BUG-09 [LOW]      [[nodiscard]] 미적용
-//  BUG-10 [LOW]      Self-Contained <cstddef> 누락
-//  BUG-11 [MEDIUM]   <iostream>/<cstdlib> 제거
-//  BUG-12 [LOW]      외부업체 Doxygen 가이드 없음
-// =========================================================================
 
-// [BUG-07] AnchorManager는 전역 네임스페이스
 #include "AnchorManager.h"
 
 // ARM(STM32) 빌드 차단 — A55/서버 전용 모듈
-// [BUG-21] STM32 (Cortex-M) 빌드 차단 — 프로젝트 표준 4종 매크로
 // 기존: __arm__ 단독 → ARMCC(Keil)/IAR/GCC Thumb-only 누락
 // A55 (aarch64): 정상 통과
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
@@ -54,14 +19,11 @@
 
 // 실제 사용되는 내부 모듈만 include
 #include "HTS_Session_Gateway.hpp"
-// [BUG-08] HTS_HTS_Crc32Util.h제거 — 로컬 인라인 CRC32
 
-// [BUG-02] dead include 8개 전부 제거:
 // HTS_Anti_Glitch, HTS_PUF_Adapter, HTS_Key_Rotator,
 // HTS_Secure_Memory, HTS_Anti_Debug, HTS_Secure_Logger,
 // HTS_ConstantTimeUtil, HTS_POST_Manager
 
-// [BUG-11] <iostream>, <cstdlib> 제거
 
 // ── Self-Contained [BUG-10] ─────────────────────────────────────────
 #include <cstddef>
@@ -73,7 +35,6 @@
 namespace ProtectedEngine {
 
     // =====================================================================
-    //  [BUG-24] RAII 보안 소거 — masterSeed 전용
     //  decode_inplace 내 4개 exit 경로에서 동일 소거 블록 4회 복사 제거
     //  소멸자에서 volatile + asm clobber + release fence 1회 자동 실행
     // =====================================================================
@@ -101,7 +62,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  GF(2^8) 고속 연산 엔진 (Decoder 전용)
-    //  [BUG-20] bool tables_initialized → std::call_once
     //
     //  기존 문제 (A55 멀티스레드):
     //    스레드A: tables_initialized=false 확인 → 테이블 생성 시작
@@ -140,7 +100,6 @@ namespace ProtectedEngine {
             return exp_table[idx];
         }
 
-        // [BUG-04] b==0 시 abort → return 0 (GF에서 0÷0 = 정의 불가)
         inline uint8_t divide(uint8_t a, uint8_t b) noexcept {
             if (b == 0) return 0;
             if (a == 0) return 0;
@@ -150,7 +109,6 @@ namespace ProtectedEngine {
             return exp_table[static_cast<uint16_t>(diff)];
         }
 
-        // [BUG-05] xor_val==0 방어 가드 (MISRA 1-0-1)
         inline uint8_t getCauchyCoefficient(
             uint8_t row, uint8_t col) noexcept {
             uint8_t xor_val = row ^ (col | 0x80u);
@@ -163,7 +121,6 @@ namespace ProtectedEngine {
         bool invertMatrix(std::vector<uint8_t>& matrix, size_t n) noexcept {
             if (n == 0) return false;
 
-            // [BUG-17] try-catch 삭제 — -fno-exceptions
             std::vector<uint8_t> aug(n * n * 2, 0);
 
             const size_t stride = n * 2;
@@ -229,7 +186,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-16] CRC-32 헬퍼 (DRY: Pre-check + Post-check 재사용)
     //  엔디안 독립: 비트 시프트 바이트 추출 (HI→LO 고정 순서)
     // =====================================================================
     static uint32_t compute_crc32_(
@@ -266,12 +222,10 @@ namespace ProtectedEngine {
         return {};
     }
 
-    // [BUG-23] restoreBlock (non-inplace) 삭제
     //  decode()가 decode_inplace 래퍼로 리팩토링 완료 → 호출자 0
     //  ~60줄 데드코드 제거, 헤더 선언도 동시 삭제
 
     // =====================================================================
-    //  [BUG-22] restoreBlock_inplace — data를 직접 수정 (복사 0회)
     //
     //  기존 restoreBlock: restored = brokenChunk (힙 복사) + 수정 + 반환
     //  수정: data가 이미 brokenData의 assign 복사본 → 직접 수정
@@ -370,8 +324,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-22] decode_inplace — 호출자 버퍼 재사용 (힙 할당 0회)
-    //  [BUG-24] masterSeed 보안 소거 → RAII_Seed_Wiper (4회 중복 제거)
     //
     //  기존: 4개 exit 경로마다 동일한 volatile+asm+fence 소거 블록 복사
     //  수정: RAII_Seed_Wiper 소멸자에서 1회 자동 소거
@@ -388,7 +340,6 @@ namespace ProtectedEngine {
         static constexpr size_t MAX_SEED = 64u;
         uint8_t masterSeed[MAX_SEED] = {};
 
-        // [BUG-24] RAII 보안 소거 — 모든 exit 경로에서 자동 실행
         RAII_Seed_Wiper seed_wiper(masterSeed, MAX_SEED);
 
         const size_t mseed_len =

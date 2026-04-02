@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Session_Gateway.hpp
 // 최상위 보안 세션 컨트롤러
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -19,7 +19,6 @@
 //   Session_Gateway::Close_Session();
 //
 //  [양산 수정 이력 — 32건]
-//   기존~세션8 BUG-01~29: (이전 이력 참조)
 //   BUG-30 [HIGH] #define HTS_PLATFORM_ARM 하드코딩 → 컴파일러 감지 매크로
 //   BUG-31 [CRIT] ⑭ PC 코드 물리삭제: mutex/vector/string/socket/try-catch
 //   BUG-32 [LOW]  주석 정합: "/ PC / Server" 제거
@@ -33,10 +32,8 @@
 namespace ProtectedEngine {
 
     /// @brief PUF 시드 최대 크기 (바이트)
-    // [BUG-28] inline constexpr (C++17) — ODR 위반 방지
     inline constexpr size_t MAX_SEED_SIZE = 64u;
 
-    // [BUG-25] 빌드 타임 검증
     static_assert(MAX_SEED_SIZE >= 32u, "Seed must be at least 256 bits");
     static_assert(MAX_SEED_SIZE <= 256u, "Seed buffer unreasonably large");
 

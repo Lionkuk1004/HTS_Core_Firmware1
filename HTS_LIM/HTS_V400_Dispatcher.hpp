@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 /// @file  HTS_V400_Dispatcher.hpp
 /// @brief V400 동적 모뎀 디스패처 + 3층 항재밍 엔진 통합
 /// @target ARM Cortex-M4 (STM32F407, 168MHz, SRAM 192KB)
@@ -56,16 +56,17 @@
 //   CCM     (64KB):  harq_Q_(58KB) + MSP 스택(4KB)
 //   총 사용 ~178KB / 192KB (14.3KB = 7.4% 마진)
 //
-//  [제약]    float 0, double 0, try-catch 0, 힙 0
+//  [제약]    fp32 0, fp64 0, try-catch 0, 힙 0
 //
 //  [양산 수정 이력 — 54건]
-//   BUG-01~50 (이전 세션)
 //   BUG-51 [CRIT] sI/sQ 제거 → Feed16_1sym/Feed64_1sym 스트리밍 전환
 //   BUG-52 [CRIT] wb_ 유니온화 (반이중 증명: TX/RX 동시 접근 불가)
 //   BUG-53 [HIGH] orig_acc_ int8_t 양자화 (AJC LMS σq << σth 검증)
 //   BUG-54 [HIGH] harq I/Q → RxAccum_I(SRAM) + RxAccum_Q(CCM) 분리
 //   BUG-41 [CRIT] SecureMemory::secureWipe — D-2/X-5-1 구현은 HTS_Secure_Memory.cpp
 //          (호스트·타깃 동일 3중 방어; 본 모듈은 호출부만)
+//   BUG-55 [검수 KB] static_assert 실측: sizeof(HTS_V400_Dispatcher) < 128*1024;
+//          NSYM16/NSYM64 ≤ 256 (orig_acc_); harq_Q_는 CCM 외부 배열
 //
 /// @warning sizeof(HTS_V400_Dispatcher) ≈ 120KB (SRAM 부분만)
 ///          harq_Q_는 CCM에 별도 배치. 반드시 전역/정적 변수로 배치할 것.
@@ -121,7 +122,6 @@ namespace ProtectedEngine {
     //  STM32F407 CCM (0x10000000, 64KB): DMA 불가, CPU만 접근
     //  HARQ 누적은 CPU 연산 전용 → CCM 배치 안전
     //
-    //  [FIX-CCM-BSS] .ccm_data → .ccm_bss 변경
     //   .ccm_data: 초기값 포함 → .bin에 108KB 데이터 임베드 (펌웨어 폭발)
     //   .ccm_bss:  초기값 없음 → .bin 크기 0 (부팅 시 startup이 제로필)
     //
@@ -275,7 +275,6 @@ namespace ProtectedEngine {
         //
         union {
             FEC_HARQ::RxState16 m16;
-            // [BUG-54] 64칩 HARQ I채널 (Q채널은 harq_Q_로 분리)
             struct {
                 int32_t aI[FEC_HARQ::NSYM64][FEC_HARQ::C64];
                 int k;
@@ -352,7 +351,6 @@ namespace ProtectedEngine {
         //   AJC Update_AJC 내부: Δw = μ·error·x_ref
         //   x_ref 양자화 → Δw 오차 < 3% → 수렴점 동일
         //
-        //  [FIX-4BIT] 4-bit Delta Packing: I/Q 각 상위 4비트만 저장
         //   1바이트 = [I 상위 4비트][Q 상위 4비트]
         //   절감: int8_t×230×64×2 = 29,440B → uint8_t×230×64 = 14,720B (−50%)
         //   AJC LMS: σq(4bit) = 2048 << σth(4000~16000), 수렴 영향 무시
@@ -405,7 +403,6 @@ namespace ProtectedEngine {
         int32_t dec_wI_[64] = {};       ///< Walsh 디코딩 워킹 버퍼 I
         int32_t dec_wQ_[64] = {};       ///< Walsh 디코딩 워킹 버퍼 Q
 
-        // [FIX-STACK] 공유 스크래치패드 — 스택 로컬 배열 완전 제거
         //  mags[64] + sorted[64] = 512B (soft_clip_iq, blackhole_ 공유)
         //  시간적 분리: soft_clip_iq 완료 후 blackhole_ 호출
         uint32_t scratch_mag_[64] = {};

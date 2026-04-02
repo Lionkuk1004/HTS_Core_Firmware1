@@ -1,4 +1,4 @@
-#include "lea.h"
+﻿#include "lea.h"
 #include "lea_locl.h"
 
 void lea_set_key_fallback(LEA_KEY *key, const unsigned char *mk, unsigned int mk_len)
@@ -101,3 +101,5 @@ int lea_gcm_final_fallback(LEA_GCM_CTX *ctx, unsigned char *tag, int tag_len){
 	init_simd();
 	return lea_gcm_final(ctx, tag, tag_len);
 }
+
+

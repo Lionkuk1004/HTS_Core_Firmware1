@@ -1,23 +1,7 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Tx_Scheduler.cpp — B-CDMA TX 전송 스케줄러 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
-// [양산 수정 이력 — 64건]
-//  BUG-01~58 (이전 세션 완료)
-//  BUG-59 MAX_RING_POW2 = 1<<14 (SRAM1 112KB 물리 한계 준수)
-//  BUG-60 SecWipe Strict Aliasing UB 제거 (표준 memset + asm clobber 복구)
-//  BUG-61 [HIGH] Push/Pop 랩어라운드 내 불필요한 Dead Branch(rem > 0) 제거
-//  BUG-62 [HIGH] Initialize/Push/Pop 커밋 가시성 배리어 정밀 재배치
-//  BUG-63 [ADD] Flush, Get_Used_Space, Get_Available_Space 인터페이스 구현
-//  BUG-64 [CRIT] unique_ptr Pimpl → placement new (zero-heap)
-//         · impl_buf_[1024] alignas(64) — AlignedIndex(alignas64) 수용
-//         · 생성자: ::new(impl_buf_) Impl(tier)  소멸자: p->~Impl() + SecWipe
-//         · 힙 OOM 위험 원천 제거 / 결정론적 SRAM 배치 보장
-//  BUG-67 [CRIT] MAX_RING_POW2/CACHELINE 플랫폼 분리
-//         · ARM: MAX_RING_POW2=2048(8KB), CACHELINE=8 — SRAM 59KB 절감
-//         · PC:  MAX_RING_POW2=16384(64KB), CACHELINE=64 — 기존 유지
-//         · Flush() memset → SecWipe (Q16 파형 잔존 방지)
-// =========================================================================
 #include "HTS_Tx_Scheduler.hpp"
 #include "HTS_Dynamic_Config.h"
 #include "HTS_Secure_Memory.h"
@@ -92,7 +76,6 @@ namespace ProtectedEngine {
     // =====================================================================
     struct HTS_Tx_Scheduler::Impl {
         HTS_Sys_Config              current_config = {};
-        // [BUG-66] unique_ptr 힙 → 정적 배열 (B-1 힙금지 준수)
         // MAX_RING_POW2 = 16384 × 4B = 64KB
         // ⚠ sizeof(Impl) ≈ 64KB + metadata → IMPL_BUF_SIZE 확대 필수
         //    전역/정적 배치 필수 (스택 배치 금지)
@@ -111,7 +94,6 @@ namespace ProtectedEngine {
             is_active.store(false, std::memory_order_release);
             std::atomic_thread_fence(std::memory_order_release);
 
-            // [FIX-RING] 물리 버퍼 전체 소거 (ring_mask+1 = ring_size)
             if (ring_mask > 0u) {
                 const size_t nwords = ring_mask + 1u;
                 if (nwords <= MAX_RING_POW2) {
@@ -135,7 +117,6 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  [BUG-64] 컴파일 타임 크기·정렬 검증 + get_impl()
     //
     //  static_assert가 get_impl() 내부에 있으므로 Impl 완전 정의 후 평가
     //  → sizeof(Impl), alignof(Impl) 모두 안전하게 접근 가능
@@ -156,7 +137,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-64] 생성자 — placement new (zero-heap)
     //  Impl(tier) 생성자는 noexcept → 예외 없이 안전
     // =====================================================================
     HTS_Tx_Scheduler::HTS_Tx_Scheduler(HTS_Sys_Tier tier) noexcept
@@ -168,7 +148,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-64] 소멸자 — 명시적 (= default 제거)
     //  Impl 소멸자(내부 secureWipe) 호출 → impl_buf_ 전체 SecureMemory::secureWipe → 플래그 무효화
     // =====================================================================
     HTS_Tx_Scheduler::~HTS_Tx_Scheduler() noexcept {
@@ -189,7 +168,6 @@ namespace ProtectedEngine {
         auto& impl = *p;
 
         impl.is_active.store(false, std::memory_order_release);
-        // [BUG-13] seq_cst → release (ISR는 acquire로 확인)
         std::atomic_thread_fence(std::memory_order_release);
 
         if (impl.current_config.temporal_slice_chunk == 0u) { return false; }
@@ -202,9 +180,7 @@ namespace ProtectedEngine {
 
         const size_t ring_size = Next_Power_Of_Two(raw_cap);
 
-        // [BUG-66] 정적 배열 — new 제거 (B-1 힙금지 준수)
         // ring_size ≤ MAX_RING_POW2 보장 (Next_Power_Of_Two 클램프)
-        // [FIX-RING] 물리 버퍼 소거 (ring_mask+1)
         if (impl.ring_mask > 0u) {
             const size_t old_phys = impl.ring_mask + 1u;
             if (old_phys > (SIZE_MAX >> 2u)) { return false; }
@@ -218,7 +194,6 @@ namespace ProtectedEngine {
             static_cast<void*>(impl.tx_ring_buffer), init_bytes);
 
         impl.ring_mask = ring_size - 1u;
-        // [FIX-RING] ring_capacity = ring_size - 1 (한 칸 비우기)
         //  단조 카운터 방식이지만, ISR 컨텍스트 스위칭 중
         //  read/write 동시 접근 시 phy_read==phy_write → 풀/빈 모호성 방어
         //  비용: 1슬롯(4B) 미사용 — 안전성 대비 무시 가능
@@ -228,7 +203,6 @@ namespace ProtectedEngine {
         impl.write_idx.val.store(0, std::memory_order_release);
         impl.read_idx.val.store(0, std::memory_order_release);
 
-        // [BUG-13] seq_cst → release (초기화 완료 후 활성화)
         std::atomic_thread_fence(std::memory_order_release);
         impl.is_active.store(true, std::memory_order_release);
         return true;
@@ -244,12 +218,9 @@ namespace ProtectedEngine {
 
         impl.write_idx.val.store(0, std::memory_order_release);
         impl.read_idx.val.store(0, std::memory_order_release);
-        // [BUG-13] seq_cst → release (인덱스 리셋)
         std::atomic_thread_fence(std::memory_order_release);
 
-        // [BUG-67] Ghost Transmission 방지 — 잔여 Q16 파형 보안 소거
         // 기존 memset은 컴파일러 DSE 최적화 시 제거 가능 → SecureMemory::secureWipe로 교체
-        // [FIX-RING] 물리 버퍼 소거
         if (impl.ring_mask > 0u) {
             const size_t nwords = impl.ring_mask + 1u;
             if (nwords <= MAX_RING_POW2) {
@@ -290,7 +261,6 @@ namespace ProtectedEngine {
         if (impl.ring_capacity == 0u) { return false; }
 
         const uint32_t chunk = impl.current_config.temporal_slice_chunk;
-        // [FIX-UDIV] 모듈로 → 비트마스크 (UDIV 10cyc → AND 1cyc)
         //  chunk는 프로파일 설계상 항상 2의 거듭제곱 (16, 64 등)
         //  비2의제곱이면 안전 거부 (양산 방어)
         if (chunk == 0u || (chunk & (chunk - 1u)) != 0u) { return false; }
@@ -306,7 +276,6 @@ namespace ProtectedEngine {
 
         const size_t mask = impl.ring_mask;
         const size_t phy_write = cur_write & mask;
-        // [FIX-RING] 물리 버퍼 크기(ring_mask+1) 사용 (ring_capacity는 논리 용량)
         const size_t to_end = (impl.ring_mask + 1u) - phy_write;
         if (size > (SIZE_MAX >> 2u)) { return false; }
         const size_t bytes = size << 2u;
@@ -328,7 +297,6 @@ namespace ProtectedEngine {
 
         if (size <= to_end) {
             std::memcpy(dst_w, src_ptr, bytes);
-            // [FIX-REORDER] fence+store를 memcpy 직후로 이동
             //  컴파일러/CPU 투기적 실행으로 memcpy 완료 전 store 선행 방지
             //  fence(release): memcpy 가시성 보장
             //  store(relaxed): fence가 이미 release 의미 → 이중 배리어 제거
@@ -352,7 +320,6 @@ namespace ProtectedEngine {
             void* dst0 = static_cast<void*>(dst_buf_base);
 #endif
             std::memcpy(dst0, src_next, rem << 2u);
-            // [FIX-REORDER] 두 번째 memcpy 직후 커밋
             std::atomic_thread_fence(std::memory_order_release);
             impl.write_idx.val.store(cur_write + size,
                 std::memory_order_relaxed);
@@ -377,7 +344,6 @@ namespace ProtectedEngine {
         if (impl.ring_capacity == 0u) { return false; }
 
         const uint32_t chunk = impl.current_config.temporal_slice_chunk;
-        // [FIX-UDIV] 비트마스크 정렬 검사 (UDIV 제거)
         if (chunk == 0u || (chunk & (chunk - 1u)) != 0u) { return false; }
         if ((requested_size & static_cast<size_t>(chunk - 1u)) != 0u) { return false; }
 
@@ -390,7 +356,6 @@ namespace ProtectedEngine {
 
         const size_t mask = impl.ring_mask;
         const size_t phy_read = cur_read & mask;
-        // [FIX-RING] 물리 버퍼 크기 사용
         const size_t to_end = (impl.ring_mask + 1u) - phy_read;
         if (requested_size > (SIZE_MAX >> 2u)) { return false; }
         const size_t bytes = requested_size << 2u;
@@ -412,7 +377,6 @@ namespace ProtectedEngine {
 
         if (requested_size <= to_end) {
             std::memcpy(dst_ptr, src_r, bytes);
-            // [FIX-REORDER] fence+store를 memcpy 직후로 이동
             std::atomic_thread_fence(std::memory_order_release);
             impl.read_idx.val.store(cur_read + requested_size,
                 std::memory_order_relaxed);
@@ -433,7 +397,6 @@ namespace ProtectedEngine {
             const void* src0 = static_cast<const void*>(src_buf_base);
 #endif
             std::memcpy(dst_next, src0, rem << 2u);
-            // [FIX-REORDER] 두 번째 memcpy 직후 커밋
             std::atomic_thread_fence(std::memory_order_release);
             impl.read_idx.val.store(cur_read + requested_size,
                 std::memory_order_relaxed);

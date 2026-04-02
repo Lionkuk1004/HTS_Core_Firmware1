@@ -5,18 +5,18 @@
 /// @copyright INNOViD 2026. All rights reserved.
 
 #include "HTS_Power_Manager.h"
+#include "HTS_Hardware_Init.h"
 #include <new>
 #include <atomic>
 
 namespace ProtectedEngine {
 
-    // [FIX-D2] 보안 소거 — volatile + asm clobber + release fence
     static void Power_Secure_Wipe(void* p, size_t n) noexcept {
         if (p == nullptr || n == 0u) { return; }
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -94,6 +94,9 @@ namespace ProtectedEngine {
             if (notify_cb.on_pre_sleep != nullptr) {
                 notify_cb.on_pre_sleep(mode);
             }
+
+            // [H-4] 저전력 진입 직전 WDT 킥 — 슬립 구성·클럭 게이팅 지연 중 타임아웃 방지
+            Hardware_Init_Manager::Kick_Watchdog();
 
             // Configure RTC wakeup if requested
             if (wakeup_sec > 0u && hal_cb.configure_rtc_wakeup != nullptr) {
@@ -347,7 +350,6 @@ namespace ProtectedEngine {
         impl->state = PowerState::UNINITIALIZED;
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — 평문 데이터 잔류 방지
         Power_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);

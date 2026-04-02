@@ -1,17 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_PUF_Adapter.cpp
 // PUF 하드웨어 시드 추출 어댑터 구현부
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정]
-//  1. ARM/PC 플랫폼 분기
-//     ARM → PUF 하드웨어 레지스터 직접 읽기 (장치 고유)
-//     PC  → 제로 출력 + 실패 반환 (목업 시드 삭제 — BUG-04)
-//
-//  2. atomic_signal_fence → atomic_thread_fence
-//  3. ProtectedEngine 네임스페이스 이동
-//  4. 미사용 #include "HTS_Secure_Memory.h" 제거
-// =========================================================================
 #include "HTS_PUF_Adapter.h"
 #include <atomic>
 #include <cstring>
@@ -78,7 +69,6 @@ namespace ProtectedEngine {
             *PUF_CTRL = 0x01u;
         }
 
-        // [BUG-02] 매직넘버 → constexpr 상수
         static constexpr uint32_t PUF_POLL_TIMEOUT = 10000u;
 
         for (size_t i = 0; i < PUF_KEY_SIZE; i += 4u) {

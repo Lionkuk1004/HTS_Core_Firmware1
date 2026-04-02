@@ -1,4 +1,4 @@
-/// @file  HTS_CCTV_Security.cpp
+﻿/// @file  HTS_CCTV_Security.cpp
 /// @brief HTS CCTV Security Coprocessor -- Anti-Hacking Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -121,7 +121,6 @@ namespace ProtectedEngine {
         // ============================================================
         void Log_Event(CCTV_EventType evt, CCTV_Severity sev) noexcept
         {
-            // [BUG-FIX MED] 링 버퍼 역순 탐색 (시계열 정합성 보장)
             //  기존: 정순(0→N) 탐색 → wrap-around 후 과거 슬롯의 count 발견
             //        → 최신이 아닌 오래된 count 기준으로 누적 → 값 널뛰기
             //  수정: log_head-1부터 역순 → 가장 최근 동일 이벤트의 count 취득
@@ -156,7 +155,6 @@ namespace ProtectedEngine {
         {
             if (ipc == nullptr) { return; }
             if (detail_len > CCTV_EVT_MAX_DETAIL) { detail_len = static_cast<uint8_t>(CCTV_EVT_MAX_DETAIL); }
-            // [BUG-FIX MED] nullptr + detail_len 불일치 → 정보 유출 방지
             //  기존: detail==nullptr, detail_len==8 → 복사 생략되지만 pos += 8
             //        → evt_buf에 이전 프레임 잔해가 평문으로 IPC 전송 (Information Leak)
             //  수정: detail==nullptr → detail_len 강제 0 (쓰레기 바이트 합산 차단)
@@ -205,7 +203,6 @@ namespace ProtectedEngine {
         void Compute_Lightweight_MAC(const uint8_t* data, uint32_t len,
             uint8_t out[4]) const noexcept
         {
-            // [BUG-FIX HIGH] MAC 키 역산 취약점 차단
             //  기존: crc1=CRC(data), crc2=crc1^K → 둘 다 평문 출력
             //        → 공격자: K = crc1 ^ crc2 (단일 패킷으로 키 추출)
             //  수정: CRC(data || key) → 단일 CRC 출력만 전송
@@ -324,7 +321,6 @@ namespace ProtectedEngine {
 
         void Check_Physical_Tamper() noexcept
         {
-            // [BUG-FIX FATAL] Level → Edge 트리거 (Event Storm DoS 차단)
             //  기존: 상태 유지 중 매 Tick마다 Send_Event → IPC 큐 폭주
             //  수정: 이전 상태→현재 상태 전이 시에만 1회 이벤트 발생
             if (mon_cb.get_tamper_case != nullptr) {
@@ -487,7 +483,6 @@ namespace ProtectedEngine {
         impl->ipc = nullptr;
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — 평문 데이터 잔류 방지
         IPC_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         init_state_.store(CCTV_INIT_NONE, std::memory_order_release);
@@ -594,7 +589,6 @@ namespace ProtectedEngine {
         // =================================================================
         //  MONITORING / ALERT: full operation
         //
-        //  [BUG-FIX CRIT] 하위 검사 함수가 상태를 전이(→LOCKDOWN)시킬 경우
         //   즉시 나머지 검사 중단 (1틱 격리 붕괴 방지)
         //   기존: sv 캐싱 → 전이 후에도 Network/Stream 계속 실행
         //   수정: 각 검사 후 impl->state 재확인 → MONITORING/ALERT 아니면 return
@@ -606,7 +600,6 @@ namespace ProtectedEngine {
             impl->Check_Firmware_Version();
             impl->last_fw_check_tick += CCTV_FW_CHECK_INTERVAL;
         }
-        // [BUG-FIX CRIT] FW CRC 실패 → LOCKDOWN 전이 시 즉시 탈출
         if (impl->state != CCTV_SecState::MONITORING &&
             impl->state != CCTV_SecState::ALERT) {
             return;
@@ -622,7 +615,6 @@ namespace ProtectedEngine {
 
         // --- Physical tamper (every tick -- real-time critical) ---
         impl->Check_Physical_Tamper();
-        // [BUG-FIX CRIT] 탬퍼 감지 → LOCKDOWN 전이 시 즉시 탈출
         //  이 지점 이후의 Network/Heartbeat는 손상된 SoC와 통신 위험
         if (impl->state != CCTV_SecState::MONITORING &&
             impl->state != CCTV_SecState::ALERT) {
@@ -681,7 +673,6 @@ namespace ProtectedEngine {
             return IPC_Error::CFI_VIOLATION;
         }
 
-        // [BUG-FIX CRIT] 틱 보상 폭주(Tick Catch-up Storm) 방지
         //  기존: LOCKDOWN 중 last_*_tick 미갱신 → 복귀 시 시간차 폭발
         //        → += INTERVAL 반복 루프로 CPU 록업
         //  수정: 복귀 시 모든 last_*_tick을 현재 틱으로 강제 동기화
@@ -689,7 +680,6 @@ namespace ProtectedEngine {
         impl->last_stream_check_tick = impl->current_tick;
         impl->last_heartbeat_tick = impl->current_tick;
 
-        // [BUG-FIX CRIT] 외부 관측 상태 Re-baseline (무한 락다운 루프 차단)
         //
         //  기존: 타이머만 동기화 → 스트림 감시 변수 과거값 유지
         //   (1) last_stream_seq가 높은 값 → SoC 재부팅 후 seq=0 → 재생 공격 오인

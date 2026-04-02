@@ -14,14 +14,18 @@
 //    → 파이프라인 단위: Tx/Rx 이중 처리 버퍼 크기 (가변)
 //  두 값은 독립적 — 서로 다른 추상화 계층의 크기를 결정
 //
-// [양산 수정]
-//  1. Get_Free_System_Memory: 3단 플랫폼 분기 (PC에서 실제 RAM 감지)
-//  2. #define 매크로 → namespace 내 상수 (타입 안전)
-//  3. 상수 정의를 헤더로 이동 (static const + 인라인 초기화)
-//  4. 2의 제곱수 내림 정렬 (DMA 버스트 최적화)
-//  5. 문서화 보강
-// =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
 #include <cstdint>
 #include <cstddef>
@@ -31,7 +35,6 @@ namespace ProtectedEngine {
     class Hardware_Auto_Scaler {
     public:
         // ── 스케일링 한계 상수 ────────────────────────────────────────
-        //  [BUG-FIX CRIT] MIN/MAX_TENSORS 2의제곱수 강제
         //
         //  위협: 비2의제곱 MIN_TENSORS(1000)가 Floor_Power_Of_Two 이후
         //        강제 대입되면 하위 모듈의 비트마스크 모듈러 연산
@@ -58,7 +61,6 @@ namespace ProtectedEngine {
         static size_t Get_Free_System_Memory() noexcept;
     };
 
-    // [BUG-FIX CRIT] 2의제곱수 빌드타임 검증 — (n & (n-1)) == 0 패턴
     static_assert(
         Hardware_Auto_Scaler::MIN_TENSORS > 0 &&
         (Hardware_Auto_Scaler::MIN_TENSORS &

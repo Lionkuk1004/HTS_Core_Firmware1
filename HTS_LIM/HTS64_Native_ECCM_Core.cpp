@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 /// @file   HTS64_Native_ECCM_Core.cpp
 /// @brief  64칩 ECCM 수신 엔진 구현
 /// @target STM32F407VGT6 (Cortex-M4F, 168 MHz) / PC 시뮬레이션
@@ -6,7 +6,6 @@
 /// @see HTS64_Native_ECCM_Core.hpp
 ///
 /// [양산 수정 이력 — 35건]
-///  BUG-01~19 (이전 세션)
 ///  BUG-20 [CRIT] soft_clip int64_t 나눗셈 → Q8 역수 곱셈
 ///  BUG-21 [HIGH] seq_cst → release × 2곳 (소거 배리어 정책 통일)
 ///  BUG-22 [MED]  U-A: sizeof(Impl) ≈ 1040B 경고 (BUG-32 수치 수정)
@@ -61,7 +60,6 @@ namespace ProtectedEngine {
     static constexpr uint32_t MIN_NF = 1u;   ///< NF IIR 0-값 방어 가드
     static constexpr uint32_t CLEAN_TH = 50u;  ///< 무간섭 판별 baseline 임계
 
-    // [BUG-27] N이 4의 배수가 아니면 Q25/Q75 인덱스 파생이 부정확해짐
     static_assert(N % 4 == 0,
         "N must be a multiple of 4 for exact Q25/Q75 index derivation");
 
@@ -178,12 +176,10 @@ namespace ProtectedEngine {
     // =============================================================================
     //  Pimpl 구현체
     //
-    //  [BUG-31] 스레드 안전성:
     //   인스턴스당 1스레드 전용. PRNG CAS는 원자적이나 kH/kL 쌍 일관성 미보장.
     //   동일 인스턴스 동시 Decode 호출 시 키 쌍 뒤섞임 → 복호 실패.
     //   STM32 단일 스레드 환경에서는 무해.
     //
-    //  [BUG-32] sizeof(Impl) ≈ 784B (FIX-SRAM: sorted/sI 공유 −256B)
     //   mags[64]+union(sorted/sI)[64]+sQ[64]=768B + atomic 3개 ≈ 784B
     //   래퍼 sizeof(HTS64_Native_ECCM_Core) ≈ 2056B와 구분할 것
     // =============================================================================
@@ -195,7 +191,6 @@ namespace ProtectedEngine {
         std::atomic<bool>     cal{ false };
 
         uint32_t mags[N] = {};
-        // [FIX-SRAM] sorted → sI 공유 (시간적 분리)
         //  sorted: extract_and_descramble 전반부에서 nth_select용 (파괴적)
         //  sI:     extract_and_descramble 후반부 + FWHT에서 사용
         //  sorted 소비 완료 후 sI 기록 → 메모리 공유 안전
@@ -297,7 +292,6 @@ namespace ProtectedEngine {
 
             const bool is_cw_like = (q75 > baseline * CW_RATIO_TH);
             const bool is_clean = (baseline < CLEAN_TH);
-            // [BUG-FIX EMP] punch = baseline << PUNCH_SHIFT (baseline*8)
             //  기존: 하드코딩 << 3u — PUNCH_SHIFT 상수화
             const uint32_t punch = baseline << static_cast<uint32_t>(PUNCH_SHIFT);
 
@@ -306,7 +300,6 @@ namespace ProtectedEngine {
                 : static_cast<int32_t>(baseline << 2u);
             if (clip < 4) { clip = 4; }
 
-            // [BUG-FIX EMP] EMP 펀칭 우회 차단 — clip_u를 punch 이하로 클램프
             //
             //  기존 문제:
             //   CW 재밍 시 clip_u = q75<<2 (예: 400) > punch (예: 80)
@@ -343,9 +336,7 @@ namespace ProtectedEngine {
                         si = 0; sq = 0;
                     }
                     else if (mags[i] > clip_u) {
-                        // [BUG-29] 중복 static_cast 제거
                         // si/sq는 이미 int32_t — ratio_q8만 캐스트
-                        // [BUG-33] clip8/m — CLZ/MSB 시프트 근사 (UDIV 제거)
                         const uint32_t ratio_q8 = ratio_q8_from_clip8_m(clip8, mags[i]);
                         const int32_t r_q8 = static_cast<int32_t>(ratio_q8);
                         si = (si * r_q8) >> 8;
@@ -364,7 +355,6 @@ namespace ProtectedEngine {
         uint64_t adaptive_threshold() const noexcept {
             uint32_t nf = nf_q16.load(std::memory_order_relaxed) >> 16u;
             if (nf < MIN_NF) { nf = MIN_NF; }
-            // [BUG-FIX CFAR] OS-CFAR 마진 팩터 적용
             //  기존: th = nf^2 * N  (α=1.0)
             //    → 오경보 조건: best_actual >= th 에서 α=1.0은
             //      노이즈 피크가 통계적으로 th를 넘을 확률이 높음
@@ -474,7 +464,6 @@ namespace ProtectedEngine {
             cal.store(false, std::memory_order_relaxed);
             std::atomic_thread_fence(std::memory_order_release);
             SecureMemory::secureWipe(static_cast<void*>(mags), sizeof(mags));
-            // [FIX-SRAM] sorted/sI 공유 → 1회 소거
             SecureMemory::secureWipe(static_cast<void*>(&scratch_), sizeof(scratch_));
             SecureMemory::secureWipe(static_cast<void*>(sQ), sizeof(sQ));
         }
@@ -557,7 +546,6 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // [FIX-OOB] 1회 스냅샷 강제 — V400 아키텍처 계약
         //  기존: nf 루프로 nI += N 반복 → 호출자가 N*nf 크기 보장 필수
         //  문제: V400은 Feed_Chip 1프레임(64칩)만 전달 → nf>1이면 OOB 즉사
         //  수정: nf를 1로 클램프하여 단일 프레임만 처리

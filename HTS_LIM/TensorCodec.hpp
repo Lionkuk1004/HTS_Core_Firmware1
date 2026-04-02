@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // TensorCodec.hpp
 // 3D 텐서 FEC 코덱 — 공개 인터페이스
 // Target: Cortex-A55 (CORE-X Pro 메인CPU) / Server
@@ -43,7 +43,6 @@
 #include <cstddef>
 #include <vector>
 
-// [BUG-15] AnchorManager는 전역 네임스페이스 (ProtectedEngine 밖)
 class AnchorManager;
 
 namespace ProtectedEngine {

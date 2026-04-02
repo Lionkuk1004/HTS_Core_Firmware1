@@ -1,4 +1,4 @@
-#include "lea.h"
+﻿#include "lea.h"
 #include "lea_locl.h"
 
 /* encType info
@@ -380,3 +380,5 @@ int lea_online_final(LEA_ONLINE_CTX *ctx, unsigned char * out){
 
 	return out_len;
 }
+
+

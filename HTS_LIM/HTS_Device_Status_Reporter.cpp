@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Device_Status_Reporter.cpp
 // 장비 상태 보고 + Wake-on-Signal 응답 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -81,7 +81,6 @@ namespace ProtectedEngine {
         uint8_t    fault_flags = 0u;
         uint8_t    module_flags = 0u;
 
-        // [FIX-UPTIME] 누적 시간 카운터 (래핑 면역)
         //  get_uptime_hours(now-boot) 방식: 49.7일 래핑 시 0으로 리셋
         //  수정: last_hour_ms에서 1시간 경과할 때마다 uptime_hours++
         //  → 255시간(10.6일) 후 255 고정, 래핑과 무관
@@ -108,7 +107,6 @@ namespace ProtectedEngine {
                 : NORMAL_INTERVAL;
         }
 
-        // [FIX-UPTIME] Tick에서 호출 — 1시간 경과 시 누적
         void tick_uptime(uint32_t now_ms) noexcept {
             static constexpr uint32_t ONE_HOUR_MS = 3600000u;
             uint32_t since = now_ms - last_hour_ms;
@@ -335,7 +333,6 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        // [FIX-RACE] 초기화 + 주기 확인 + 패킷 조립 전체 크리티컬 보호
         //  On_WoR_Scan ISR이 build_packet 호출 시 boot_ms/last_rpt_ms
         //  미초기화 값 읽기 방지
         const uint32_t pm = rpt_critical_enter();
@@ -343,12 +340,10 @@ namespace ProtectedEngine {
         // 첫 Tick 초기화
         if (p->first_tick) {
             p->last_hour_ms = systick_ms;
-            // [FIX-JITTER] 즉시 보고: 현재 - interval → elapsed=interval → 즉시 통과
             p->last_rpt_ms = systick_ms - p->get_interval();
             p->first_tick = false;
         }
 
-        // [FIX-UPTIME] 누적 가동 시간 갱신 (래핑 면역)
         p->tick_uptime(systick_ms);
 
         // WOR_ONLY: 주기 전송은 스킵 (uptime 누적은 유지)

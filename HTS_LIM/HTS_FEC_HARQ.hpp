@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 /// @file  HTS_FEC_HARQ.hpp
 /// @brief V400 3모드 FEC + HARQ (1칩/16칩/64칩)
 /// @target STM32F407VGT6 (Cortex-M4F) / PC
@@ -49,19 +49,6 @@
 //   Gen_Perm + Interleave/Deinterleave: 칩 순열 인터리빙
 //   정적 전용 클래스 — 인스턴스화 불가 (상태 없음)
 //
-// [양산 수정 이력 — 24건]
-//  BUG-01~22 (이전 세션)
-//  BUG-23 [CRIT] WorkBuf surv/tb/perm/tmp_soft/all_llr 과잉 할당 축소
-//         · surv: [256][64] → [VIT_STEPS][64] (Viterbi steps = CONV_OUT/2 = 86)
-//         · tb:   [256]     → [VIT_STEPS]
-//         · perm/tmp_soft/all_llr: [1024] → [TOTAL_CODED] (= 688)
-//         · WorkBuf: 30,816B → 15,864B (−14,952B = −48.5%)
-//  BUG-24 [HIGH] Feed16_1sym / Feed64_1sym 심볼 단위 스트리밍 API 추가
-//         · sI/sQ 중간 버퍼 제거 대응 — HARQ 즉시 누적
-//         · Advance_Round(): HARQ 라운드 카운터 증가 (Feed 분리)
-//
-// ─────────────────────────────────────────────────────────────────────────
-// =============================================================================
 #pragma once
 #include <cstdint>
 #include <cstddef>
@@ -151,7 +138,7 @@ namespace ProtectedEngine {
         //  Bit_Interleave/Deinterleave: 인덱스 < TOTAL_CODED = 688
         //   → perm[688], tmp_soft[688], all_llr[688] 충분
         //
-        //  WorkBuf: 30,816B → 15,864B (−14,952B = −48.5%)
+        //  WorkBuf: 30,816B → 14,488B (−16,328B = −53.0%)
         //
         static constexpr int VIT_STEPS =
             ((CONV_OUT / 2) + 7) & ~7;  // 86 → 88 (8-align)
@@ -163,7 +150,7 @@ namespace ProtectedEngine {
             int32_t  pm[2][64];
             uint8_t  surv[VIT_STEPS][64];       // [BUG-23] 256→88
             uint8_t  tb[VIT_STEPS];             // [BUG-23] 256→88
-            int      perm[TOTAL_CODED];         // [BUG-23] 1024→688
+            uint16_t perm[TOTAL_CODED];       // [BUG-23] 1024→688 (index only)
             int32_t  tmp_soft[TOTAL_CODED];     // [BUG-23] 1024→688
             uint8_t  rep[TOTAL_CODED];
             int32_t  all_llr[TOTAL_CODED];      // [BUG-23] 1024→688
@@ -198,7 +185,6 @@ namespace ProtectedEngine {
         [[nodiscard]] static int Encode64_A(const uint8_t* info, int len,
             uint8_t* syms, uint32_t il, int bps, WorkBuf& wb) noexcept;
 
-        // [BUG-18] 4인자 오버로드 삭제 (static WorkBuf → 재진입성 파괴)
         // V400_Dispatcher는 이미 5인자(WorkBuf&) 오버로드만 사용
 
         [[nodiscard]] static int Encode1(const uint8_t* info, int len,
@@ -257,7 +243,6 @@ namespace ProtectedEngine {
         static void Feed64_A(RxState64& s, const int16_t I[][C64],
             const int16_t Q[][C64], int nsym) noexcept;
 
-        // [BUG-12] Decode: &s.aI[0][0] 직접 참조 (flatI/Q 삭제)
         [[nodiscard]] static bool Decode16(const RxState16& s,
             uint8_t* out, int* len, uint32_t il, WorkBuf& wb) noexcept;
         [[nodiscard]] static bool Decode64(const RxState64& s,
@@ -307,15 +292,14 @@ namespace ProtectedEngine {
         FEC_HARQ() = delete;
     };
 
-    // [BUG-23] WorkBuf 축소 검증
     //  VIT_STEPS = 88 ≥ CONV_OUT/2 = 86 (Viterbi 최대 단계)
     //  TOTAL_CODED = 688 (perm/tmp_soft/all_llr 최대 인덱스 + 1)
     static_assert(FEC_HARQ::VIT_STEPS >= FEC_HARQ::CONV_OUT / 2,
         "VIT_STEPS too small for Viterbi traceback");
     static_assert(FEC_HARQ::TOTAL_CODED <= 1024,
         "TOTAL_CODED exceeds original buffer limit");
-    static_assert(sizeof(FEC_HARQ::WorkBuf) <= 20u * 1024u,
-        "WorkBuf exceeds 20KB — 배열 축소 재검토 필요");
+    static_assert(sizeof(FEC_HARQ::WorkBuf) <= 15360u,
+        "WorkBuf exceeds 15KB — perm[] storage shrink required");
     static_assert(sizeof(FEC_HARQ::RxState64) <= 128u * 1024u,
         "RxState64 exceeds 128KB — NSYM64 또는 C64 재검토 필요");
 

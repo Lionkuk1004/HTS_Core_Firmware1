@@ -3,15 +3,6 @@
 // 다형성 자이로 위상 엔진 구현부
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 이력 — 14건]
-//  BUG-01~13 (이전 세션 완료)
-//  BUG-14 [CRIT] MSVC 크로스 컴파일 복원 — __asm__ 분기 + volatile 폴백
-//
-// [플랫폼 분기 방침]
-//  GCC/Clang: __asm__ __volatile__ clobber (최적)
-//  MSVC:      volatile 포인터 쓰기 (DCE 차단 보장)
-//  공통:      atomic_thread_fence(seq_cst)
-// =========================================================================
 #include "HTS_Gyro_Engine.h"
 #include <atomic>
 #include <cstddef>      // size_t [BUG-FIX LOW Self-Contained]
@@ -69,7 +60,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Safe_Buffer_Flush — 안티포렌식 메모리 파쇄기
     //
-    //  [BUG-FIX CRIT] 글로벌 "memory" 클로버 제거 (Register Spill Storm 방지)
     //   기존: memset + asm("memory") → 레지스터 전량 Spill/Reload
     //   수정: volatile uint32_t 워드 소거 + 경량 이스케이프("r")
     //   정책: HTS_Universal_API.cpp 확립 표준과 통일
@@ -87,7 +77,6 @@ namespace ProtectedEngine {
         const size_t total_bytes = elements * sizeof(T);
 
 #if defined(__GNUC__) || defined(__clang__)
-        // [BUG-FIX FATAL] volatile uint32_t 워드 소거 → uint8_t 바이트 소거
         //
         //  기존 위험: T=uint8_t 시 buffer가 비정렬(0x20000001 등)일 수 있음
         //   → reinterpret_cast<volatile uint32_t*> = C++ UB (정렬 위반)
@@ -102,7 +91,7 @@ namespace ProtectedEngine {
             reinterpret_cast<volatile uint8_t*>(buffer);
         for (size_t i = 0u; i < total_bytes; ++i) { bp[i] = 0u; }
         // 경량 이스케이프: 포인터만 클로버 (글로벌 "memory" 배제)
-        __asm__ __volatile__("" : : "r"(bp));
+        __asm__ __volatile__("" : : "r"(bp) : "memory");
 #else
         // MSVC: volatile 포인터 바이트 쓰기 (DCE 차단 보장)
         volatile unsigned char* vp =

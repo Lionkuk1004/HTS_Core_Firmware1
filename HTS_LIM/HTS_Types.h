@@ -11,7 +11,6 @@
 ///          표준 컨테이너가 역참조하여 UB — 오버플로·OOM 시 std::abort()로 Fail-Safe 종료.
 ///
 /// [양산 수정 이력 — 12건]
-///  BUG-01~05 (이전 세션)
 ///  BUG-06 [CRIT] MSVC 환경 DSE 방어 추가
 ///  BUG-07 [HIGH] <new> 필수 표준 헤더 누락 교정
 ///  BUG-08 [MED]  MSVC volatile cast → void* 경유 static_cast
@@ -22,8 +21,18 @@
 ///  BUG-13 [CRIT] allocate nullptr → vector UB 방지: 오버플로/OOM 시 std::abort()
 // =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
 
-// [BUG-09] ARM 빌드 차단 — <vector>/::operator new 힙 인프라 금지
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
 #error "[HTS_FATAL] HTS_Types.h(SecureVector)는 PC/서버 전용입니다. ARM 빌드에서 제외하십시오."
@@ -46,8 +55,6 @@ namespace ProtectedEngine {
         template <typename U>
         Secure_Allocator(const Secure_Allocator<U>&) noexcept {}
 
-        // [BUG-10] nothrow: -fno-exceptions 준수 (::operator new(nothrow))
-        // [BUG-13] vector는 allocate 실패(nullptr)를 검사하지 않음 → OOM/오버플로 시 abort
         [[nodiscard]] T* allocate(std::size_t n) noexcept {
             if (n != 0u && n > (SIZE_MAX / sizeof(T))) {
                 std::abort();

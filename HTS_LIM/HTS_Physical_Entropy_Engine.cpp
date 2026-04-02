@@ -1,21 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Physical_Entropy_Engine.cpp
 // 물리적 엔트로피 엔진 구현부 — Murmur3 다중 혼합 PRNG
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 총 18건]
-//  FIX-01~08 (초기), BUG-01~11 (세션 2~5)
-//  BUG-12 [CRIT] Spin-Wait 데드락 → Non-blocking DWT 폴백
-//  BUG-13 [CRIT] PC 고정 시드 → 시간 기반 초기 시드 주입
-//  BUG-14 [HIGH] TRNG 고장 시 고정 시드 → DWT 지속 혼합
-//  BUG-15 [MED]  DWT 활성화 파이프라인 지연 → DSB+ISB 배리어
-//  BUG-17 [CRIT] TOCTOU 레이스 → 원자적 3상 상태 머신
-//  BUG-18 [CRIT] load+store Lost Update → fetch_xor 원자적 RMW
-//
-// [Cortex-M4 DWT 참고]
-//  M4에는 DWT LAR 레지스터 미존재 (M7/M33 전용)
-//  DEMCR.TRCENA(bit24) 단독으로 DWT 활성화 충분
-// =========================================================================
 #include "HTS_Physical_Entropy_Engine.h"
 
 #include <atomic>
@@ -35,7 +22,6 @@ namespace ProtectedEngine {
 
 #if defined(HTS_PLATFORM_ARM_BAREMETAL)
 
-    // [BUG-17] 3상 원자적 상태 머신: 0=미초기화, 1=초기화 중, 2=완료
     static std::atomic<uint32_t> hw_trng_seeded{ 0u };
 
     // =====================================================================
@@ -48,7 +34,6 @@ namespace ProtectedEngine {
         // [J-3 FIX] 매직넘버 → constexpr (ARM CoreSight 표준)
         static constexpr uintptr_t ADDR_DWT_CYCCNT = 0xE0001004u;  ///< DWT Cycle Count Register
 
-        // [BUG-FIX CRIT] TOCTOU 레이스 컨디션 해소
         //  기존: if(미활성) → RMW(DEMCR|=TRCENA, DWT_CTRL|=ENA)
         //  위험: ISR+스레드 동시 진입 시 RMW 충돌 → 레지스터 값 붕괴
         //  수정: Hardware_Init::Initialize_System()에서 부팅 시 1회 활성화 완료
@@ -84,7 +69,6 @@ namespace ProtectedEngine {
         *RCC_AHB2ENR |= RCC_RNG_EN;
         *RNG_CR |= RNG_CR_RNGEN;
 
-        // [BUG-12] 타임아웃 폴링 (Spin-Wait 데드락 방지)
         uint32_t timeout = 1000;
         while (((*RNG_SR) & 1u) == 0 && timeout > 0) {
             if ((*RNG_SR) & 0x60u) { timeout = 0; break; }
@@ -123,17 +107,14 @@ namespace ProtectedEngine {
         uint32_t dynamic_entropy = 0u;
 
 #if defined(HTS_PLATFORM_ARM_BAREMETAL)
-        // [BUG-17] 원자적 3상 상태 머신: TOCTOU 레이스 차단
         uint32_t expected = 0u;
         if (hw_trng_seeded.compare_exchange_strong(
             expected, 1u, std::memory_order_acq_rel)) {
             uint32_t hw_seed = Read_STM32_RNG();
-            // [BUG-18] fetch_xor: 원자적 RMW (Lost Update 차단)
             ctr_nonce_state.fetch_xor(hw_seed, std::memory_order_release);
             hw_trng_seeded.store(2u, std::memory_order_release);
         }
 
-        // [BUG-14] 매 호출마다 DWT 지속 혼합 (TRNG 고장 대비)
         dynamic_entropy = Read_DWT_CYCCNT();
 
 #endif

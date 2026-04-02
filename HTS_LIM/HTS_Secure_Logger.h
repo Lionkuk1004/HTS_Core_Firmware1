@@ -20,6 +20,9 @@
 //   ✓ 메인 루프 (POST, 세션 관리)
 //   ✗ ISR 내부: 호출 가능하지만 UART 출력 지연 주의
 //
+//  [M-3] HTS_MILITARY_GRADE_EW 정의 시 logSecurityEvent 묵살
+//       (HTS_Hardware_Init fputc EMCON과 동일 Zero-Emission 정책)
+//
 //  [양산 수정 이력 — 12건]
 //   FIX-01~03, BUG-01~08: (이전 이력 참조)
 //   BUG-09 [CRIT] D-2: 스택 버퍼 잔상 소거 3중 방어

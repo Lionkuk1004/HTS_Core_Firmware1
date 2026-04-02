@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Secure_Boot_Verify.cpp
 // 보안 부팅 검증자 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -10,11 +10,13 @@
 //  · 글리치 방어: 1회 실패 시 자동 재시도
 //  · 안전 모드: 재시도 실패 → 무선 TX 차단 + UART만 허용
 //  · 3중 보안 소거: 해시 버퍼 사용 후 즉시 파쇄
+//  · K-4 [HIGH] 기대/계산 해시 비교: HTS_ConstantTimeUtil::compare (C-1 정합)
 // =========================================================================
 #include "HTS_Secure_Boot_Verify.h"
+#include "HTS_ConstantTimeUtil.h"
 #include "HTS_LSH256_Bridge.h"
+#include "HTS_Secure_Memory.h"
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -27,7 +29,6 @@ static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
 // ═════════════════════════════════════════════════════════════════════════
 //  모듈 전역 상태
 //
-//  [FIX-NOINIT] .noinit 섹션 배치
 //   C-Runtime 초기화(.bss clear)가 이 변수를 0으로 덮어쓰는 것을 방지.
 //   startup_stm32.s에서 Secure_Boot_Check → C-Runtime init → main() 순서에서
 //   검증 결과가 보존됩니다.
@@ -35,7 +36,6 @@ static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
 //   링커 스크립트 필수 추가:
 //     .noinit (NOLOAD) : { *(.noinit) } > RAM
 //
-//  [FIX-WDT] 해싱 중 WDT 리셋 방지
 //   startup 초기 단계는 HSI 16MHz로 동작.
 //   512KB LSH-256 해싱 시 ~500ms 소요 (16MHz 기준).
 //   IWDG 타임아웃이 짧으면(예: 250ms) WDT 리셋 발생 가능.
@@ -65,30 +65,8 @@ static volatile uint32_t g_safe_mode = 0u;
 namespace ProtectedEngine {
 
     // =====================================================================
-    //  3중 보안 소거
+    //  보안 소거 — SecureMemory::secureWipe (D-2 / X-5-1, MSVC GCC 공통)
     // =====================================================================
-    static void SBV_Secure_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) { return; }
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
-    }
-
-    // =====================================================================
-    //  Constant-Time 비교
-    // =====================================================================
-    static uint32_t ct_compare(
-        const uint8_t* a, const uint8_t* b, size_t n) noexcept
-    {
-        uint32_t diff = 0u;
-        for (size_t i = 0u; i < n; ++i) {
-            diff |= static_cast<uint32_t>(a[i] ^ b[i]);
-        }
-        return diff;
-    }
 
     // =====================================================================
     //  OTP 해시 저장 영역
@@ -185,7 +163,6 @@ namespace ProtectedEngine {
     }
 
     // Flash 해시 계산 (memory-mapped Flash 직접 읽기)
-    // [FIX-WDT] 해싱 중 IWDG 피딩 — WDT 리셋 방지
     //  512KB를 64KB 청크로 분할, 청크 사이에 WDT 피딩
     //  HSI 16MHz에서도 ~500ms 안에 완료 (IWDG 최대 8초)
     static constexpr uint32_t IWDG_KR_ADDR = 0x40003000u;
@@ -270,19 +247,20 @@ namespace ProtectedEngine {
         const bool hash_ok = compute_flash_hash(computed);
 
         if (!hash_ok) {
-            SBV_Secure_Wipe(expected, sizeof(expected));
-            SBV_Secure_Wipe(computed, sizeof(computed));
+            SecureMemory::secureWipe(expected, sizeof(expected));
+            SecureMemory::secureWipe(computed, sizeof(computed));
             return BootVerifyResult::FLASH_READ_FAIL;
         }
 
-        // 4. Constant-Time 비교
-        const uint32_t diff = ct_compare(expected, computed, HASH_SIZE);
+        // 4. Constant-Time 비교 (ConstantTimeUtil::compare)
+        const bool hash_match = ConstantTimeUtil::compare(
+            expected, computed, HASH_SIZE);
 
         // 5. 해시 버퍼 즉시 소거
-        SBV_Secure_Wipe(expected, sizeof(expected));
-        SBV_Secure_Wipe(computed, sizeof(computed));
+        SecureMemory::secureWipe(expected, sizeof(expected));
+        SecureMemory::secureWipe(computed, sizeof(computed));
 
-        return (diff == 0u)
+        return hash_match
             ? BootVerifyResult::OK
             : BootVerifyResult::HASH_MISMATCH;
     }
@@ -333,7 +311,7 @@ namespace ProtectedEngine {
     HTS_Secure_Boot_Verify::HTS_Secure_Boot_Verify() noexcept
         : impl_valid_(false)
     {
-        SBV_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
+        SecureMemory::secureWipe(impl_buf_, sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl();
         impl_valid_ = true;
     }
@@ -341,7 +319,7 @@ namespace ProtectedEngine {
     HTS_Secure_Boot_Verify::~HTS_Secure_Boot_Verify() noexcept {
         Impl* p = get_impl();
         if (p != nullptr) { p->~Impl(); }
-        SBV_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        SecureMemory::secureWipe(impl_buf_, IMPL_BUF_SIZE);
         impl_valid_ = false;
     }
 
@@ -361,7 +339,6 @@ namespace ProtectedEngine {
             return BootVerifyResult::OK;
         }
 
-        // [FIX-GLITCH] 미프로비저닝 → 안전 모드
         if (r == BootVerifyResult::NOT_PROVISIONED) {
             p->safe_mode = true;
             g_safe_mode = 1u;
@@ -432,7 +409,6 @@ extern "C" {
     int32_t HTS_Secure_Boot_Check(void) {
         using namespace ProtectedEngine;
 
-        // [FIX-GLITCH] 검증 전 변수 초기화 (이전 부팅 잔류값 제거)
         g_boot_verified = 0u;
         g_safe_mode = 0u;
 
@@ -444,7 +420,6 @@ extern "C" {
             return 0;  // 성공
         }
 
-        // [FIX-GLITCH] 미프로비저닝 → 안전 모드 (프로비저닝 전용)
         //  기존: 성공 처리 → 전압 글리칭으로 OTP 읽기 방해 시 악성 펌웨어 부팅
         //  수정: 안전 모드 → 프로비저닝 통신만 허용, 메인 기능 차단
         //  첫 출하 시: 공장에서 Provision_Expected_Hash() 후 정상 부팅

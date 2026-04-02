@@ -1,19 +1,16 @@
+#if __cplusplus >= 202002L || \\
+    (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+#define HTS_LIKELY   HTS_LIKELY
+#define HTS_UNLIKELY HTS_UNLIKELY
+#else
+#define HTS_LIKELY
+#define HTS_UNLIKELY
+#endif
 // =========================================================================
 // HTS_Dynamic_Config.cpp
 // 시스템 체급(Tier)별 파라미터 프로파일 구현부
 // Target: STM32F407 (Cortex-M4F, 168MHz)
 //
-// [양산 수정 이력 — 7건]
-//  BUG-16 [HIGH] AIRCR 매직넘버 → constexpr (⑨강화)
-//  BUG-17 [MED]  곱셈 → 시프트: *8ULL→<<3u, *1024ULL→<<10u (⑨)
-//  BUG-18 [MED]  J-3 매직넘버 → constexpr 명명상수
-//  BUG-19 [LOW]  [[likely]] → 가드 매크로 (U-D)
-//  BUG-20 → BUG-22로 통합 (역수 곱셈으로 완전 해소)
-//  BUG-21 [CRIT] ⑭ PC코드 물리삭제: <cstdlib>/std::abort()/
-//                <windows.h>/<unistd.h> ARM빌드 물리배제 (HTS_PLATFORM_ARM)
-//  BUG-22 [HIGH] ⑨ / 100 나눗셈 → Q16 역수 곱셈+시프트 (×655 >> 16)
-//                나눗셈 연산자(/) 물리적 0회 달성
-// =========================================================================
 #include "HTS_Dynamic_Config.h"
 
 namespace ProtectedEngine {
@@ -29,7 +26,6 @@ namespace ProtectedEngine {
         constexpr uint8_t   k_RATIO_MAX_PCT = 100u;
 
         // ── [BUG-22] Q16 역수: 1/100 × 65536 ≈ 656 (Ceiling) ────
-        //  [BUG-FIX FATAL] Floor(655) → Ceil(656) 전환
         //   기존: 655/65536 = 0.009994… (−0.06% 절사 오차)
         //    → 131072×25×655>>16<<3 = 262,000 → Floor_Pow2 = 131,072 (−50%!)
         //   수정: 656/65536 = 0.010009… (+0.09% 양의 오차)
@@ -71,13 +67,12 @@ namespace ProtectedEngine {
 
         // ── [BUG-19] C++20 속성 가드 ────────────────────────────
 #if __cplusplus >= 202002L
-#define HTS_DYNCFG_LIKELY   [[likely]]
+#define HTS_DYNCFG_LIKELY   HTS_LIKELY
 #else
 #define HTS_DYNCFG_LIKELY
 #endif
 
         // ── System_Panic: ARM AIRCR 즉시 리셋 / PC abort 폴백 ──
-        //  [BUG-FIX CRIT] __GNUC__ → ARM 전용 가드
         //   기존: __GNUC__로 가드 → x86 GCC에서 cpsid/dsb/wfi 컴파일 에러
         //   수정: __arm__ 가드로 ARM asm 격리 + PC는 무한루프 폴백
         [[noreturn]] inline void System_Panic() noexcept {
@@ -189,7 +184,6 @@ namespace ProtectedEngine {
             active_ratio = 2u;
         }
 
-        // [BUG-22] 나눗셈(/) 물리적 완전 제거
         //  기존: (ram * ratio / 100) << 3
         //  수정: (ram * ratio * 655) >> 16 << 3
         //  Q16 역수: floor(65536 / 100) = 655

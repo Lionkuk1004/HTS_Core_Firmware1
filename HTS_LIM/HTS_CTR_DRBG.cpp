@@ -391,7 +391,7 @@ namespace ProtectedEngine {
             return DRBG_Status::ERROR_CIPHER_FAIL;
         }
 
-        // Update(additional_input = NULL)
+        // Update(additional_input = nullptr)
         if (Update(nullptr) != SECURE_TRUE) {
             Uninstantiate();
             return DRBG_Status::ERROR_CIPHER_FAIL;

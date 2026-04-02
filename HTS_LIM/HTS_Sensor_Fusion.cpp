@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Sensor_Fusion.cpp
 // 다중 센서 융합 + 경보 등급 산출 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -40,7 +40,6 @@ namespace ProtectedEngine {
     // =====================================================================
     static constexpr int32_t IIR_SHIFT = 2;
 
-    // [FIX-DRIFT] 수렴 스냅: |diff| < (1<<SHIFT) → 즉시 수렴
     //  기존: -1 >> 2 = -1 (2의 보수) → old + (-1) → 영원히 1 오차 표류
     //  수정: |diff| < 4 → output = raw (데드존 스냅)
     static int16_t iir_i16(int16_t old_val, int16_t raw) noexcept {
@@ -314,7 +313,6 @@ namespace ProtectedEngine {
         uint16_t new_accel = r_accel;
 
         if (p->initialized) {
-            // [FIX-RACE] 기존 필터값도 크리티컬 내에서 읽기
             const uint32_t pm2 = fus_critical_enter();
             const int16_t  old_temp = p->filt_temp;
             const uint16_t old_smoke = p->filt_smoke;
@@ -334,7 +332,6 @@ namespace ProtectedEngine {
         }
 
         // ── 3단계: 필터 출력 + 경보 원자적 갱신 ──
-        //  [FIX-RACE] Get_Result가 도중에 읽으면 Tearing 발생
         //  모든 filt_* + evaluate를 단일 크리티컬에서 수행
         {
             const uint32_t pm3 = fus_critical_enter();

@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Emergency_Beacon.cpp
 // 긴급 비콘 자동 송출기 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -10,17 +10,9 @@
 //  · Priority_Scheduler P0(SOS) 큐 삽입
 //  · 3중 보안 소거
 //
-// [양산 수정 이력]
-//  BUG-FIX ⑨  GPS_DIV=10 → Q16 역수 곱셈 (GPS_RECIP_Q16=6554)
-//  BUG-FIX-1 [FATAL] Cancel() 'Lost Cancel' 상태 머신 결함 수정
-//    · 기존: tx_count < 60 → return (alert_flags 유지 → RF Flooding)
-//    · 수정: alert_flags = 0u 즉시 / active=false는 30초 조건 분리
-//  BUG-FIX-2 [CRIT]  Tick() last_tx_ms Jitter 수정
-//    · 기존: last_tx_ms = systick_ms (호출 지연 누적 → 타임슬롯 충돌)
-//    · 수정: last_tx_ms += BEACON_INTERVAL_MS (주기 기반 갱신, 오차 0)
-// =========================================================================
 #include "HTS_Emergency_Beacon.h"
 #include "HTS_Priority_Scheduler.h"
+#include "HTS_Secure_Memory.h"
 
 #include <atomic>
 #include <cstddef>
@@ -35,16 +27,10 @@ static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
 namespace ProtectedEngine {
 
     // =====================================================================
-    //  3중 보안 소거
+    //  보안 소거 — SecureMemory::secureWipe (D-2 / X-5-1)
     // =====================================================================
     static void Beacon_Secure_Wipe(void* p, size_t n) noexcept {
-        if (p == nullptr || n == 0u) { return; }
-        volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
-        for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p) : "memory");
-#endif
-        std::atomic_thread_fence(std::memory_order_release);
+        SecureMemory::secureWipe(p, n);
     }
 
     // =====================================================================
@@ -78,7 +64,6 @@ namespace ProtectedEngine {
     //  해외 확장: 오프셋 조정으로 전 세계 커버 가능
     //  int16_t ±32767 → ±32.767° 범위 → 오프셋 중심 ±32° 커버
     //
-    //  [BUG-FIX-3 ⑨] GPS_DIV=10 비2의제곱 런타임 나눗셈 → Q16 역수 곱셈+시프트
     //  기존: diff / 10             (SDIV ~12cyc, 비2의제곱 금지)
     //  수정: (diff * 6554) >> 16   (MUL+ASR ~3cyc)
     //  검증: 6554/65536 = 0.09999... vs 1/10 = 0.1 → 오차 -0.009%
@@ -87,7 +72,6 @@ namespace ProtectedEngine {
     // =====================================================================
     static constexpr int32_t LAT_OFFSET = 330000;   // 33.0000°
     static constexpr int32_t LON_OFFSET = 1240000;  // 124.0000°
-    // [BUG-FIX-3 ⑨] Q16 역수: round(65536 / 10) = 6554
     static constexpr int32_t GPS_RECIP_Q16 = 6554;
 
     static int16_t compress_lat(int32_t lat_1e4) noexcept {
@@ -244,7 +228,6 @@ namespace ProtectedEngine {
             }
         }
 
-        // [FIX-DEADLOCK] 모든 경로에서 반드시 실행
         bcn_critical_exit(pm);
     }
 
@@ -299,7 +282,6 @@ namespace ProtectedEngine {
             return;
         }
 
-        // [FIX-FLOOD] 첫 Tick 초기화
         //  last_tx_ms = systick_ms - INTERVAL → 첫 송출 즉시 허용
         //  기존: last_tx_ms=0 → elapsed=systick_ms → 폭주 가능
         if (p->start_ms == 0u && p->tx_count == 0u) {
@@ -318,7 +300,6 @@ namespace ProtectedEngine {
         uint8_t* const pkt = acquire_beacon_pkt_slot();
         p->build_packet(pkt);
 
-        // [BUG-FIX CRIT] Tick() last_tx_ms Jitter 수정
         //  기존: p->last_tx_ms = systick_ms
         //    → Tick 호출 지연(인터럽트, 스케줄 지연)이 그대로 누적
         //    → 비콘 주기가 뒤로 밀림 → B-CDMA P0 타임슬롯 충돌
@@ -330,7 +311,6 @@ namespace ProtectedEngine {
         p->last_tx_ms += BEACON_INTERVAL_MS;
         p->tx_count++;
 
-        // [FIX-DURATION] 최소 30초 경과 + 플래그 해소 시 자동 종료
         //  30초 미만: 무조건 계속 송출
         //  30초 이상 + alert_flags == 0: 자동 종료 (위험 해소)
         //  30초 이상 + alert_flags != 0: 계속 송출 (위험 지속)
@@ -346,7 +326,6 @@ namespace ProtectedEngine {
         bcn_critical_exit(pm);
 
         // 크리티컬 밖에서 인큐 (scheduler 내부에 자체 PRIMASK)
-        // [FIX-C6031] [[nodiscard]] 반환값 검사
         const EnqueueResult enq = scheduler.Enqueue(
             PacketPriority::SOS,
             pkt, BEACON_SIZE,
@@ -357,7 +336,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Cancel — 비콘 해제
     //
-    //  [BUG-FIX-1 FATAL] 'Lost Cancel' 상태 머신 결함 수정
     //
     //  ▶ 기존 로직의 결함 경로:
     //    1. tx_count < 60 → return (취소 요청 완전 무시, alert_flags 유지)
@@ -390,7 +368,6 @@ namespace ProtectedEngine {
             return;
         }
 
-        // [BUG-FIX-1 FATAL] 취소 의사 즉시 반영 — tx_count 조건 전 무조건 실행
         //  Tick()이 다음 500ms 주기에 flags_cleared=true를 확인하여
         //  min_duration_met 충족 시 active=false로 자동 전환
         p->alert_flags = 0u;

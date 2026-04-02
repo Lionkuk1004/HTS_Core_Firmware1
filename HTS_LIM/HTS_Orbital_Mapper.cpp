@@ -3,22 +3,6 @@
 // 파울리 배타 원리 기반 LCM 2D 직교 인터리버 + 오비탈 텐서 폴딩
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
-// [양산 수정 — 총 11건]
-//  BUG-01 [CRIT] Fail-Open → Fail-Closed (OOM 시 텐서 소거 + clear)
-//  BUG-02 [HIGH] Generate 내 std::abort → 빈 벡터 반환
-//  BUG-03 [CRIT] std::shuffle → 자체 Fisher-Yates (크로스 플랫폼 결정적)
-//  BUG-04 [HIGH] mt19937_64 → SplitMix64 (스택 2.5KB → 8B)
-//  BUG-05 [MED]  state_map 범위 검증 (OOB 차단)
-//  BUG-06 [CRIT] tensor.clear() 추가 (좀비 텐서 방지)
-//  BUG-07 [HIGH] inplace_scatter/gather → bool 반환 (실패 전파)
-//  BUG-08 [CRIT] temp_tensor 복사 → 사이클 기반 인플레이스 순열 (OOM 제거)
-//  BUG-09 [MED]  volatile void* Secure_Wipe 표준 적용
-//  BUG-10 [HIGH] 사이클 길이 가드: ρ형 무한 궤도 탐지
-//  BUG-11 [HIGH] raw 포인터 오버로드 추가 (BB1 BUG-52 정적 배열 직접 전달)
-//         · Apply_Orbital_Clouding(uint32_t*, size_t, const uint32_t*, size_t)
-//         · Reverse_Orbital_Collapse(uint32_t*, size_t, const uint32_t*, size_t)
-//         · vector 래핑 0회, inplace_scatter/gather 직접 호출
-// =========================================================================
 #include "HTS_Orbital_Mapper.hpp"
 #include <atomic>
 #include <cstddef>
@@ -39,9 +23,8 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0; i < size; ++i) p[i] = 0;
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p));
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
-        // [BUG-12] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
 
@@ -60,7 +43,6 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  [BUG-04] SplitMix64 PRNG — 8바이트 상태 (mt19937_64 2.5KB 대체)
     //  크로스 플랫폼 결정적: GCC/MSVC/Clang 동일 출력 보장
     // =====================================================================
     namespace {
@@ -97,11 +79,10 @@ namespace ProtectedEngine {
                 return z;
             }
 
-            // [BUG-03] 결정적 Fisher-Yates (std::shuffle 대체)
-            // [BUG-FIX FATAL] n≤1 가드: n=0 → i=UINT32_MAX underflow → 무한루프
             void fisher_yates(uint32_t* arr, uint32_t n) noexcept {
                 if (n <= 1u) { return; }  // 0 또는 1 요소 → 셔플 불필요
                 for (uint32_t i = n - 1; i > 0; --i) {
+                    // [항목⑨] % 불가피: Fisher-Yates 균등분포를 위한 range reduction
                     uint32_t j = static_cast<uint32_t>(next() % (i + 1));
                     uint32_t tmp = arr[i];
                     arr[i] = arr[j];
@@ -111,9 +92,6 @@ namespace ProtectedEngine {
         };
 
         // =================================================================
-        //  [BUG-08] 사이클 기반 인플레이스 순열 (temp_tensor 복사 제거)
-        //  [BUG-07] bool 반환: 성공=true, OOM=false
-        //  [BUG-12] vector<bool> → 정적 uint32_t 비트맵 (B-1 힙금지)
         //
         //  비트맵: MAX_TENSOR/32 = 256 uint32_t = 1KB (BSS)
         //  단일 메인 루프 전용 — static 재진입 안전
@@ -143,7 +121,6 @@ namespace ProtectedEngine {
 
             if (n > MAX_PERM_N) return false;
 
-            // [BUG-12] 정적 비트맵 (힙 0회)
             static uint32_t visited[BITMAP_WORDS];
             bmp_clear(visited, n);
 
@@ -181,7 +158,6 @@ namespace ProtectedEngine {
 
             if (n > MAX_PERM_N) return false;
 
-            // [BUG-13] 정적 비트맵 (힙 0회)
             static uint32_t visited[BITMAP_WORDS];
             bmp_clear(visited, n);
 
@@ -214,8 +190,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  [1] 파울리 배타 원리 기반 양자 상태 지도
-    //  [BUG-03] std::shuffle → SplitMix64::fisher_yates (결정적)
-    //  [BUG-02] OOM → 빈 벡터 반환 (abort 제거)
     // =====================================================================
 #if (HTS_ORBITAL_MAPPER_ARM == 0)
     std::vector<uint32_t> Orbital_Mapper::Generate_Pauli_State_Map(
@@ -233,12 +207,10 @@ namespace ProtectedEngine {
         SplitMix64 rng(pqc_session_id);
 
         static constexpr uint32_t W = 60u;
-        // [BUG-14] H 상한: MAX_PERM_N/W = 8192/60 = 137 → 256 여유
         static constexpr uint32_t MAX_H = 256u;
         const uint32_t H = static_cast<uint32_t>(
             (tensor_size + W - 1u) / W);
         if (H > MAX_H) {
-            // [BUG-FIX FATAL] 항등 지도 폴백 — 전-零 벡터 반환 방지
             //  기존: return state_map (= 0으로 초기화 → 모든 인덱스→0 매핑)
             //  → 호출부에서 사용 시 데이터 전체가 index[0] 값으로 붕괴
             //  수정: 항등 치환(identity permutation) 채운 후 반환
@@ -248,7 +220,6 @@ namespace ProtectedEngine {
             return state_map;
         }
 
-        // [BUG-14] 정적 배열 (힙 0회)
         static uint32_t block_shuffle[MAX_H];
         static uint32_t offset_shuffle[W];
 
@@ -279,9 +250,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  [2] 오비탈 텐서 폴딩 (정방향: Scatter)
-    //  [BUG-08] 인플레이스 순열 (temp_tensor 복사 0회)
-    //  [BUG-07] bool 반환 검사 → Fail-Closed
-    //  [BUG-01/06] OOM 시 Secure_Wipe + tensor.clear()
     // =====================================================================
     void Orbital_Mapper::Apply_Orbital_Clouding(
         std::vector<uint32_t>& tensor,
@@ -297,7 +265,6 @@ namespace ProtectedEngine {
         }
 
         if (!inplace_scatter(tensor.data(), state_map.data(), tensor.size())) {
-            // [BUG-07] inplace OOM → Fail-Closed
             Secure_Wipe_Orbital(tensor.data(),
                 tensor.size() * sizeof(uint32_t));
             tensor.clear();
@@ -306,9 +273,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  [3] 오비탈 파동 함수 수렴 (역방향: Gather)
-    //  [BUG-08] 인플레이스 순열
-    //  [BUG-07] bool 반환 검사
-    //  [BUG-01/06] Fail-Closed
     // =====================================================================
     void Orbital_Mapper::Reverse_Orbital_Collapse(
         std::vector<uint32_t>& tensor,
@@ -332,7 +296,6 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  [BUG-11] raw 포인터 오버로드 (BB1 정적 배열 직접 전달)
     //
     //  기존 vector API는 하위 호환을 위해 유지.
     //  raw 포인터 API는 BB1_Core_Engine BUG-52에서 vector → 정적 배열

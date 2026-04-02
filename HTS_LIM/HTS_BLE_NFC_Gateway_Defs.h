@@ -1,4 +1,16 @@
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
+
 /// @file  HTS_BLE_NFC_Gateway_Defs.h
 /// @brief HTS BLE/NFC 게이트웨이 공통 정의부
 /// @details
@@ -148,7 +160,6 @@ namespace ProtectedEngine {
         static constexpr uint8_t k_legal[5] = {
             /* OFFLINE      -> */ static_cast<uint8_t>(BLE_GW_State::IDLE),
             /* IDLE         -> */ static_cast<uint8_t>(BLE_GW_State::CONNECTED),
-            // [BUG-FIX HIGH] | OFFLINE(0x00) 제거: 비트OR 0은 무효
             //  IDLE→OFFLINE 전이는 아래 if(to==0) 특수 분기에서 처리
             /* CONNECTED    -> */ static_cast<uint8_t>(
                 static_cast<uint8_t>(BLE_GW_State::TRANSFERRING)
@@ -158,7 +169,6 @@ namespace ProtectedEngine {
                 static_cast<uint8_t>(BLE_GW_State::CONNECTED)
               | static_cast<uint8_t>(BLE_GW_State::ERROR)),
             /* ERROR        -> */ static_cast<uint8_t>(BLE_GW_State::IDLE)
-            // [BUG-FIX HIGH] | OFFLINE(0x00) 제거: 동일 사유
             //  ERROR→OFFLINE 전이는 아래 if(to==0) 특수 분기에서 처리
         };
 

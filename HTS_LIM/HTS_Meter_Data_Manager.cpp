@@ -4,6 +4,7 @@
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 // =========================================================================
 #include "HTS_Meter_Data_Manager.h"
+#include "HTS_Crc32Util.h"
 #include "HTS_Priority_Scheduler.h"
 
 #include <atomic>
@@ -49,12 +50,43 @@ namespace ProtectedEngine {
         dst[3] = static_cast<uint8_t>((v >> 24u) & 0xFFu);
     }
 
+    /// A-4: 엔디안 독립 14B 캐논(패딩 제외) — IEEE 802.3 CRC32
+    static void meter_serialize_canonical(
+        const MeterReading& r, uint8_t out[14]) noexcept
+    {
+        out[0] = static_cast<uint8_t>(r.watt_hour >> 24u);
+        out[1] = static_cast<uint8_t>((r.watt_hour >> 16u) & 0xFFu);
+        out[2] = static_cast<uint8_t>((r.watt_hour >> 8u) & 0xFFu);
+        out[3] = static_cast<uint8_t>(r.watt_hour & 0xFFu);
+        out[4] = static_cast<uint8_t>(r.cumul_kwh_x100 >> 24u);
+        out[5] = static_cast<uint8_t>((r.cumul_kwh_x100 >> 16u) & 0xFFu);
+        out[6] = static_cast<uint8_t>((r.cumul_kwh_x100 >> 8u) & 0xFFu);
+        out[7] = static_cast<uint8_t>(r.cumul_kwh_x100 & 0xFFu);
+        out[8] = static_cast<uint8_t>(r.voltage_x10 >> 8u);
+        out[9] = static_cast<uint8_t>(r.voltage_x10 & 0xFFu);
+        out[10] = static_cast<uint8_t>(r.current_x100 >> 8u);
+        out[11] = static_cast<uint8_t>(r.current_x100 & 0xFFu);
+        out[12] = r.power_factor;
+        out[13] = r.valid;
+    }
+
+    static uint32_t meter_reading_crc(const MeterReading& r) noexcept
+    {
+        uint8_t buf[14];
+        meter_serialize_canonical(r, buf);
+        return Crc32Util::calculate(buf, 14u);
+    }
+
     // =====================================================================
     //  Pimpl
     // =====================================================================
     struct HTS_Meter_Data_Manager::Impl {
         uint16_t     my_id = 0u;
         MeterReading latest = {};
+        uint32_t     latest_crc = 0u;
+        MeterReading_VerifyFn verify_fn = nullptr;
+        void*        verify_user = nullptr;
+        mutable bool crc_fault_latched = false;
 
         // 부하 프로파일: 15분 × 96 = 24시간
         uint32_t profile[PROFILE_SLOTS] = {};
@@ -69,7 +101,9 @@ namespace ProtectedEngine {
         uint32_t last_report_ms = 0u;
         bool     first_tick = true;
 
-        explicit Impl(uint16_t id) noexcept : my_id(id) {}
+        explicit Impl(uint16_t id) noexcept : my_id(id) {
+            latest_crc = meter_reading_crc(latest);
+        }
         ~Impl() noexcept = default;
     };
 
@@ -112,8 +146,29 @@ namespace ProtectedEngine {
     {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
+        if (p->verify_fn != nullptr &&
+            !p->verify_fn(reading, p->verify_user)) {
+            return;
+        }
+        MeterReading norm = reading;
+        norm.pad[0] = 0u;
+        norm.pad[1] = 0u;
+        const uint32_t crc = meter_reading_crc(norm);
         const uint32_t pm = mtr_critical_enter();
-        p->latest = reading;
+        p->latest = norm;
+        p->latest_crc = crc;
+        p->crc_fault_latched = false;
+        mtr_critical_exit(pm);
+    }
+
+    void HTS_Meter_Data_Manager::Register_Meter_Reading_Verify(
+        MeterReading_VerifyFn fn, void* user) noexcept
+    {
+        Impl* p = get_impl();
+        if (p == nullptr) { return; }
+        const uint32_t pm = mtr_critical_enter();
+        p->verify_fn = fn;
+        p->verify_user = user;
         mtr_critical_exit(pm);
     }
 
@@ -140,8 +195,24 @@ namespace ProtectedEngine {
         if (p == nullptr) { MeterReading r = {}; return r; }
         const uint32_t pm = mtr_critical_enter();
         const MeterReading r = p->latest;
+        const uint32_t expect = p->latest_crc;
+        if (meter_reading_crc(r) != expect) {
+            p->crc_fault_latched = true;
+            mtr_critical_exit(pm);
+            MeterReading z = {};
+            return z;
+        }
         mtr_critical_exit(pm);
         return r;
+    }
+
+    bool HTS_Meter_Data_Manager::Is_Meter_Integrity_Fault() const noexcept {
+        const Impl* p = get_impl();
+        if (p == nullptr) { return false; }
+        const uint32_t pm = mtr_critical_enter();
+        const bool f = p->crc_fault_latched;
+        mtr_critical_exit(pm);
+        return f;
     }
 
     uint32_t HTS_Meter_Data_Manager::Get_Profile_Value(
@@ -187,9 +258,16 @@ namespace ProtectedEngine {
         if (prof_elapsed >= PROFILE_INTERVAL_MS) {
             p->last_profile_ms += PROFILE_INTERVAL_MS;
             const uint32_t pm = mtr_critical_enter();
-            p->profile[p->profile_head] = p->latest.watt_hour;
-            p->profile_head = static_cast<uint8_t>(
-                (p->profile_head + 1u) % PROFILE_SLOTS);
+            const MeterReading lr = p->latest;
+            const uint32_t expect = p->latest_crc;
+            if (meter_reading_crc(lr) == expect) {
+                p->profile[p->profile_head] = lr.watt_hour;
+                p->profile_head = static_cast<uint8_t>(
+                    (p->profile_head + 1u) % PROFILE_SLOTS);
+            }
+            else {
+                p->crc_fault_latched = true;
+            }
             mtr_critical_exit(pm);
         }
 
@@ -198,14 +276,23 @@ namespace ProtectedEngine {
         if (rpt_elapsed < REPORT_INTERVAL_MS) { return; }
         p->last_report_ms += REPORT_INTERVAL_MS;
 
-        // 보고 패킷 (8바이트 요약)
+        // 보고 패킷 (8바이트 요약) — CRC 무결성 통과 시에만 유효 계량값 전송
         uint8_t pkt[8] = {};
         const uint32_t pm = mtr_critical_enter();
-        ser_u16(&pkt[0], p->my_id);
-        ser_u32(&pkt[2], p->latest.cumul_kwh_x100);
-        pkt[6] = p->latest.power_factor;
-        pkt[7] = p->event_count;
+        const MeterReading lr = p->latest;
+        const uint32_t expect = p->latest_crc;
+        const bool ok = (meter_reading_crc(lr) == expect);
+        if (ok) {
+            ser_u16(&pkt[0], p->my_id);
+            ser_u32(&pkt[2], lr.cumul_kwh_x100);
+            pkt[6] = lr.power_factor;
+            pkt[7] = p->event_count;
+        }
+        else {
+            p->crc_fault_latched = true;
+        }
         mtr_critical_exit(pm);
+        if (!ok) { return; }
 
         const EnqueueResult enq = scheduler.Enqueue(
             PacketPriority::DATA,
@@ -218,6 +305,10 @@ namespace ProtectedEngine {
     void HTS_Meter_Data_Manager::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
+        const uint32_t pm = mtr_critical_enter();
+        p->verify_fn = nullptr;
+        p->verify_user = nullptr;
+        mtr_critical_exit(pm);
         Mtr_Secure_Wipe(p->profile, sizeof(p->profile));
         Mtr_Secure_Wipe(p->event_log, sizeof(p->event_log));
     }

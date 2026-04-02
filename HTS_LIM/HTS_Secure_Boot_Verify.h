@@ -27,6 +27,7 @@
 //
 //  [KCMVP/NIS 인증]
 //   보안 부팅 구현 = 인증 필수 요건
+//   Flash 해시 대조: HTS_ConstantTimeUtil::compare (K-4, cpp)
 //
 //  @warning sizeof ≈ 520B — 전역/정적 배치 권장
 //

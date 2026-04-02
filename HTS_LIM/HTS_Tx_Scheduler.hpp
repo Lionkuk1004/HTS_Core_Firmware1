@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Tx_Scheduler.hpp
 // B-CDMA TX 전송 스케줄러 — 공개 인터페이스
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -65,8 +65,13 @@
 //   BUG-67 [CRIT] MAX_RING_POW2/CACHELINE 플랫폼 분리
 //          ARM: ring[2048](8KB) + alignas(8) — 60KB SRAM 절감 (94%)
 //          PC:  ring[16384](64KB) + alignas(64) — 기존 유지
+//   BUG-68 [검수 KB] static_assert 실측: sizeof(Impl) ≤ IMPL_BUF_SIZE
+//          (ARM 8704B / PC 67584B) — NVIC는 HTS_Hardware_Init::Initialize_System()
 //
 // ─────────────────────────────────────────────────────────────────────────
+/// @note NVIC 우선순위 설정 위치: HTS_Hardware_Init::Initialize_System()
+///       TIM_IRQn = Priority 2, DMA_IRQn = Priority 3 (플레이스홀더 IRQ 번호 — 파트너 확정)
+///       Tx 타임슬롯 마감 의존 — 우선순위 변경 시 이 파일 동시 검토 필수
 #pragma once
 
 #include <atomic>
@@ -130,7 +135,6 @@ namespace ProtectedEngine {
     private:
         // ── [BUG-64+66+67] Pimpl In-Place Storage (zero-heap) ────────────
         //
-        // [BUG-67] 플랫폼별 IMPL_BUF_SIZE/ALIGN 분리
         //
         //  ARM (EMBEDDED_MINI): node_count=256 → ring_size=1024
         //    tx_ring_buffer[2048] × 4B = 8KB + metadata ≈ 8.5KB
@@ -160,3 +164,5 @@ namespace ProtectedEngine {
     };
 
 } // namespace ProtectedEngine
+
+

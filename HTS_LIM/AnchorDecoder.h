@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // =========================================================================
 // AnchorDecoder.h
 // GF(2^8) Cauchy Reed-Solomon 이레이저 복구 디코더 — 공개 인터페이스
@@ -31,7 +31,6 @@
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
 
-// [BUG-21] STM32 (Cortex-M) 빌드 차단 — <vector> 힙 인프라 + GF(2^8) LUT 메모리 초과
 // A55 (aarch64) 및 PC는 정상 통과
 // STM32 실시간 FEC는 HTS_FEC_HARQ를 사용하십시오
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \

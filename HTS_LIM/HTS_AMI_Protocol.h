@@ -1,4 +1,16 @@
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
+
 /// @file  HTS_AMI_Protocol.h
 /// @brief HTS AMI 프로토콜 엔진 -- DLMS/COSEM 전력량계 (국제 수출 대응)
 /// @details
@@ -101,9 +113,14 @@ namespace ProtectedEngine {
 
     private:
         struct Impl;
+        /// Tick / Send_Periodic_Report 공용 (free 함수는 private Impl 접근 불가)
+        static IPC_Error ami_send_periodic_report_impl(Impl* impl) noexcept;
         // [AMI-4] alignas(4) → alignas(8) 프로젝트 Pimpl 표준
         alignas(8) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<bool>  initialized_{ false };
+        /// A-5: 공개 API fail-close 배타 (OTA_Busy_Guard 동일 패턴)
+        /// mutable: const 조회 API에서도 일관된 상태 읽기
+        mutable std::atomic_flag op_busy_ = ATOMIC_FLAG_INIT;
     };
 
     static_assert(sizeof(HTS_AMI_Protocol) <= 1024u,

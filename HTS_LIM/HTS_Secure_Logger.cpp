@@ -1,17 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Secure_Logger.cpp
 // 보안 감사 로거 구현부 — ARM 전용, 힙 할당 0회
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 12건]
-//  FIX-01~03, BUG-01~08: (이전 이력 참조)
-//  BUG-09 [CRIT] D-2: 스택 버퍼(buf, crc_buf) 3중 방어 소거
-//  BUG-10 [LOW]  Target "/ Windows / Linux" 제거
-//  BUG-11 [CRIT] std::string/std::vector → const char* (B-1 힙금지 준수)
-//  BUG-12 [CRIT] PC 코드 물리삭제: iostream/Log_PC/3단분기/BAREMETAL 매크로
-//
-// [제약] try-catch 0, float/double 0, 힙 0, std::string 0, std::vector 0
-// =========================================================================
 #include "HTS_Secure_Logger.h"
 #include "HTS_Crc32Util.h"
 #include "HTS_Hardware_Bridge.hpp"
@@ -58,12 +49,16 @@ namespace ProtectedEngine {
     // =====================================================================
     //  logSecurityEvent — ARM 전용 (UART 스텁 출력)
     //
-    //  [BUG-11] const char* 파라미터 — std::string 힙 할당 원천 제거
-    //  [BUG-09] 함수 반환 전 buf + crc_buf 3중 방어 소거
     // =====================================================================
     void SecureLogger::logSecurityEvent(
         const char* eventType,
         const char* details) noexcept {
+
+#ifdef HTS_MILITARY_GRADE_EW
+        (void)eventType;
+        (void)details;
+        return;
+#endif
 
         if (!eventType) eventType = "UNKNOWN";
         if (!details)   details = "";
@@ -97,7 +92,6 @@ namespace ProtectedEngine {
         // 베어메탈 안전 경로: stdout/semihosting 대신 내부 고정 버퍼에 기록
         std::memcpy(g_last_audit_line, buf, sizeof(g_last_audit_line));
 
-        // [BUG-09] D-2: 스택 버퍼 3중 방어 소거
         SecureMemory::secureWipe(buf, sizeof(buf));
         SecureMemory::secureWipe(crc_buf, sizeof(crc_buf));
     }

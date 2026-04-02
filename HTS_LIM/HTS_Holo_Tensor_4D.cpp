@@ -1,4 +1,4 @@
-/// @file  HTS_Holo_Tensor_4D.cpp
+﻿/// @file  HTS_Holo_Tensor_4D.cpp
 /// @brief HTS 4D Holographic Tensor Engine -- True Holographic Spread/Despread
 /// @note  ARM only. Pure ASCII. No PC/server code.
 ///        Every output chip = f(ALL input bits, ALL phases, ALL layers)
@@ -28,13 +28,12 @@ namespace ProtectedEngine {
         };
     }
 
-    // [FIX-WIPE] 3중 방어 보안 소거
     static void Holo4D_Secure_Wipe(void* p, size_t n) noexcept {
         if (p == nullptr || n == 0u) { return; }
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p));
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -63,7 +62,6 @@ namespace ProtectedEngine {
         uint32_t decode_count;
 
         // --- Accumulator Buffer (encode: per-chip N, decode: per-bit K) ---
-        // [BUG-FIX FATAL] 크기 기준: max(HOLO_MAX_BLOCK_BITS, HOLO_CHIP_COUNT)
         //  기존: accum[HOLO_MAX_BLOCK_BITS(128)] — 비트(K) 기준만 고려
         //  위험: Encode에서 accum[0..N-1] (N=칩수) 인덱싱 → N > 128 시 OOB
         //  현재: MAX_BLOCK(128) > CHIP_COUNT(64) → 우연히 안전
@@ -79,7 +77,6 @@ namespace ProtectedEngine {
         static_assert(ACCUM_SIZE >= HOLO_MAX_BLOCK_BITS,
             "accum must cover max block bits (Decode)");
 
-        // [FIX-STACK] 스크래치패드 — 로컬 배열 전면 제거
         //  Encode/Decode 공유 (시간적 분리: 동시 호출 불가)
         uint16_t scratch_rows[HOLO_CHIP_COUNT];  // all_row_sel + Fisher-Yates
         uint16_t scratch_perm[HOLO_CHIP_COUNT];  // col_perm + col Fisher-Yates
@@ -104,7 +101,6 @@ namespace ProtectedEngine {
             return HTS_Holo_Tensor_4D::SECURE_TRUE;
         }
 
-        // [FIX-ALU] Generate_Phase 삭제 — O(K²)→O(K) 최적화
         //  기존: 매 (k,i) 호출마다 RNG 재시딩 + k번 스킵 = O(K²)
         //  수정: (i, layer, t) 당 1회 시딩 → k루프에서 Next_Phase_Q16만 호출
         //  131,072회 → 4,096회 RNG 호출 (32× 가속)
@@ -159,11 +155,9 @@ namespace ProtectedEngine {
 
             // 1. Full Fisher-Yates shuffle of N row indices
             // C6001 fix: zero-initialize array
-            // [FIX-STACK] scratch_rows 재활용 (Fisher-Yates)
             for (uint16_t j = 0u; j < N; ++j) { scratch_rows[j] = j; }
 
             for (uint16_t j = static_cast<uint16_t>(N - 1u); j > 0u; --j) {
-                // [FIX-UDIV] Lemire's Fast Alternative: UDIV 0회
                 const uint32_t range = static_cast<uint32_t>(j) + 1u;
                 const uint32_t r = static_cast<uint32_t>(
                     (static_cast<uint64_t>(rng.Next()) * range) >> 32u);
@@ -183,11 +177,9 @@ namespace ProtectedEngine {
 
             // 3. Column permutation (shared across all layers)
             // C6001 fix: zero-initialize array
-            // [FIX-STACK] scratch_perm 재활용 (col Fisher-Yates)
             for (uint16_t j = 0u; j < N; ++j) { scratch_perm[j] = j; }
 
             for (uint16_t j = static_cast<uint16_t>(N - 1u); j > 0u; --j) {
-                // [FIX-UDIV] Lemire's Fast Alternative
                 const uint32_t range2 = static_cast<uint32_t>(j) + 1u;
                 const uint32_t r = static_cast<uint32_t>(
                     (static_cast<uint64_t>(rng.Next()) * range2) >> 32u);
@@ -220,7 +212,6 @@ namespace ProtectedEngine {
             if (K > HOLO_MAX_BLOCK_BITS) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
             if (K > N) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
             if (N == 0u) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            // [BUG-FIX CRIT] Walsh-Hadamard 직교성 보증: N = 2^m 필수
             //  비2의거듭제곱 N(예: 48) → 계층 간 직교성 붕괴 → 복구 불가
             //  검사: (N & (N-1)) == 0 ↔ N이 정확히 2의거듭제곱
             if ((N & static_cast<uint16_t>(N - 1u)) != 0u) {
@@ -245,7 +236,6 @@ namespace ProtectedEngine {
                     | static_cast<uint64_t>(mask_rng.Next());
             }
 
-            // [FIX-STACK] accum 재활용 (Encode: per-chip)
             std::memset(accum, 0, N * sizeof(int32_t));
 
             // ── 통합 Walsh 홀로그램 투영 (16/64칩 공통) ──
@@ -301,7 +291,6 @@ namespace ProtectedEngine {
             if (K > HOLO_MAX_BLOCK_BITS) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
             if (K > N) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
             if (N == 0u) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            // [BUG-FIX CRIT] Walsh 직교성: N = 2^m 필수 (Encode와 동일)
             if ((N & static_cast<uint16_t>(N - 1u)) != 0u) {
                 return HTS_Holo_Tensor_4D::SECURE_FALSE;
             }
@@ -337,7 +326,6 @@ namespace ProtectedEngine {
                 scratch_rx[i] = static_cast<int16_t>(rx_val * ms);
             }
 
-            // [FIX-STACK] accum 재활용
             std::memset(accum, 0, K * sizeof(int32_t));
 
             // ── 통합 Walsh 상관 디코딩 (16/64칩 공통) ──
@@ -381,7 +369,6 @@ namespace ProtectedEngine {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
             "HTS_Holo_Tensor_4D::Impl exceeds IMPL_BUF_SIZE");
 
-        // [FIX-INIT] memset — ARM LDMIA/STMIA 가속
         std::memset(impl_buf_, 0, IMPL_BUF_SIZE);
     }
 
@@ -459,7 +446,6 @@ namespace ProtectedEngine {
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->~Impl();
 
-        // [FIX-WIPE] impl_buf_ 전체 3중 방어 소거
         //  패딩 영역 + accum + scratch 모두 파쇄
         Holo4D_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 

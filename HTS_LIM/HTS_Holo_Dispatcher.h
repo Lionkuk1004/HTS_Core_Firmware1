@@ -1,9 +1,37 @@
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
+
 /// @file  HTS_Holo_Dispatcher.h
 /// @brief HTS 4D 홀로그램 디스패처 — 기존 V400 Dispatcher 연동 심(shim)
 /// @details
 ///   기존 V400 Dispatcher를 수정하지 않고, 4D 홀로그램 텐서 인코딩/디코딩을
 ///   기존 칩 I/Q 인터페이스에 연결하는 연동 모듈.
+///
+///  [아키텍처 NOTE — 파이프라인 연결 구조]
+///
+///  실제 코드베이스에서 Holo_Dispatcher는 FEC_HARQ를 include/호출하지 않으며,
+///  HTS_V400_Dispatcher 경유 호출도 없다.
+///  실제 데이터 흐름:
+///
+///    Holo_Dispatcher::Build_Holo_Packet / Decode_Holo_Block
+///        └─▶ HTS_Holo_Tensor_4D::Encode_Block / Decode_Block
+///
+///  별도 계층으로, HTS_V400_Dispatcher는 VIDEO/VOICE/DATA 모드에서
+///  FEC_HARQ(Encode/Decode/Decode_Core_Split 등)를 사용한다 — 홀로 모드와
+///  분리된 경로이다.
+///
+///  백서·검수 기준서의 "직접 파이프라인" 표현은 논리적 흐름 기술일 수 있으며
+///  물리적 include/호출과 다를 수 있다. 관련 문서 개정 시 본 NOTE를 참고할 것.
 ///
 ///   연동 구조:
 ///   @code

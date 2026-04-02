@@ -1,28 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Universal_API.cpp
 // ProtectedEngine 내부 보안 게이트 / 세션 검증 / 물리적 파쇄
 // Target: STM32F407VGT6 (Cortex-M4F, 168MHz)
 //
-// [양산 수정 이력 — 13건]
-//  BUG-01 [CRIT] Secure_Gate_Open 타이밍 부채널 → constant-time 비교
-//  BUG-02 [CRIT] XOR 루프 Dead Store Elimination → pragma O0 보호
-//  BUG-03 [HIGH] Absolute_Trace_Erasure pragma O0 미적용 → 적용
-//  BUG-04 [MED]  entropy_shredder 결정론적 상수 → 호출마다 가변 시드
-//  BUG-05 [HIGH] i % 8 모듈로 → i & 7u 비트마스크
-//  BUG-06 [HIGH] x86 전용 헤더 ARM 타겟 빌드 에러 → 제거
-//  BUG-07 [LOW]  인클루드 가드 예약 식별자 → (헤더에서 수정)
-//  BUG-08 [MED]  500회 busy-wait → atomic_thread_fence, seq_cst→release
-//  FIX-09 [CRIT] LCG 난수 31비트 마스킹 제거 → 32비트 자연 오버플로우
-//  BUG-10 [MED]  주석 "seq_cst" 3곳 → release 미갱신 수정 (⑦주석-코드 불일치)
-//  BUG-11 [LOW]  125행 "[BUG]" 번호 누락 → 정식 "BUG-08" 번호 부여
-//  BUG-12 [CRIT] Secure_Gate_Open return(==0u) → 브랜치리스 비트 연산
-//                (== 비교는 CMP+분기 → 타이밍 부채널 잔존, 비트 시프트로 완전 제거)
-//  BUG-13 [MED]  Absolute_Trace_Erasure 이중 주석 블록 → 통합 (⑦주석-코드 불일치)
-//  BUG-14 [CRIT] 2단계 0 소거: volatile uint32_t* 전체 순회 → 비정렬 UB — SecureMemory::secureWipe 통일 (D-2/B-2)
-//  BUG-15 [CRIT] 1단계 XOR ↔ 2단계 secureWipe 사이 DSE 방어 — asm memory clobber + release fence (주석 79행 정합)
-//
-// [HTS_API 구현부는 HTS_API.cpp에 존재 → LNK2005 이중 정의 방지]
-// =========================================================================
 #include "HTS_Universal_API.h"
 #include "HTS_Secure_Memory.h"
 
@@ -39,7 +19,6 @@ namespace ProtectedEngine {
     static constexpr uint64_t HOLOGRAPHIC_INTERFACE_KEY = 0x3D504F574E533332ULL;
 
     // =====================================================================
-    //  [BUG-01+12] Constant-time 보안 게이트
     //
     //  BUG-01: uint64_t == 비교 → XOR + OR 접기로 교체
     //  BUG-12: return (combined == 0u) → 비트 시프트 브랜치리스 교체
@@ -54,7 +33,6 @@ namespace ProtectedEngine {
         const uint32_t hi = static_cast<uint32_t>(diff >> 32);
         const uint32_t lo = static_cast<uint32_t>(diff & 0xFFFFFFFFu);
         const uint32_t combined = hi | lo;
-        // [BUG-12] 브랜치리스 zero 검출: 조건분기/CMP 완전 제거
         // combined=0 → (0|0)>>31 = 0 → 0^1 = 1 (true)
         // combined≠0 → (v|(-v))>>31 = 1 → 1^1 = 0 (false)
         const uint32_t neg = ~combined + 1u;  // 2의 보수 부정
@@ -68,7 +46,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-02~05+13] 물리적 파쇄 (3단계: 엔트로피 XOR → 0 오버라이트 → DSE 방어)
     //
     //  수정 이력:
     //   BUG-02: XOR 루프 DSE 위험 → volatile 보호 (이후 asm clobber로 대체)
@@ -101,7 +78,6 @@ namespace ProtectedEngine {
         // 프롤로그: 4바이트 정렬 맞추기
         while (bytes_left > 0u &&
             (reinterpret_cast<uintptr_t>(b_ptr) & 3u) != 0u) {
-            // [FIX-09] 31비트 마스킹(& 0x7FFFFFFFu) 제거, 32비트 오버플로우 활용
             shredder = shredder * 1103515245u + 12345u;
             *b_ptr ^= static_cast<uint8_t>(shredder >> 16);
             ++b_ptr;
@@ -114,7 +90,6 @@ namespace ProtectedEngine {
             // [⑨-FIX] /4u → >>2u (2의제곱 시프트 전환)
             const size_t words = bytes_left >> 2u;
             for (size_t i = 0; i < words; ++i) {
-                // [FIX-09] 31비트 마스킹(& 0x7FFFFFFFu) 제거
                 shredder = shredder * 1103515245u + 12345u;
                 uint32_t temp;
                 std::memcpy(&temp, b_ptr, sizeof(uint32_t));
@@ -127,7 +102,6 @@ namespace ProtectedEngine {
 
         // 에필로그: 잔여 바이트 처리 (최대 3)
         while (bytes_left-- > 0u) {
-            // [FIX-09] 31비트 마스킹(& 0x7FFFFFFFu) 제거
             shredder = shredder * 1103515245u + 12345u;
             *b_ptr ^= static_cast<uint8_t>(shredder >> 16);
             ++b_ptr;
@@ -144,7 +118,6 @@ namespace ProtectedEngine {
         std::atomic_thread_fence(std::memory_order_release);
 
         // ── 2단계: 0 오버라이트 — 프로젝트 표준 SecureMemory (바이트 순회, 비정렬 안전, D-2)
-        //  [BUG-14] 기존 volatile uint32_t* 워드 루프는 target 비정렬 시 Cortex-M UsageFault
         SecureMemory::secureWipe(static_cast<void*>(target), size);
     }
 

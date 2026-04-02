@@ -3,15 +3,6 @@
 // B-CDMA 교차 상관 정합 필터 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 //
-// [양산 수정 이력 — 12건]
-//  BUG-01~11 (이전 세션)
-//  BUG-12 [CRIT] unique_ptr + make_unique + try-catch(ctor) → placement new
-//         · impl_buf_[256] alignas(8) 정적 배치
-//           Impl = HTS_Sys_Config(32B) + int32_t[64](256B) + ref_len(4B) ≈ 296B → 320B 확보
-//         · 생성자: impl_buf_ SecWipe → ::new Impl(tier) → impl_valid_=true
-//           Impl 생성자는 noexcept → 예외 없이 안전
-//         · 소멸자: = default 제거 → 명시적 p->~Impl() + Secure_Wipe_MF
-// =========================================================================
 #include "HTS_Rx_Matched_Filter.h"
 
 // 내부 전용 includes (헤더에 미노출)
@@ -29,7 +20,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  보안 메모리 소거 (volatile void* + asm clobber + seq_cst)
-    //  [BUG-11] volatile void* 시그니처 (강제 캐스팅 UB 방지)
     // =====================================================================
     static void Secure_Wipe_MF(volatile void* ptr, size_t size) noexcept {
         if (ptr == nullptr || size == 0u) { return; }
@@ -37,15 +27,13 @@ namespace ProtectedEngine {
             static_cast<volatile unsigned char*>(ptr);
         for (size_t i = 0u; i < size; ++i) { p[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(p));
+        __asm__ __volatile__("" : : "r"(p) : "memory");
 #endif
-        // [BUG-13] seq_cst → release (소거 배리어 정책 통일)
         std::atomic_thread_fence(std::memory_order_release);
     }
 
     // =====================================================================
     //  Pimpl 구현 구조체
-    //  [FIX-C] std::vector<int32_t> → 정적 배열 (ARM 힙 할당 전면 제거)
     //   Walsh-64 정합 필터: 최대 64 칩 참조 시퀀스
     //   64 × 4B = 256B 정적 배열 → 힙 0, 파편화 0
     // =====================================================================
@@ -70,7 +58,6 @@ namespace ProtectedEngine {
     };
 
     // =====================================================================
-    //  [BUG-12] 컴파일 타임 크기·정렬 검증 + get_impl()
     // =====================================================================
     HTS_Rx_Matched_Filter::Impl*
         HTS_Rx_Matched_Filter::get_impl() noexcept {
@@ -90,7 +77,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-12] 생성자 — placement new (zero-heap)
     //
     //  기존: std::make_unique<Impl>(tier) + try-catch
     //  수정: impl_buf_ SecWipe → ::new Impl(tier) → impl_valid_ = true
@@ -106,7 +92,6 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  [BUG-12] 소멸자 — 명시적 (= default 제거)
     // =====================================================================
     HTS_Rx_Matched_Filter::~HTS_Rx_Matched_Filter() noexcept {
         Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
@@ -128,7 +113,6 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // [FIX-C] 정적 배열 경계 검사
         if (size > Impl::MAX_REF_SEQ) { return false; }
 
         // Alias-safe 복사: 입력이 내부 버퍼를 가리켜도 데이터 붕괴 방지
@@ -150,9 +134,6 @@ namespace ProtectedEngine {
     // =====================================================================
     //  Apply_Filter — Q16 교차 상관
     //
-    //  [BUG-09] 컴파일 타임 ASR 검증 (MISRA 5-0-21)
-    //  [BUG-13] 순수 MAC 루프 → SMLAL 자동 생성 + 루프 후 1회 >>16
-    //  [BUG-14] __restrict 앨리어싱 힌트 → 레지스터 최적화
     //
     //  오버플로 안전성 검증:
     //    ref = PN코드 → |ref| ≤ 65536 (Q16 1.0)
@@ -174,7 +155,6 @@ namespace ProtectedEngine {
             return false;
         }
 
-        // [FIX-C] 정적 배열 참조
         if (p->ref_len == 0u) { return false; }
 
         const size_t seq_len = p->ref_len;

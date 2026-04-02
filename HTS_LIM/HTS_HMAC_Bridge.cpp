@@ -1,44 +1,11 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_HMAC_Bridge.cpp
 // KCMVP HMAC-SHA256 브릿지 구현부 (KISA 부분 블록 버그 우회 내장)
 // 규격: KS X ISO/IEC 9797-2 / RFC 2104
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 5건 결함 교정]
-//
-//  BUG-01 [MEDIUM] Secure_Zero(SZ): pragma O0 보호 누락
-//    기존: volatile + atomic_thread_fence만 사용
-//    수정: pragma O0 push/pop 추가 (프로젝트 보안 소거 3중 보호 표준)
-//
-//  BUG-02 [MEDIUM] CT_Eq: pragma O0 보호 누락
-//    기존: volatile uint8_t d + 루프 — 최적화 차단 미보장
-//          GCC -O2: volatile 로컬 변수를 레지스터에만 유지 가능
-//          → 분기 예측기가 d==0 패턴을 학습 → 타이밍 누출
-//    수정: pragma O0 + 컴파일러 배리어 추가
-//
-//  BUG-03 [LOW] C26495 — HMAC_Context 배열 멤버 초기화
-//    수정: 헤더에서 inner_ctx[256] = {}, o_key_pad[64] = {} 값 초기화
-//
-//  BUG-04 [LOW] SZ 함수명 → Secure_Zero_HMAC (가독성)
-//
-//  BUG-05 [LOW] C6385 — ipad 미초기화 + k[i] 범위 오판
-//    수정: ipad = {} 초기화 + k[i] 로컬 복사
-//  BUG-44 [CRIT] Secure_Zero_HMAC 제거 → SecureMemory::secureWipe (D-2/X-5-1)
-//
-// [기존 설계 100% 보존]
-//  - KISA 부분 블록 버그 우회: 64바이트 스마트 큐 버퍼링
-//  - SHA256_INFO 캐스팅: inner_ctx[256] 내부에 Internal_HMAC_State 은닉
-//  - KISA 함수명 어댑터: 패턴 A(Process/Close) / 패턴 B(Update/Final) 전환
-//  - 스트리밍 API: Init → Update(반복) → Final/Verify_Final
-//  - 단일 호출 API: Generate / Verify (내부 스트리밍 래핑)
-//
-// [STM32F407 성능]
-//  Init (키 설정):     ~10K사이클 ≈ 0.06ms @168MHz
-//  Update (64B 청크):  ~3K사이클 ≈ 0.018ms @168MHz
-//  Final:              ~6K사이클 ≈ 0.036ms @168MHz
-//  스택 사용량: ~320바이트 (HMAC_Context 스택 할당 기준)
-// =========================================================================
 #include "HTS_HMAC_Bridge.hpp"
+#include "HTS_ConstantTimeUtil.h"
 #include "HTS_Secure_Memory.h"
 #include <cstring>
 #include <limits>
@@ -95,44 +62,17 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  CT_Eq — 상수시간 바이트 배열 비교 (타이밍 사이드채널 차단)
-    //
-    //  [BUG-02 수정] pragma O0 + 컴파일러 배리어
-    //  분기 예측기의 패턴 학습을 차단하여 HMAC 검증 시
-    //  일치/불일치에 따른 타이밍 차이를 원천 제거
+    //  CT_Eq — HMAC 태그 검증 (ConstantTimeUtil + SECURE_* 분기 없는 매핑)
+    //  [C-1] 내부 비교는 HTS_ConstantTimeUtil::compare 단일 경로
     // =====================================================================
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC push_options
-#pragma GCC optimize("O0")
-#elif defined(_MSC_VER)
-#pragma optimize("", off)
-#endif
     static uint32_t CT_Eq(
         const uint8_t* a, const uint8_t* b, size_t n) noexcept {
         if (!a || !b || n == 0) return HMAC_Bridge::SECURE_FALSE;
-        volatile uint8_t d = 0;
-        for (size_t i = 0; i < n; ++i) {
-            d = static_cast<uint8_t>(d | (a[i] ^ b[i]));
-        }
-
-        // 컴파일러 배리어: d 값이 레지스터에만 남는 것을 방지
-#if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : "+r"(d));
-#elif defined(_MSC_VER)
-        _ReadWriteBarrier();
-#endif
-
-        const uint32_t diff = static_cast<uint32_t>(d);
-        const uint32_t has_err = (diff | (0u - diff)) >> 31u;
-        return HMAC_Bridge::SECURE_TRUE ^
-            ((HMAC_Bridge::SECURE_TRUE ^ HMAC_Bridge::SECURE_FALSE) * has_err);
+        const bool same = ConstantTimeUtil::compare(a, b, n);
+        const uint32_t mask = 0u - static_cast<uint32_t>(same);
+        return (HMAC_Bridge::SECURE_TRUE & mask)
+            | (HMAC_Bridge::SECURE_FALSE & ~mask);
     }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC pop_options
-#elif defined(_MSC_VER)
-#pragma optimize("", on)
-#endif
 
     // =====================================================================
     //  Init — 키 설정 + 내부 해시 시작
@@ -177,7 +117,6 @@ namespace ProtectedEngine {
         }
 
         // i_key_pad / o_key_pad 생성
-        // [BUG-05 fix] Split into two ranges to satisfy MSVC C6385 analysis:
         //   Range 1: [0 .. effective_len) — k[i] has valid data from memcpy/SHA256
         //   Range 2: [effective_len .. 64) — k[i] is 0 (from = {} init), so XOR = pad constant
         alignas(4) uint8_t ipad[SHA256_BLOCK] = {};

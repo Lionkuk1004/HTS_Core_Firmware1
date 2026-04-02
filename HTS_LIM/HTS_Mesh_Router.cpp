@@ -38,7 +38,7 @@ namespace ProtectedEngine {
         volatile uint8_t* q = static_cast<volatile uint8_t*>(p);
         for (size_t i = 0u; i < n; ++i) { q[i] = 0u; }
 #if defined(__GNUC__) || defined(__clang__)
-        __asm__ __volatile__("" : : "r"(q));
+        __asm__ __volatile__("" : : "r"(q) : "memory");
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -79,7 +79,6 @@ namespace ProtectedEngine {
         uint8_t  min_lqi;
         uint8_t  valid;
         uint32_t last_update_ms;
-        // [FIX-LOOP] Hold-down: 무효화 후 30초간 대체 경로 수락 거부
         //  Count-to-Infinity 방지: A↔B 핑퐁 루프 차단
         uint32_t hold_down_until;  // 0=정상, >0=이 시각까지 갱신 거부
     };
@@ -145,7 +144,6 @@ namespace ProtectedEngine {
         }
 
         // 특정 next_hop 경유 경로 무효화 + Hold-down 설정
-        //  [FIX-LOOP] valid=0으로 무효화하되 dest_id+hold_down 유지
         //  → 30초간 같은 dest로의 새 경로 수락 거부
         static constexpr uint32_t HOLD_DOWN_MS = 30000u;
 
@@ -219,7 +217,6 @@ namespace ProtectedEngine {
         if (p == nullptr || routes == nullptr) { return; }
         if (route_count == 0u) { return; }
 
-        // [FIX-OOB] route_count 상한 클램프
         //  악의적 패킷/RF 노이즈로 route_count=0xFFFF → SRAM 초과 읽기 → HardFault
         //  MAX_ROUTES 이하로 강제 제한
         if (route_count > MAX_ROUTES) {
@@ -252,7 +249,6 @@ namespace ProtectedEngine {
                 continue;
             }
 
-            // [FIX-LOOP] Split Horizon 수신 측 검증:
             //  내가 이미 dest로 가는 경로가 있고, next_hop이 이 이웃이 아닌데,
             //  이 이웃이 더 나쁜 경로를 광고 → 이웃이 나를 경유 → 루프
             //  → 거부 (Count-to-Infinity 방지)
@@ -262,13 +258,11 @@ namespace ProtectedEngine {
                 InternalRoute& existing =
                     p->table[static_cast<size_t>(slot)];
 
-                // [FIX-LOOP] Hold-down: 무효화 직후 대체 경로 수락 거부
                 //  30초간 이 목적지로의 새 경로 차단 → 핑퐁 루프 소멸 대기
                 if (existing.hold_down_until != 0u) {
                     continue;  // hold-down 중 → 모든 갱신 거부
                 }
 
-                // [FIX-LOOP] 루프 감지:
                 //  기존 경로 next_hop ≠ 이 이웃이고, 새 경로가 더 나쁘면
                 //  → 이웃이 나를 경유해서 온 경로 (루프)
                 if (existing.next_hop != neighbor_id &&
@@ -655,11 +649,9 @@ namespace ProtectedEngine {
                     p->table[i].last_update_ms = systick_ms;
                 }
             }
-            // [FIX-JITTER] 첫 Tick: 즉시 브로드캐스트 강제
             p->trigger_update = true;
         }
 
-        // [FIX-WRAP] Hold-down 만료: 래핑 면역 단순 비교
         //  기존: 역산 (hold_down_until - HOLD_DOWN_MS) → 래핑 시 붕괴
         //  수정: (systick_ms - hold_down_until) < 0x80000000 → 경과 판정
         //  uint32_t 래핑에 면역 (49일 주기 내 정상 동작)

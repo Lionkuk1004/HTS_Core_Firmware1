@@ -1,4 +1,4 @@
-/// @file  HTS_Network_Bridge.cpp
+﻿/// @file  HTS_Network_Bridge.cpp
 /// @brief HTS Network Bridge -- Ethernet <-> B-CDMA Implementation
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -27,7 +27,6 @@ namespace ProtectedEngine {
         }
     };
 
-    // [FIX-1] received_mask uint8_t 안전성 빌드 타임 검증
     //  BRIDGE_MAX_FRAGMENTS ≤ 8 보장 — 초과 시 즉시 빌드 실패
     //  향후 MAX_FRAGMENTS 증가 시 received_mask를 uint16_t/uint32_t로 확장 필수
     static_assert(BRIDGE_MAX_FRAGMENTS <= 8u,

@@ -1,4 +1,4 @@
-/// @file  HTS_Holo_Dispatcher.cpp
+﻿/// @file  HTS_Holo_Dispatcher.cpp
 /// @brief HTS 4D Holographic Dispatcher -- V400 Integration Shim
 /// @note  ARM only. Pure ASCII. No PC/server code.
 ///
@@ -270,7 +270,6 @@ namespace ProtectedEngine {
         for (uint16_t blk = 0u; blk < num_blocks; ++blk) {
             const int chip_offset = static_cast<int>(blk) * static_cast<int>(N);
 
-            // [BUG-FIX FATAL] Q16 → Q8 다운스케일 제거 (약전계 신호 증발 해소)
             //
             //  기존 착각: N*L*chip² 오버플로 우려 → >>8 강제
             //  실제: 홀로그래픽 역투영은 1차 선형 상관(Σ rx×walsh(±1))

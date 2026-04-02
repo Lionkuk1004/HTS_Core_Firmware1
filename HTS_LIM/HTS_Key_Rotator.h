@@ -38,6 +38,10 @@
 //          · impl_buf_[256] alignas(8) — vector 정렬 수용
 //          · Impl 셸은 vector 객체(24B)만 — 시드 데이터는 힙에 유지
 //          · 소멸자 = default → 명시적 p->~Impl() + Key_Rotator_Secure_Wipe
+//   BUG-18 [CRIT] deriveNextSeed 동시성: Cortex-M(__arm__/THUMB/__ARM_ARCH 등)은
+//          cpp 내부 PRIMASK 크리티컬; PC/A55는 atomic_flag+타임아웃 (헤더 ARM 매크로와 정합)
+//   BUG-19 [HIGH] deriveNextSeed: PRIMASK·spin_lock RAII 가드 (cpp) — 조기 return 시 IRQ/락 누락 방지
+//   BUG-20 [MED] ⑨ offset 마스크·SecWipe asm memory clobber (cpp)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -83,6 +87,8 @@ namespace ProtectedEngine {
         /// @param out_len     출력 버퍼 크기
         /// @return 성공 시 true, 실패(nullptr/미초기화) 시 false
         /// @post  내부 시드가 비가역적으로 변이됨 (Forward Secrecy)
+        /// @note  Cortex-M 단일코어: PRIMASK로 상호배제. PC/A55: atomic_flag 스핀(타임아웃).
+        ///        스핀 경로는 ISR에서 호출하지 말 것(데드락).
         bool deriveNextSeed(uint32_t blockIndex,
             uint8_t* out_buf, size_t out_len) noexcept;
 

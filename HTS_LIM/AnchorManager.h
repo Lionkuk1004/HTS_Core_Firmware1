@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // =========================================================================
 // AnchorManager.h
 // 적응형 앵커 비율 관리자 (AMC: Adaptive Modulation and Coding)
@@ -43,7 +43,6 @@
 #include <cstdint>
 #include <cstddef>
 
-// [BUG-02] <string> ARM 전파 차단 — PC 디버그 전용
 #if !defined(__arm__) && !defined(__TARGET_ARCH_ARM) && !defined(__TARGET_ARCH_THUMB) && !defined(__ARM_ARCH)
 #include <string>
 #endif
@@ -105,7 +104,6 @@ public:
     /// @param turbo_loops_used  터보 루프 사용 횟수
     void autoScaleRatio(int residual_errors, int turbo_loops_used) noexcept;
 
-    // [BUG-02/03] getStatusMessage: ARM에서 std::string/to_string 위험
     // PC 디버그 전용 → ARM 가드 적용
 #if !defined(__arm__) && !defined(__TARGET_ARCH_ARM) && !defined(__TARGET_ARCH_THUMB) && !defined(__ARM_ARCH)
     /// @brief 상태 메시지 (A55/서버 디버그 전용 — STM32 빌드 제외)

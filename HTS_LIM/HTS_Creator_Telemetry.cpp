@@ -1,35 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Creator_Telemetry.cpp
 // 개발 모드 텔레메트리 구현부
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정 — 5건 결함 교정]
-//  BUG-01 [MEDIUM] nullptr UB
-//    기존: std::cout << module_name → nullptr 전달 시 정의되지 않은 동작
-//          C++ 표준: operator<<(const char*) 에 nullptr = UB
-//    수정: nullptr 시 "(null)" 폴백 문자열 사용
-//
-//  BUG-02 [LOW] iostream 포맷 상태 오염
-//    기존: std::setfill('0') + std::hex + std::left 설정 후 미복원
-//    수정: RAII(Resource Acquisition Is Initialization) 가드 패턴 적용
-//
-//  BUG-03 [LOW] ARM #error 메시지 영문 혼용
-//    수정: 한국어 통일 (기존과 동일 — 유지)
-//
-//  BUG-04 [LOW] catch(...) 무조건 무시
-//    수정: 디버그 모드이므로 현행 유지 (I/O 실패 시 침묵이 올바른 동작)
-//
-//  BUG-05 [HIGH] 예외 발생 시 포맷 복원 우회 (상태 오염 부활)
-//    수정: IosFormatGuard 로컬 구조체를 도입하여 스택 언와인딩 시에도 
-//          소멸자가 무조건 포맷을 복원하도록 예외 안전성 확보
-//
-// [릴리즈 빌드 Zero-Cost 검증]
-//  _HTS_CREATOR_MODE 미정의 시:
-//    - #ifdef 내부 코드 전부 전처리기 단계에서 제거
-//    - 남는 코드: (void) 캐스트 3개 = 빈 함수
-//    - LTO(Link-Time Optimization): 빈 함수 인라인 → CALL 자체 소거
-//    - Flash 영향: 0바이트 / 사이클 영향: 0회
-// =========================================================================
 #include "HTS_Creator_Telemetry.h"
 
 // =========================================================================
@@ -60,11 +33,9 @@ namespace ProtectedEngine {
         (void)value;
 
 #ifdef _HTS_CREATOR_MODE
-        // [BUG-01 수정] nullptr 방어
         const char* safe_module = module_name ? module_name : "(null)";
         const char* safe_action = action ? action : "(null)";
 
-        // [BUG-02/05 수정] RAII 패턴 기반 iostream 포맷 상태 보존
         struct IosFormatGuard {
             std::ios_base::fmtflags flags;
             char fill;

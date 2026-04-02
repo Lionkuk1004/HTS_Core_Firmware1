@@ -1,4 +1,4 @@
-/// @file  HTS_Modbus_Gateway.cpp
+﻿/// @file  HTS_Modbus_Gateway.cpp
 /// @brief HTS Modbus Gateway -- Multi-PHY Industrial Protocol Converter
 /// @note  ARM only. Pure ASCII. No PC/server code.
 /// @author Lim Young-jun
@@ -12,8 +12,33 @@
 
 namespace ProtectedEngine {
 
+#if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
+     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
+    !defined(__aarch64__)
+#define HTS_MODBUS_PRIMASK_SHUTDOWN 1
+#else
+#define HTS_MODBUS_PRIMASK_SHUTDOWN 0
+#endif
+
+    namespace {
+        struct Modbus_Busy_Guard {
+            std::atomic_flag& f;
+            bool locked;
+            explicit Modbus_Busy_Guard(std::atomic_flag& flag) noexcept
+                : f(flag), locked(false) {
+                if (!f.test_and_set(std::memory_order_acquire)) {
+                    locked = true;
+                }
+            }
+            ~Modbus_Busy_Guard() noexcept {
+                if (locked) {
+                    f.clear(std::memory_order_release);
+                }
+            }
+        };
+    } // namespace
+
     // ============================================================
-    //  [FIX-D2] 보안 소거 — volatile + asm clobber + release fence
     //  Modbus 평문 페이로드(tx_buf/rx_buf/gw_rsp_buf) 잔류 방지
     // ============================================================
     static void Modbus_Secure_Wipe(void* p, size_t n) noexcept {
@@ -496,24 +521,47 @@ namespace ProtectedEngine {
     void HTS_Modbus_Gateway::Shutdown() noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+
+#if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
+        uint32_t primask_saved;
+        __asm__ __volatile__("mrs %0, primask\n\t"
+            "cpsid i"
+            : "=r"(primask_saved) :: "memory");
+#endif
+        while (op_busy_.test_and_set(std::memory_order_acquire)) {}
+
+        if (!initialized_.load(std::memory_order_acquire)) {
+            op_busy_.clear(std::memory_order_release);
+#if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
+            __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
+#endif
+            return;
+        }
+
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->state = Modbus_State::OFFLINE;
         impl->ipc = nullptr;
         impl->~Impl();
 
-        // [FIX-D2] impl_buf_ 보안 소거 — 평문 Modbus 페이로드 잔류 방지
         //  tx_buf(256B) + rx_buf(256B) + gw_rsp_buf(256B) = 768B 전체 소거
         //  소멸자만 호출하면 데이터가 SRAM에 잔류 (Data Remanence)
         //  → 메모리 덤프 공격 시 산업 제어 명령 노출
         Modbus_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
 
         initialized_.store(false, std::memory_order_release);
+        op_busy_.clear(std::memory_order_release);
+
+#if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
+        __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
+#endif
     }
 
     void HTS_Modbus_Gateway::Register_PHY_Callbacks(
         const Modbus_PHY_Callbacks& cb) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->phy_cb = cb;
     }
 
@@ -521,6 +569,8 @@ namespace ProtectedEngine {
         const Modbus_UART_Config& cfg) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         if (impl->phy_cb.uart_configure != nullptr) {
             impl->phy_cb.uart_configure(phy, &cfg);
@@ -533,18 +583,24 @@ namespace ProtectedEngine {
         if (payload == nullptr) { return; }
         if (len < MODBUS_GW_HEADER_SIZE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->Handle_GW_Command(payload, len);
     }
 
     uint8_t HTS_Modbus_Gateway::Add_Poll_Item(const Modbus_PollItem& item) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0xFFu; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return 0xFFu; }
         return reinterpret_cast<Impl*>(impl_buf_)->Add_Poll_Item_Internal(item);
     }
 
     void HTS_Modbus_Gateway::Remove_Poll_Item(uint8_t slot_idx) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         if (slot_idx >= MODBUS_MAX_POLL_ITEMS) { return; }
         reinterpret_cast<Impl*>(impl_buf_)->poll_items[slot_idx].active = 0u;
     }
@@ -552,6 +608,8 @@ namespace ProtectedEngine {
     void HTS_Modbus_Gateway::Tick(uint32_t systick_ms) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
         impl->current_tick = systick_ms;
 
@@ -566,6 +624,8 @@ namespace ProtectedEngine {
         uint16_t rsp_buf_size) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return 0u; }
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
 
         if (!impl->Transition_State(Modbus_State::REQUESTING)) { return 0u; }
@@ -580,18 +640,24 @@ namespace ProtectedEngine {
     Modbus_State HTS_Modbus_Gateway::Get_State() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return Modbus_State::OFFLINE; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return Modbus_State::OFFLINE; }
         return reinterpret_cast<const Impl*>(impl_buf_)->state;
     }
 
     uint32_t HTS_Modbus_Gateway::Get_Request_Count() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return 0u; }
         return reinterpret_cast<const Impl*>(impl_buf_)->request_count;
     }
 
     uint32_t HTS_Modbus_Gateway::Get_Error_Count() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
+        Modbus_Busy_Guard g(op_busy_);
+        if (!g.locked) { return 0u; }
         return reinterpret_cast<const Impl*>(impl_buf_)->error_count;
     }
 

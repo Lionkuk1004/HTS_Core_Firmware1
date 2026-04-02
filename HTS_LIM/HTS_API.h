@@ -11,11 +11,22 @@
 /// @target STM32F407VGT6 (Cortex-M4F)
 ///
 /// [양산 수정 이력 — 19건]
-///  BUG-01~17 (이전 세션)
 ///  BUG-18 [HIGH] DCLP Fast-Path 추가 (CAS 병목 제거)
 ///  BUG-19 [CRIT] extern "C" + enum class ABI 불일치 → extern "C" 삭제
 // =========================================================================
 #pragma once
+// ─────────────────────────────────────────────────────────
+//  외주 업체 통합 가이드
+// ─────────────────────────────────────────────────────────
+//  [사용법] 기본 사용 예시를 여기에 기재하세요.
+//  [메모리] sizeof(클래스명) 확인 후 전역/정적 배치 필수.
+//  [보안]   복사/이동 연산자 = delete (키 소재 복제 차단).
+//
+//  ⚠ [파트너사 필수 확인]
+//    HW 레지스터 주소(UART/WDT 등)는 보드 설계에 맞게 교체.
+//    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
+// ─────────────────────────────────────────────────────────
+
 #include <cstdint>
 #include <cstddef>
 
@@ -27,6 +38,10 @@
 #endif
 
 namespace HTS_API {
+
+    // Standard secure tokens for boolean/health checks.
+    static constexpr uint32_t SECURE_TRUE = 0x5A5A5A5Au;
+    static constexpr uint32_t SECURE_FALSE = 0xA5A5A5A5u;
 
     enum class HTS_Status : uint32_t {
         OK = 0x00u,
@@ -47,7 +62,6 @@ namespace HTS_API {
         SATELLITE_LINK = 0x04u
     };
 
-    // [BUG-19] extern "C" 삭제: enum class는 C++ 전용 타입
     // C++ namespace 스코프 + HTS_API_EXPORT로 가시성 보장
     [[nodiscard]] HTS_API_EXPORT
         HTS_Status Initialize_Core(
@@ -62,6 +76,6 @@ namespace HTS_API {
             size_t    required_size) noexcept;
 
     [[nodiscard]] HTS_API_EXPORT
-        HTS_Status Is_System_Operational() noexcept;
+        uint32_t Is_System_Operational() noexcept;
 
 } // namespace HTS_API

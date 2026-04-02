@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Anti_Debug.h
 // 디버거/JTAG 연결 탐지 및 강제 시스템 정지
 // Target: STM32F407 (Cortex-M4, 168MHz)
@@ -19,10 +19,10 @@
 //   → 탐지 시 forceHalt() 호출 — 반환하지 않음 ([[noreturn]])
 //   → 모든 함수 static — 인스턴스 생성 불필요/불가
 //
-//  [양산 수정 이력 — 25건]
-//   기존~세션8 BUG-01~21: (cpp 참조)
-//   세션10+ BUG-22~24: PC코드 물리삭제, SecWipe, constexpr
+//  [양산 수정 이력 — 27건]
 //   BUG-25 [LOW] 주석 정합: PC/Server/Windows/Linux 탐지 설명 제거 (ARM 전용)
+//   BUG-26 [MED] DBGMCU_APB1_FZ: RM0090 비트·식별자 정합 (bit11=WWDG, bit12=IWDG)
+//   S-1 [HIGH] Phase3 DBGMCU 직후 dsb sy/isb (cpp); trustedHalt 공개 (AntiGlitch 등)
 //
 // ─────────────────────────────────────────────────────────────────────────
 #pragma once
@@ -50,9 +50,9 @@ namespace ProtectedEngine {
     static constexpr uint32_t AIRCR_SYSRESETREQ = 0x00000004u;
     static constexpr uint32_t AIRCR_RESET_CMD = AIRCR_VECTKEY | AIRCR_SYSRESETREQ;
 
-    // ── DBGMCU WDT 프리즈 비트 ──
-    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 11);
-    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 12);
+    // ── DBGMCU_APB1_FZ WDT 프리즈 (RM0090 STM32F4, 0xE0042008) ──
+    static constexpr uint32_t DBGMCU_WWDG_STOP = (1u << 11);  ///< DBG_WWDG_STOP
+    static constexpr uint32_t DBGMCU_IWDG_STOP = (1u << 12); ///< DBG_IWDG_STOP
 
     // ── [BUG-19] 빌드 타임 정합성 검증 ──
     static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
@@ -72,6 +72,9 @@ namespace ProtectedEngine {
         /// @note  ARM: DHCSR 2회 샘플 기반 C_DEBUGEN Attach 탐지 +
         ///        (C_HALT|S_HALT) Halt 교차 검증
         static void checkDebuggerPresence() noexcept;
+
+        /// @brief 글리치/탬퍼 등 신뢰 모듈 전용 — forceHalt와 동일 AIRCR·DBGMCU 파이프라인 (S-1)
+        [[noreturn]] static void trustedHalt(const char* message) noexcept;
 
         // 정적 전용 클래스 — 인스턴스화 차단
         AntiDebugManager() = delete;

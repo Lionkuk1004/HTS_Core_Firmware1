@@ -1,18 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Session_Gateway.cpp
 // 최상위 보안 세션 컨트롤러 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
-// [양산 수정 — 33건]
-//
-//  ── 기존~세션8 (BUG-01~29) ── (이전 이력 참조)
-//  BUG-30 [HIGH] #define HTS_PLATFORM_ARM 하드코딩 → 제거 (ARM 전용 파일)
-//  BUG-31 [CRIT] ⑭ PC 코드 물리삭제: mutex/vector/string/cerr/try-catch/
-//                socket/Winsock/1:N라우팅/Get_Master_Seed(vector) 전량 제거
-//  BUG-32 [LOW]  주석 정합: "/ PC / Server" 제거
-//
-// [제약] try-catch 0, float/double 0, 힙 0
-// =========================================================================
 #include "HTS_Session_Gateway.hpp"
 #include "HTS_Secure_Memory.h"
 #include "HTS_Secure_Logger.h"
@@ -149,7 +139,6 @@ namespace ProtectedEngine {
     };
 
     void Session_Gateway::Open_Session() noexcept {
-        // [BUG-33] TOCTOU 방어: CAS로 원자적 진입 보호
         // load→Init 사이 ISR 재진입 시 이중 Init 방지
         bool expected = false;
         if (!g_Session_Active.compare_exchange_strong(

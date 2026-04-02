@@ -22,7 +22,7 @@
 //  [보안 설계]
 //   impl_buf_: 소멸자에서 Key_Prov_Secure_Wipe 3중 방어 소거
 //   키 버퍼: 사용 즉시 소거 (임시 평문 노출 최소화)
-//   OTP 검증: Constant-Time 비교 (타이밍 공격 방지)
+//   OTP Read-Back 검증: HTS_ConstantTimeUtil::compare (K-1 / C-1)
 //   복사/이동: = delete (키 소재 복제 경로 원천 차단)
 //
 //  [메모리 요구량]

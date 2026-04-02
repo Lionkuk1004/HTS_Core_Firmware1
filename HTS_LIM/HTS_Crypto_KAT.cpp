@@ -17,8 +17,11 @@
 //  LEA:  TTAK.KO-12.0223 / KISA 공식 배포
 //  HMAC: RFC 4231 Test Case 1,2
 //  LSH:  KS X 3262 / KISA 공식 배포
+//
+//  C-1 [HIGH] KAT_CT_Eq → ConstantTimeUtil::compare (루프 종료 후 비밀 의존 분기 제거)
 // =========================================================================
 #include "HTS_Crypto_KAT.h"
+#include "HTS_ConstantTimeUtil.h"
 #include "HTS_ARIA_Bridge.hpp"
 #include "HTS_LEA_Bridge.h"
 #include "HTS_HMAC_Bridge.hpp"
@@ -51,9 +54,7 @@ namespace ProtectedEngine {
 
     static bool KAT_CT_Eq(const uint8_t* a,
         const uint8_t* b, size_t n) noexcept {
-        volatile uint8_t d = 0u;
-        for (size_t i = 0u; i < n; ++i) d |= a[i] ^ b[i];
-        return (d == 0u);
+        return ConstantTimeUtil::compare(a, b, n);
     }
 
     // =====================================================================

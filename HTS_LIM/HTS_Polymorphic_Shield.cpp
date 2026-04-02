@@ -1,25 +1,8 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Polymorphic_Shield.cpp
 // 다형성 암호 쉴드 구현부 — CTR 모드 스트림 암호화
 // Target: STM32F407 (Cortex-M4)
 //
-// [양산 수정]
-//  FIX-01 익명 네임스페이스 inline 중복 제거
-//  FIX-02 unsigned int 시프트 (UB 방지)
-//  FIX-03 session_id==0 && gyro_seed==0 → 0 출력 차단
-//  FIX-04 타입별 독립 folding_key 상수
-//  FIX-05 <type_traits> 명시적 포함
-//  BUG-01 [CRIT] block_index 파라미터 추가 (Many-Time Pad 차단)
-//    기존: session_id + gyro_seed만으로 스트림 생성
-//      → 동일 세션 내 모든 블록이 동일 키스트림 = 키 재사용!
-//    수정: block_index를 믹서에 혼합 → 매 블록 고유 스트림
-//
-// [암호학적 설계]
-//  Key:     gyro_seed (회전 시드)
-//  Nonce:   session_id (세션 고유 ID)
-//  Counter: block_index (데이터 위치 — 매 블록 증가)
-//  → CTR 모드 3요소 완비 → 키스트림 재사용 원천 차단
-// =========================================================================
 #include "HTS_Polymorphic_Shield.h"
 #include <type_traits>
 
@@ -29,8 +12,6 @@ namespace ProtectedEngine {
 
         // =================================================================
         //  SplitMix64 변형 스트림 생성기
-        //  [BUG-01] block_index를 상태에 혼합 → 매 블록 고유 출력
-        //  [FIX-03] 0 입력 경로 차단 (소수 상수 덧셈)
         // =================================================================
         uint64_t Generate_Chaotic_Stream_64(
             uint64_t session_id,
@@ -51,7 +32,6 @@ namespace ProtectedEngine {
             return state;
         }
 
-        // [FIX-04] 타입별 독립 folding_key 상수 (단일 소스)
         template <typename T>
         constexpr T Get_Folding_Key() noexcept {
             static_assert(std::is_unsigned<T>::value,
@@ -76,7 +56,6 @@ namespace ProtectedEngine {
 
     // =====================================================================
     //  Apply_Holographic_Folding — CTR 모드 암호화
-    //  [BUG-01] block_index로 매 블록 고유 스트림 생성
     // =====================================================================
     template <typename T>
     T Polymorphic_Shield::Apply_Holographic_Folding(

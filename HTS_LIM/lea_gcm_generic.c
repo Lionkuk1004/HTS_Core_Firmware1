@@ -1,4 +1,4 @@
-#include "lea.h"
+﻿#include "lea.h"
 #include "lea_locl.h"
 
 static void _gcm_ghash(unsigned char *r, const unsigned char *x, unsigned int x_len, const unsigned char h[][16]);
@@ -317,3 +317,5 @@ void lea_gcm_init_generic(LEA_GCM_CTX *ctx, const unsigned char *mk, int mk_len)
 void gcm_ghash_generic(unsigned char *r, const unsigned char *x, unsigned int x_len, const unsigned char hTable[][16]){
 	_gcm_ghash(r, x, x_len, hTable);
 }
+
+
