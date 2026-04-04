@@ -29,7 +29,7 @@ namespace ProtectedEngine {
             if (!initialized_) {
                 largest_ = seq;
                 bitmap_ = 1ull;
-                initialized_ = true;
+                initialized_ = true; 
                 return true;
             }
             if (seq > largest_) {
