@@ -81,6 +81,9 @@
     <ClCompile Include="HTS_Quantum_Decoy_VDF.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="HTS_Quantum_Key_Bridge.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
     <ClCompile Include="HTS_Pointer_Auth.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>

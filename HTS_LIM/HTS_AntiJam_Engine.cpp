@@ -6,11 +6,6 @@
 //  2층) Adaptive Punch: 돌출 칩 0 처리 (Clip 없음)
 //  3층) Spatial Null: 16칩 서브밴드 투영 제거
 //
-//  [세션 10 수정]
-//   Seed_CW_Profile() 구현
-//          cw_cancel_64_()의 ja_I/ja_Q를 jprof_[]에 직접 주입
-//          CW 17~19dB 닭-달걀 문제 완전 해소
-//
 // [제약] float 0, double 0, 나눗셈 0, try-catch 0, 힙 0
 // =========================================================================
 #include "HTS_AntiJam_Engine.h"

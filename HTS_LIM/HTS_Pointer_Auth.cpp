@@ -4,6 +4,7 @@
 // Target: STM32F407 (Cortex-M4)
 //
 #include "HTS_Pointer_Auth.hpp"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Auto_Rollback_Manager.hpp"
 #include "HTS_Secure_Logger.h"
 #include "HTS_Secure_Memory.h"
@@ -38,29 +39,6 @@ namespace ProtectedEngine {
         constexpr uint32_t PAC_DONE = 2u;
     }
 
-#if HTS_PAC_PRIMASK_KEYSTORE
-    // Seqlock 키 갱신 중 ISR이 Load_Runtime_Key로 홀수 ver·반쪽 읽기에 걸리지 않도록
-    namespace {
-        struct Pac_Primask_Guard {
-            uint32_t saved_primask_;
-            explicit Pac_Primask_Guard() noexcept
-                : saved_primask_(0u) {
-                __asm__ volatile (
-                    "mrs %0, primask\n\t"
-                    "cpsid i"
-                    : "=r"(saved_primask_) :: "memory");
-            }
-            ~Pac_Primask_Guard() noexcept {
-                __asm__ volatile (
-                    "msr primask, %0"
-                    :: "r"(saved_primask_) : "memory");
-            }
-            Pac_Primask_Guard(const Pac_Primask_Guard&) = delete;
-            Pac_Primask_Guard& operator=(const Pac_Primask_Guard&) = delete;
-        };
-    } // namespace
-#endif
-
     // =====================================================================
     //  PAC 키: 64비트 tearing 방지 — hi/lo를 atomic<uint32_t>로 분리
     // =====================================================================
@@ -76,7 +54,7 @@ namespace ProtectedEngine {
     // 키 쓰기 — seqlock 보호 + (Cortex-M) PRIMASK로 키 갱신 구간 원자성
     static void Store_Runtime_Key(uint64_t key) noexcept {
 #if HTS_PAC_PRIMASK_KEYSTORE
-        Pac_Primask_Guard irq_guard;
+        Armv7m_Irq_Mask_Guard irq_guard;
 #endif
         // ver → 홀수 (쓰기 시작)
         g_pac_key_ver.fetch_add(1u, std::memory_order_release);

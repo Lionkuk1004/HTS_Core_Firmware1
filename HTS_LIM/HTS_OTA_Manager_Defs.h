@@ -31,6 +31,7 @@
 ///   설계 기준:
 ///   - Cortex-M4F STM32F407 (1MB Flash, 듀얼 뱅크)
 ///   - 롤백 방지: 버전 번호 단조증가 (OTP 영역 또는 Flash 마지막 섹터)
+///   - 고빈도 NVM 갱신 시 동일 섹터 마모 — 웨어 레벨링·스페이어·쓰기 카운터는 HAL/보드 정책
 ///   - 힙 0, float/double 0, 나눗셈 0
 ///
 /// @author 임영준 (Lim Young-jun)

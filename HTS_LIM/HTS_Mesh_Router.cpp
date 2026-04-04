@@ -11,6 +11,7 @@
 //  · 순수 32비트, 힙 0, ASIC 호환
 // =========================================================================
 #include "HTS_Mesh_Router.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Priority_Scheduler.h"
 
 #if defined(_MSC_VER)
@@ -37,21 +38,6 @@ namespace ProtectedEngine {
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t rtr_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void rtr_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t rtr_critical_enter() noexcept { return 0u; }
-    static inline void rtr_critical_exit(uint32_t) noexcept {}
-#endif
 
     static void ser_u16(uint8_t* dst, uint16_t v) noexcept {
         dst[0] = static_cast<uint8_t>(v & 0xFFu);
@@ -230,7 +216,7 @@ namespace ProtectedEngine {
             route_count = MAX_ROUTES;
         }
 
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         for (size_t r = 0u; r < route_count; ++r) {
             const RouteEntry& re = routes[r];
@@ -321,7 +307,6 @@ namespace ProtectedEngine {
         }
 
         p->recount();
-        rtr_critical_exit(pm);
     }
 
     // =====================================================================
@@ -339,13 +324,12 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const uint8_t killed = p->invalidate_via(neighbor_id, systick_ms);
         if (killed > 0u) {
             p->trigger_update = true;
         }
         p->recount();
-        rtr_critical_exit(pm);
     }
 
     // =====================================================================
@@ -358,7 +342,7 @@ namespace ProtectedEngine {
         if (p == nullptr) { return; }
         if (neighbor_id == p->my_id) { return; }
 
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         int32_t slot = p->find_route(neighbor_id);
         const uint8_t m = calc_metric(1u, lqi);
@@ -393,7 +377,6 @@ namespace ProtectedEngine {
         }
 
         p->recount();
-        rtr_critical_exit(pm);
     }
 
     // =====================================================================
@@ -528,14 +511,14 @@ namespace ProtectedEngine {
         // Case 3: 다른 노드 → TTL 감소 + 경로 탐색 + 중계
         if (hdr_ttl <= 1u) { return FwdResult::TTL_EXPIRED; }
 
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const int32_t slot = p->find_route(hdr_dest);
         if (slot < 0) {
-            rtr_critical_exit(pm);
+            irq.release();
             return FwdResult::NO_ROUTE;
         }
         const uint16_t next = p->table[static_cast<size_t>(slot)].next_hop;
-        rtr_critical_exit(pm);
+        irq.release();
 
         return build_and_enqueue(
             p,
@@ -571,14 +554,14 @@ namespace ProtectedEngine {
         }
 
         // 유니캐스트: 경로 탐색
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const int32_t slot = p->find_route(dest_id);
         if (slot < 0) {
-            rtr_critical_exit(pm);
+            irq.release();
             return FwdResult::NO_ROUTE;
         }
         const uint16_t next = p->table[static_cast<size_t>(slot)].next_hop;
-        rtr_critical_exit(pm);
+        irq.release();
 
         return build_and_enqueue(
             p,
@@ -597,10 +580,10 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const int32_t slot = p->find_route(dest_id);
         if (slot < 0) {
-            rtr_critical_exit(pm);
+            irq.release();
             return false;
         }
         const InternalRoute& ir = p->table[static_cast<size_t>(slot)];
@@ -610,7 +593,7 @@ namespace ProtectedEngine {
         out.metric = ir.metric;
         out.lqi = ir.min_lqi;
         out.valid = 1u;
-        rtr_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -620,21 +603,22 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr || out == nullptr || cap == 0u) { return 0u; }
 
-        const uint32_t pm = rtr_critical_enter();
         size_t count = 0u;
-        for (size_t i = 0u; i < MAX_RT && count < cap; ++i) {
-            const InternalRoute& ir = p->table[i];
-            if (ir.valid == 0u) { continue; }
-            RouteEntry& r = out[count];
-            r.dest_id = ir.dest_id;
-            r.next_hop = ir.next_hop;
-            r.hop_count = ir.hop_count;
-            r.metric = ir.metric;
-            r.lqi = ir.min_lqi;
-            r.valid = 1u;
-            ++count;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            for (size_t i = 0u; i < MAX_RT && count < cap; ++i) {
+                const InternalRoute& ir = p->table[i];
+                if (ir.valid == 0u) { continue; }
+                RouteEntry& r = out[count];
+                r.dest_id = ir.dest_id;
+                r.next_hop = ir.next_hop;
+                r.hop_count = ir.hop_count;
+                r.metric = ir.metric;
+                r.lqi = ir.min_lqi;
+                r.valid = 1u;
+                ++count;
+            }
         }
-        rtr_critical_exit(pm);
         return count;
     }
 
@@ -660,7 +644,8 @@ namespace ProtectedEngine {
         if (p == nullptr) { return; }
 
         // [H-ISR] PRIMASK 분할: 테이블 유지보수·recount만 1구간, 브로드캐스트 조립은 2구간
-        uint32_t pm = rtr_critical_enter();
+        {
+            Armv7m_Irq_Mask_Guard irq_maint;
 
         if (p->first_tick) {
             p->last_bcast_ms = systick_ms - BCAST_INTERVAL_MS;
@@ -702,15 +687,15 @@ namespace ProtectedEngine {
         }
         p->recount();
 
-        rtr_critical_exit(pm);
+        }
 
-        pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq_bcast;
         const uint32_t since_bcast = systick_ms - p->last_bcast_ms;
         const bool do_bcast =
             p->trigger_update || (since_bcast >= BCAST_INTERVAL_MS);
 
         if (do_bcast == false) {
-            rtr_critical_exit(pm);
+            irq_bcast.release();
             return;
         }
 
@@ -738,7 +723,7 @@ namespace ProtectedEngine {
         p->last_bcast_ms = systick_ms;
         p->trigger_update = false;
 
-        rtr_critical_exit(pm);
+        irq_bcast.release();
 
         // P2 DATA 브로드캐스트
         const EnqueueResult enq = scheduler.Enqueue(
@@ -755,10 +740,9 @@ namespace ProtectedEngine {
     void HTS_Mesh_Router::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         Rtr_Secure_Wipe(p->table, sizeof(p->table));
         p->route_count = 0u;
-        rtr_critical_exit(pm);
     }
 
 } // namespace ProtectedEngine

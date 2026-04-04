@@ -110,6 +110,10 @@ namespace ProtectedEngine {
     // =====================================================================
     void AntiDebugManager::pollHardwareOrFault() noexcept {
 
+#if defined(HTS_ALLOW_OPEN_DEBUG)
+        return;
+#endif
+
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
     (defined(__GNUC__) || defined(__clang__))
         volatile const uint32_t* const dhcsr =
@@ -131,6 +135,10 @@ namespace ProtectedEngine {
     //  checkDebuggerPresence — 플랫폼별 디버거 탐지
     // =====================================================================
     void AntiDebugManager::checkDebuggerPresence() noexcept {
+
+#if defined(HTS_ALLOW_OPEN_DEBUG)
+        return;
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
         // ARM: DHCSR 레지스터 직접 검사

@@ -19,20 +19,13 @@
 /// @copyright INNOViD 2026. All rights reserved.
 
 #include "HTS_AMI_Protocol.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_IPC_Protocol.h"
 #include <new>
 #include <atomic>
 #include <cstring>
 
 namespace ProtectedEngine {
-
-#if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
-    !defined(__aarch64__)
-#define HTS_AMI_PRIMASK_SHUTDOWN 1
-#else
-#define HTS_AMI_PRIMASK_SHUTDOWN 0
-#endif
 
     // ============================================================
     //  [AMI-1] 보안 메모리 소거 (프로젝트 표준)
@@ -483,17 +476,8 @@ namespace ProtectedEngine {
     void HTS_AMI_Protocol::Shutdown() noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-#if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
-        uint32_t primask_saved;
-        __asm__ __volatile__("mrs %0, primask\n\t"
-            "cpsid i"
-            : "=r"(primask_saved) :: "memory");
-#endif
-
+        Armv7m_Irq_Mask_Guard irq;
         if (!initialized_.load(std::memory_order_acquire)) {
-#if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
-            __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
-#endif
             return;
         }
 
@@ -507,10 +491,6 @@ namespace ProtectedEngine {
         // [AMI-1] impl_buf_ 전체 보안 소거 (함수 포인터, device_id, apdu_buf 등)
         AMI_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
         initialized_.store(false, std::memory_order_release);
-
-#if HTS_AMI_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
-        __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
-#endif
     }
 
     // [A1] 국가별 OBIS 딕셔너리 주입

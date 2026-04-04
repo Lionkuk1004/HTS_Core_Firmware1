@@ -249,6 +249,7 @@
     <ClCompile Include="HTS_Pointer_Auth.cpp" />
     <ClCompile Include="HTS_Physical_Entropy_Engine.cpp" />
     <ClCompile Include="HTS_Quantum_Decoy_VDF.cpp" />
+    <ClCompile Include="HTS_Quantum_Key_Bridge.cpp" />
     <ClCompile Include="HTS_Polymorphic_Shield.cpp" />
     <ClCompile Include="HTS_Power_Manager.cpp" />
     <ClCompile Include="HTS_Remote_Attestation.cpp" />

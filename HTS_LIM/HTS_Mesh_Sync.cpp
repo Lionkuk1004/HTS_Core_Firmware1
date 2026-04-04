@@ -10,6 +10,7 @@
 //  · 수색 시나리오: 3+ 앵커 거리 → Location_Engine 삼각측량
 // =========================================================================
 #include "HTS_Mesh_Sync.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -39,24 +40,6 @@ namespace ProtectedEngine {
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
-
-    // =====================================================================
-    //  PRIMASK
-    // =====================================================================
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t sync_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void sync_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t sync_critical_enter() noexcept { return 0u; }
-    static inline void sync_critical_exit(uint32_t) noexcept {}
-#endif
 
     // =====================================================================
     //  Q16 상수 + 도우미
@@ -330,7 +313,7 @@ namespace ProtectedEngine {
         }
 
         { // 피어 슬롯 갱신만 짧게 잠금 — evaluate_state는 별도 구간
-            const uint32_t pm = sync_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
 
             int32_t slot = p->find_peer(peer_id);
 
@@ -362,7 +345,6 @@ namespace ProtectedEngine {
                     ps.valid = 1u;
                 }
             }
-            sync_critical_exit(pm);
         }
 
         // 동기 품질 재평가: O(N) 순회는 PRIMASK 밖에서 (N-10, ISR 기아 방지).
@@ -414,16 +396,17 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
 
-        const uint32_t pm = sync_critical_enter();
-        const int32_t slot = p->find_peer(peer_id);
         uint32_t dist = 0u;
-        if (slot >= 0) {
-            const PeerSync& ps = p->peers[static_cast<size_t>(slot)];
-            if (ps.sample_count >= 3u) {  // 최소 3샘플 필요
-                dist = p->offset_to_distance_cm(ps.offset_q16);
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            const int32_t slot = p->find_peer(peer_id);
+            if (slot >= 0) {
+                const PeerSync& ps = p->peers[static_cast<size_t>(slot)];
+                if (ps.sample_count >= 3u) {  // 최소 3샘플 필요
+                    dist = p->offset_to_distance_cm(ps.offset_q16);
+                }
             }
         }
-        sync_critical_exit(pm);
         return dist;
     }
 
@@ -445,7 +428,7 @@ namespace ProtectedEngine {
         size_t count = 0u;
 
         {
-            const uint32_t pm = sync_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             for (size_t i = 0u; i < MAX_PEERS && count < cap; ++i) {
                 const PeerSync& ps = p->peers[i];
                 if (ps.valid == 0u) { continue; }
@@ -458,7 +441,6 @@ namespace ProtectedEngine {
                 s.pad = 0u;
                 ++count;
             }
-            sync_critical_exit(pm);
         }
 
         for (size_t i = 0u; i < count; ++i) {
@@ -514,31 +496,28 @@ namespace ProtectedEngine {
     void HTS_Mesh_Sync::Suspend() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = sync_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->state = SyncState::SUSPENDED;
-        sync_critical_exit(pm);
     }
 
     void HTS_Mesh_Sync::Resume() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = sync_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         if (p->state == SyncState::SUSPENDED) {
             p->state = SyncState::ACQUIRING;
         }
-        sync_critical_exit(pm);
     }
 
     void HTS_Mesh_Sync::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = sync_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         Sync_Secure_Wipe(p->peers, sizeof(p->peers));
         p->state = SyncState::UNSYNC;
         p->global_offset = 0;
         p->locked_peers = 0u;
         p->sync_quality = 0u;
-        sync_critical_exit(pm);
     }
 
 } // namespace ProtectedEngine

@@ -4,6 +4,7 @@
 // Target: STM32F407 (Cortex-M4, 168MHz) / PC
 //
 #include "HTS_AntiAnalysis_Shield.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Hardware_Bridge.hpp"
 #include "HTS_Universal_API.h"
 #include "HTS_Physical_Entropy_Engine.h"
@@ -50,13 +51,7 @@ namespace ProtectedEngine {
         //  PRIMASK로 start~end 구간 인터럽트 완전 차단
         //  영향: PROBE_ITERATIONS(아래 상수)에 비례 — 호출은 메인/부팅 경로 권장, ISR 금지
 
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
-        // ARM: PRIMASK 크리티컬 섹션 (ISR 완전 차단)
-        uint32_t primask;
-        __asm__ __volatile__("mrs %0, primask\n\tcpsid i"
-            : "=r"(primask) : : "memory");
-#endif
+        Armv7m_Irq_Mask_Guard irq;
 
         const uint32_t start = static_cast<uint32_t>(
             Hardware_Bridge::Get_Physical_CPU_Tick());
@@ -78,12 +73,6 @@ namespace ProtectedEngine {
 
         const uint32_t end = static_cast<uint32_t>(
             Hardware_Bridge::Get_Physical_CPU_Tick());
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
-        // PRIMASK 복원 (이전 인터럽트 상태로 복귀)
-        __asm__ __volatile__("msr primask, %0" : : "r"(primask) : "memory");
-#endif
 
         if (end == start) return 0u;
         return end - start;

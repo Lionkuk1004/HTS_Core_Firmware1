@@ -17,6 +17,7 @@
 //    IRQ 번호는 STM32F407 RM0090 벡터 테이블 기준으로 교체.
 // ─────────────────────────────────────────────────────────
 
+#include <cstddef>
 #include <cstdint>
 
 // C++20 <bit> — PC/x86 빌드에서만 사용 (ARM은 SWAR 고정)
@@ -49,6 +50,19 @@ namespace ProtectedEngine {
         x = (x & 0x33333333u) + ((x >> 2u) & 0x33333333u);
         return (((x + (x >> 4u)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24u;
 #endif
+    }
+
+    /// @brief `value`를 (align_mask+1) 바이트 경계로 올림 (2의 거듭제곱 정렬).
+    /// @param align_mask 정렬-1 (예: 4바이트→3, 8바이트→7, 256바이트→255).
+    /// @note (value + k) & ~k 대신 패드 (align_mask+1 - (value & align_mask)) & align_mask — 주소 래핑·항⑨.
+    [[nodiscard]]
+    constexpr uint32_t align_up_pow2_mask_u32(uint32_t value, uint32_t align_mask) noexcept {
+        return value + ((align_mask + 1u - (value & align_mask)) & align_mask);
+    }
+
+    [[nodiscard]]
+    constexpr size_t align_up_pow2_mask_size(size_t value, size_t align_mask) noexcept {
+        return value + ((align_mask + 1u - (value & align_mask)) & align_mask);
     }
 
 } // namespace ProtectedEngine

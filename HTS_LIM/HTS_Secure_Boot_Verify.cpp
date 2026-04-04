@@ -346,7 +346,10 @@ namespace ProtectedEngine {
             uint8_t b[sizeof(mv)];
             std::memcpy(a, &gv, sizeof(gv));
             std::memcpy(b, &mv, sizeof(mv));
-            return ConstantTimeUtil::compare(a, b, sizeof(a));
+            const bool ok = ConstantTimeUtil::compare(a, b, sizeof(a));
+            SecureMemory::secureWipe(a, sizeof(a));
+            SecureMemory::secureWipe(b, sizeof(b));
+            return ok;
         }
     } // namespace detail
 

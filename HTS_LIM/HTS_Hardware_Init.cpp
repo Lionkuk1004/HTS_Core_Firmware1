@@ -5,6 +5,7 @@
 //
 #include "HTS_Hardware_Init.h"
 #include "HTS_Anti_Debug.h"
+#include "HTS_BitOps.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -282,7 +283,7 @@ namespace ProtectedEngine {
 
         // Region 4: 스택 가드 256B — No Access, XN=1, SIZE=7 (예외 진입 32B push 대비)
         const uint32_t guard_base =
-            (stack_bottom_addr + 255u) & ~static_cast<uint32_t>(255u);
+            align_up_pow2_mask_u32(stack_bottom_addr, 255u);
         *MPU_RNR = 4u;
         *MPU_RBAR = guard_base;
         *MPU_RASR = static_cast<uint32_t>(

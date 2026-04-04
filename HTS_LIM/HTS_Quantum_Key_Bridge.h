@@ -6,7 +6,6 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
-#include <vector>     // Inject_Quantum_Entropy 파라미터 (PENDING: raw API 전환 후 제거)
 
 namespace ProtectedEngine {
 
@@ -29,8 +28,12 @@ namespace ProtectedEngine {
         Quantum_Key_Bridge(Quantum_Key_Bridge&&) = delete;
         Quantum_Key_Bridge& operator=(Quantum_Key_Bridge&&) = delete;
 
+        /// @brief PQC/양자 엔트로피 재료 주입 (힙 0 — 원시 버퍼만)
+        /// @param entropy_buf  엔트로피 바이트 (nullptr이면 무동작)
+        /// @param length       바이트 수 (0이면 무동작). 권장 32~64B(Storage_Interface 주석 정합).
         void Inject_Quantum_Entropy(
-            const std::vector<uint8_t>& pqc_material) noexcept;
+            const uint8_t* entropy_buf,
+            std::size_t length) noexcept;
 
         [[nodiscard]]
         uint64_t Derive_Quantum_Session_ID() noexcept;

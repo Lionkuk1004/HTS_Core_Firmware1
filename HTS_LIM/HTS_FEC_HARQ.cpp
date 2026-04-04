@@ -3,6 +3,7 @@
 // Target: STM32F407VGT6 (Cortex-M4F) / PC
 //
 #include "HTS_FEC_HARQ.hpp"
+#include "HTS_Secure_Memory.h"
 #include <array>
 #include <climits>
 #include <cstdint>
@@ -819,9 +820,11 @@ namespace ProtectedEngine {
         if (calc == stored) {
             for (int i = 0; i < MAX_INFO; ++i) out[i] = rx[i];
             *len = MAX_INFO;
+            SecureMemory::secureWipe(static_cast<void*>(rx), sizeof(rx));
             return true;
         }
         *len = 0;
+        SecureMemory::secureWipe(static_cast<void*>(rx), sizeof(rx));
         return false;
     }
 

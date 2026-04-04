@@ -232,7 +232,12 @@ namespace ProtectedEngine {
             // Compute data offset in reassembly buffer
             // offset = idx * BRIDGE_FRAG_MAX_DATA (no division needed)
             const uint32_t data_offset = static_cast<uint32_t>(idx) * BRIDGE_FRAG_MAX_DATA;
-            if (data_offset + static_cast<uint32_t>(data_len) > BRIDGE_ETH_MAX_FRAME) {
+            if (data_offset > BRIDGE_ETH_MAX_FRAME) {
+                Transition_State(BridgeState::IDLE);
+                return BRIDGE_SECURE_FALSE;
+            }
+            const uint32_t frame_remain = BRIDGE_ETH_MAX_FRAME - data_offset;
+            if (static_cast<uint32_t>(data_len) > frame_remain) {
                 Transition_State(BridgeState::IDLE);
                 return BRIDGE_SECURE_FALSE;
             }

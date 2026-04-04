@@ -12,6 +12,11 @@
 //  안전하게 주입하고, 주입 완료 후 디버그 포트를 영구 잠금합니다.
 //  키 전송 중 도청 방지를 위해 AES-KW(Key Wrap, RFC 3394) 사용.
 //
+//  [Unprovisioned ↔ Sealed FSM]
+//  공정·주입·SWD 허용 단계와 Lock_Debug_Port / RDP 봉인 이후 단계를 하드웨어 옵션·
+//  부트 플래그로 명시 분리하고, Sealed 이후에만 런타임 JTAG/SWD 핫플러깅 자폭 정책과
+//  결합할 것(봉인 전 공정과 모순 방지).
+//
 //  [사용법]
 //   1. 생성: HTS_Key_Provisioning()
 //   2. Is_Provisioned(): OTP에 키가 이미 주입되었는지 확인

@@ -7,6 +7,7 @@
 /// @copyright INNOViD 2026. All rights reserved.
 
 #include "HTS_Holo_Tensor_4D.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Secure_Memory.h"
 #include <new>
 #include <atomic>
@@ -119,7 +120,7 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
             __asm__ __volatile__("" ::: "memory");
 #endif
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            std::atomic_thread_fence(std::memory_order_release);
         }
 
         // ============================================================
@@ -510,13 +511,7 @@ namespace ProtectedEngine {
 
         // Cortex-M: 동일 코어 ISR이 락을 쓰지 않는 경로까지 차단(단일코어 전제)
 #if defined(__arm__) && !defined(__aarch64__)
-        uint32_t primask_saved = 0u;
-        __asm__ __volatile__(
-            "mrs %0, primask\n\t"
-            "cpsid i"
-            : "=&r"(primask_saved)
-            :
-            : "memory");
+        Armv7m_Irq_Mask_Guard irq_primask;
 #endif
 
         Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
@@ -525,18 +520,10 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" ::: "memory");
 #endif
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_release);
 
         initialized_.store(false, std::memory_order_release);
         op_busy_.clear(std::memory_order_release);
-
-#if defined(__arm__) && !defined(__aarch64__)
-        __asm__ __volatile__(
-            "msr primask, %0"
-            :
-            : "r"(primask_saved)
-            : "memory");
-#endif
     }
 
     uint32_t HTS_Holo_Tensor_4D::Initialize(const uint32_t master_seed[4],

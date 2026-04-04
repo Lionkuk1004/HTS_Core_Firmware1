@@ -5,6 +5,7 @@
 /// @copyright INNOViD 2026. All rights reserved.
 
 #include "HTS_BLE_NFC_Gateway.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_IPC_Protocol.h"
 #include <new>
 #include <atomic>
@@ -22,7 +23,7 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" ::: "memory");
 #else
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_release);
 #endif
     }
 
@@ -210,6 +211,14 @@ namespace ProtectedEngine {
             BLE_Write_U32(&frame_buf[pos],
                 static_cast<uint32_t>(local_location.code & 0xFFFFFFFFu));  pos += 4u;
             frame_buf[pos++] = static_cast<uint8_t>(payload_len);
+
+            {
+                const uint32_t body_cap =
+                    BLE_MAX_FRAME_SIZE - BLE_FRAME_CRC_SIZE - pos;
+                if (static_cast<uint32_t>(payload_len) > body_cap) {
+                    return 0u;
+                }
+            }
 
             // Copy payload
             if (payload != nullptr) {
@@ -629,12 +638,7 @@ namespace ProtectedEngine {
         //
         //  PRIMASK로 head 읽기~쓰기 원자적 보호 (~10사이클)
         //        UART 바이트 간격 ~87µs@115200bps → 10cyc 차단 영향 0
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
-        uint32_t primask;
-        __asm__ __volatile__("mrs %0, primask\n\tcpsid i"
-            : "=r"(primask) : : "memory");
-#endif
+        Armv7m_Irq_Mask_Guard irq;
 
         const uint32_t head = impl->uart_ring_head.load(std::memory_order_relaxed);
         const uint32_t tail = impl->uart_ring_tail.load(std::memory_order_acquire);
@@ -643,11 +647,6 @@ namespace ProtectedEngine {
             impl->uart_ring[head & UART_RING_MASK] = byte;
             impl->uart_ring_head.store(head + 1u, std::memory_order_release);
         }
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
-        __asm__ __volatile__("msr primask, %0" : : "r"(primask) : "memory");
-#endif
     }
 
     void HTS_BLE_NFC_Gateway::Relay_From_BCDMA(const uint8_t* payload,

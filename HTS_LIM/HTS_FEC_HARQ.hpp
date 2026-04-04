@@ -60,6 +60,7 @@
 //   정적 전용 클래스 — 인스턴스화 불가 (상태 없음)
 //
 #pragma once
+#include "HTS_BitOps.h"
 #include <cstdint>
 #include <cstddef>
 
@@ -186,8 +187,8 @@ namespace ProtectedEngine {
         //
         //  WorkBuf: 30,816B → 14,488B (−16,328B = −53.0%)
         //
-        static constexpr int VIT_STEPS =
-            ((CONV_OUT / 2) + 7) & ~7;  // 86 → 88 (8-align)
+        static constexpr int VIT_STEPS = static_cast<int>(
+            align_up_pow2_mask_u32(static_cast<uint32_t>(CONV_OUT / 2), 7u));  // 86 → 88 (8-align)
 
         // ── 워킹 버퍼 (호출자가 할당, DI 주입) ─────────────────────
         // 재진입성 100% 보장. 전역/스택/동적 할당 자유.

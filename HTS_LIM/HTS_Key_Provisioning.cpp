@@ -335,6 +335,10 @@ namespace ProtectedEngine {
                 if (!aes.Process_Block(block_in, block_out)) {
                     aes.Reset();
                     Key_Prov_Secure_Wipe(plain_out, KEY_SIZE);
+                    Key_Prov_Secure_Wipe(static_cast<void*>(a), sizeof(a));
+                    Key_Prov_Secure_Wipe(static_cast<void*>(r), sizeof(r));
+                    Key_Prov_Secure_Wipe(static_cast<void*>(block_in), sizeof(block_in));
+                    Key_Prov_Secure_Wipe(static_cast<void*>(block_out), sizeof(block_out));
                     return false;
                 }
                 for (int k = 0; k < 8; ++k) {
@@ -350,6 +354,10 @@ namespace ProtectedEngine {
 
         if (!ConstantTimeUtil::compare(a, AES_KW_IV, 8u)) {
             Key_Prov_Secure_Wipe(plain_out, KEY_SIZE);
+            Key_Prov_Secure_Wipe(static_cast<void*>(a), sizeof(a));
+            Key_Prov_Secure_Wipe(static_cast<void*>(r), sizeof(r));
+            Key_Prov_Secure_Wipe(static_cast<void*>(block_in), sizeof(block_in));
+            Key_Prov_Secure_Wipe(static_cast<void*>(block_out), sizeof(block_out));
             return false;
         }
         for (uint32_t b = 0u; b < N; ++b) {
@@ -358,6 +366,10 @@ namespace ProtectedEngine {
                     r[b][i];
             }
         }
+        Key_Prov_Secure_Wipe(static_cast<void*>(a), sizeof(a));
+        Key_Prov_Secure_Wipe(static_cast<void*>(r), sizeof(r));
+        Key_Prov_Secure_Wipe(static_cast<void*>(block_in), sizeof(block_in));
+        Key_Prov_Secure_Wipe(static_cast<void*>(block_out), sizeof(block_out));
         return true;
     }
 

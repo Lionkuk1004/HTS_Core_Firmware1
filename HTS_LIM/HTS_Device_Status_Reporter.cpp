@@ -10,6 +10,7 @@
 //  · 자동 장애 감지: 배터리<10%, 온도>70°C → 경고 모드
 // =========================================================================
 #include "HTS_Device_Status_Reporter.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Priority_Scheduler.h"
 
 #include <atomic>
@@ -21,7 +22,7 @@
 namespace ProtectedEngine {
 
     // =====================================================================
-    //  보안 소거 / PRIMASK
+    //  보안 소거 / IRQ 마스크 (RAII: HTS_Arm_Irq_Mask_Guard)
     // =====================================================================
     static void Rpt_Secure_Wipe(void* p, size_t n) noexcept {
         if (p == nullptr || n == 0u) { return; }
@@ -32,21 +33,6 @@ namespace ProtectedEngine {
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t rpt_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void rpt_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t rpt_critical_enter() noexcept { return 0u; }
-    static inline void rpt_critical_exit(uint32_t) noexcept {}
-#endif
 
     // 엔디안 독립 직렬화
     static void ser_u16(uint8_t* dst, uint16_t v) noexcept {
@@ -64,10 +50,9 @@ namespace ProtectedEngine {
 
     static uint8_t* acquire_status_pkt_slot() noexcept {
         // 호출 컨텍스트(ISR/메인)에 무관하게 슬롯 인덱스 갱신 원자성 보장.
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         uint8_t* const pkt = g_status_pkt_pool[g_status_pkt_slot];
         g_status_pkt_slot = static_cast<uint8_t>((g_status_pkt_slot + 1u) & STATUS_PKT_SLOT_MASK);
-        rpt_critical_exit(pm);
         return pkt;
     }
 
@@ -193,11 +178,10 @@ namespace ProtectedEngine {
 
     HTS_Device_Status_Reporter::~HTS_Device_Status_Reporter() noexcept {
         impl_valid_.store(false, std::memory_order_release);
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
         if (p != nullptr) { p->~Impl(); }
         Rpt_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        rpt_critical_exit(pm);
     }
 
     // =====================================================================
@@ -206,51 +190,45 @@ namespace ProtectedEngine {
     void HTS_Device_Status_Reporter::Set_Battery(uint8_t pct) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->battery_pct = pct;
         p->auto_detect_faults();
-        rpt_critical_exit(pm);
     }
 
     void HTS_Device_Status_Reporter::Set_Temperature(int8_t celsius) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->temperature = celsius;
         p->auto_detect_faults();
-        rpt_critical_exit(pm);
     }
 
     void HTS_Device_Status_Reporter::Set_Fault(uint8_t flag) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->fault_flags |= flag;
-        rpt_critical_exit(pm);
     }
 
     void HTS_Device_Status_Reporter::Clear_Fault(uint8_t flag) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->fault_flags &= static_cast<uint8_t>(~flag);
-        rpt_critical_exit(pm);
     }
 
     void HTS_Device_Status_Reporter::Set_Module_Active(uint8_t flag) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->module_flags |= flag;
-        rpt_critical_exit(pm);
     }
 
     void HTS_Device_Status_Reporter::Clear_Module_Active(uint8_t flag) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->module_flags &= static_cast<uint8_t>(~flag);
-        rpt_critical_exit(pm);
     }
 
     // =====================================================================
@@ -269,27 +247,24 @@ namespace ProtectedEngine {
     uint8_t HTS_Device_Status_Reporter::Get_Faults() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const uint8_t v = p->fault_flags;
-        rpt_critical_exit(pm);
         return v;
     }
 
     uint8_t HTS_Device_Status_Reporter::Get_Modules() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const uint8_t v = p->module_flags;
-        rpt_critical_exit(pm);
         return v;
     }
 
     uint32_t HTS_Device_Status_Reporter::Has_Any_Fault() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return SECURE_FALSE; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const bool has_fault = (p->fault_flags != FaultFlag::NONE);
-        rpt_critical_exit(pm);
         return has_fault ? SECURE_TRUE : SECURE_FALSE;
     }
 
@@ -306,13 +281,13 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         uint8_t* const pkt = acquire_status_pkt_slot();
         p->build_packet(pkt);
         p->scan_count++;
 
-        rpt_critical_exit(pm);
+        irq.release();
 
         // P2 DATA 인큐
         const EnqueueResult enq = scheduler.Enqueue(
@@ -337,22 +312,21 @@ namespace ProtectedEngine {
 
         // 첫 Tick 초기화만 짧게 PRIMASK — tick_uptime의 O(N) while는 IRQ 허용 구간에서 실행
         if (p->first_tick) {
-            const uint32_t pm0 = rpt_critical_enter();
+            Armv7m_Irq_Mask_Guard irq0;
             p->last_hour_ms = systick_ms;
             p->last_rpt_ms = systick_ms - p->get_interval();
             p->first_tick = false;
-            rpt_critical_exit(pm0);
         }
 
         // Deep sleep 복귀 등으로 now_ms가 크게 점프해도 인터럽트는 처리 가능해야 함
         p->tick_uptime(systick_ms);
 
         //  On_WoR_Scan ISR이 build_packet 호출 시 last_rpt_ms 등 일관성
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // WOR_ONLY: 주기 전송은 스킵 (uptime 누적은 유지)
         if (p->rpt_mode == ReportMode::WOR_ONLY) {
-            rpt_critical_exit(pm);
+            irq.release();
             return;
         }
 
@@ -360,7 +334,7 @@ namespace ProtectedEngine {
         const uint32_t interval = p->get_interval();
         const uint32_t elapsed = systick_ms - p->last_rpt_ms;
         if (elapsed < interval) {
-            rpt_critical_exit(pm);
+            irq.release();
             return;
         }
 
@@ -369,7 +343,7 @@ namespace ProtectedEngine {
         p->build_packet(pkt);
         p->last_rpt_ms = systick_ms;
 
-        rpt_critical_exit(pm);
+        irq.release();
 
         // 크리티컬 밖: 인큐 (scheduler 내부 자체 PRIMASK)
         const EnqueueResult enq = scheduler.Enqueue(
@@ -385,10 +359,9 @@ namespace ProtectedEngine {
     void HTS_Device_Status_Reporter::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = rpt_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->fault_flags = FaultFlag::NONE;
         p->module_flags = 0u;
-        rpt_critical_exit(pm);
     }
 
 } // namespace ProtectedEngine

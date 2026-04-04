@@ -19,6 +19,28 @@
 
 namespace ProtectedEngine {
 
+    namespace {
+        /// HAL disable_irq/enable_irq 쌍 — 조기 return·예외 경로에서도 enable 보장 (Lost Wakeup 방지 패턴)
+        struct Power_Hal_Irq_Pair_Guard {
+            const Power_HAL_Callbacks& hal_;
+            explicit Power_Hal_Irq_Pair_Guard(const Power_HAL_Callbacks& h) noexcept
+                : hal_(h)
+            {
+                if (hal_.disable_irq != nullptr) {
+                    hal_.disable_irq();
+                }
+            }
+            ~Power_Hal_Irq_Pair_Guard() noexcept
+            {
+                if (hal_.enable_irq != nullptr) {
+                    hal_.enable_irq();
+                }
+            }
+            Power_Hal_Irq_Pair_Guard(const Power_Hal_Irq_Pair_Guard&) = delete;
+            Power_Hal_Irq_Pair_Guard& operator=(const Power_Hal_Irq_Pair_Guard&) = delete;
+        };
+    } // namespace
+
     // 공개 API / Shutdown 교차 시 UAF 방지 — 스핀락 (ISR은 Handle_PVD_Event에서 별도 논블로킹)
     struct Power_Busy_Guard {
         std::atomic_flag& f;
@@ -156,57 +178,37 @@ namespace ProtectedEngine {
             switch (mode) {
             case PowerMode::SLEEP:
                 if (hal_cb.enter_sleep_wfi != nullptr) {
-                    // Atomic sleep entry: disable IRQ -> check pending -> WFI -> enable IRQ
-                    if (hal_cb.disable_irq != nullptr) {
-                        hal_cb.disable_irq();
+                    // Atomic sleep entry: disable IRQ -> check pending -> WFI -> enable IRQ (RAII)
+                    {
+                        Power_Hal_Irq_Pair_Guard irq_scope(hal_cb);
+                        bool skip_wfi = false;
+                        if (hal_cb.is_interrupt_pending != nullptr) {
+                            skip_wfi = hal_cb.is_interrupt_pending();
+                        }
+                        if (!skip_wfi) {
+                            hal_cb.enter_sleep_wfi();
+                            // CPU wakes here. IRQ is pending but masked until scope exit.
+                        }
                     }
-
-                    // Check if a wakeup interrupt is already pending.
-                    // If so, skip WFI entirely (the event we wanted is already here).
-                    bool skip_wfi = false;
-                    if (hal_cb.is_interrupt_pending != nullptr) {
-                        skip_wfi = hal_cb.is_interrupt_pending();
-                    }
-
-                    if (!skip_wfi) {
-                        hal_cb.enter_sleep_wfi();
-                        // CPU wakes here. IRQ is pending but masked by PRIMASK.
-                    }
-
-                    // Re-enable interrupts. If an IRQ was pending, its ISR
-                    // executes immediately after this instruction.
-                    if (hal_cb.enable_irq != nullptr) {
-                        hal_cb.enable_irq();
-                    }
-
                     woke_ok = true;
                 }
                 break;
 
             case PowerMode::STOP:
                 if (hal_cb.enter_stop_mode != nullptr) {
-                    // Same PRIMASK pattern for STOP mode
-                    if (hal_cb.disable_irq != nullptr) {
-                        hal_cb.disable_irq();
-                    }
-
-                    bool skip_stop = false;
-                    if (hal_cb.is_interrupt_pending != nullptr) {
-                        skip_stop = hal_cb.is_interrupt_pending();
-                    }
-
-                    if (!skip_stop) {
-                        hal_cb.enter_stop_mode();
-                        // CPU wakes here after STOP exit — PLL/HSE were stopped; restore only in this path
-                        if (hal_cb.restore_clocks_from_stop != nullptr) {
-                            hal_cb.restore_clocks_from_stop();
+                    {
+                        Power_Hal_Irq_Pair_Guard irq_scope(hal_cb);
+                        bool skip_stop = false;
+                        if (hal_cb.is_interrupt_pending != nullptr) {
+                            skip_stop = hal_cb.is_interrupt_pending();
+                        }
+                        if (!skip_stop) {
+                            hal_cb.enter_stop_mode();
+                            if (hal_cb.restore_clocks_from_stop != nullptr) {
+                                hal_cb.restore_clocks_from_stop();
+                            }
                         }
                     }
-
-                    if (hal_cb.enable_irq != nullptr) {
-                        hal_cb.enable_irq();
-                    }
-
                     woke_ok = true;
                 }
                 break;

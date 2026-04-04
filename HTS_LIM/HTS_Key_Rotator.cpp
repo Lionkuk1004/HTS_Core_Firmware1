@@ -1,9 +1,11 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Key_Rotator.cpp
 // Forward Secrecy 기반 동적 시드 로테이터 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
 #include "HTS_Key_Rotator.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
+#include "HTS_BitOps.h"
 #include "HTS_Secure_Memory.h"
 
 // ── Self-Contained 표준 헤더 ───────────────────────────────────────
@@ -35,25 +37,7 @@ namespace ProtectedEngine {
 namespace {
 
 #if HTS_KEY_ROTATOR_PRIMASK_CRIT
-    // HTS_Dynamic_Key_Rotator.cpp 와 동일 PRIMASK 패턴 — GCC/Clang/IAR ARM 등 공통
-    static inline uint32_t kr_primask_enter() noexcept {
-        uint32_t primask = 0u;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-            : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void kr_primask_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-
-    /// RAII: 저장된 PRIMASK 복원 — 임계구역 내 조기 return에도 IRQ 상태 복구 보장
-    struct KeyRotator_Primask_Guard {
-        uint32_t saved_;
-        KeyRotator_Primask_Guard() noexcept : saved_(kr_primask_enter()) {}
-        ~KeyRotator_Primask_Guard() noexcept { kr_primask_exit(saved_); }
-        KeyRotator_Primask_Guard(const KeyRotator_Primask_Guard&) = delete;
-        KeyRotator_Primask_Guard& operator=(const KeyRotator_Primask_Guard&) = delete;
-    };
+    using KeyRotator_Primask_Guard = Armv7m_Irq_Mask_Guard;
 #endif
 
     /// RAII: atomic_flag 획득 실패 시 clear 없음, 성공 시 소멸자에서 release
@@ -305,8 +289,8 @@ namespace {
 
         // 2단계: Murmur3 기반 전체 시드 비가역 혼합
         uint32_t running_hash = blockIndex ^ 0x5BD1E995u;
-        // ⑨ 바이트 길이 → 워드 수: >>2 (나눗셈 대신 시프트)
-        size_t num_passes = (seed_len + 3u) >> 2u;
+        // ⑨ 바이트 길이 → 워드 수: >>2 (나눗셈 대신 시프트); 정렬 패드는 (4-(n&3))&3
+        size_t num_passes = align_up_pow2_mask_size(seed_len, 3u) >> 2u;
         if (num_passes == 0u) { num_passes = 1u; }
 
         for (size_t pass = 0u; pass < num_passes; ++pass) {
@@ -346,9 +330,12 @@ namespace {
         uint8_t buf[Impl::SEED_LEN];
         size_t nout = 0u;
         if (!deriveNextSeed(blockIndex, buf, sizeof(buf), nout)) {
+            SecureMemory::secureWipe(static_cast<void*>(buf), sizeof(buf));
             return std::vector<uint8_t>();
         }
-        return std::vector<uint8_t>(buf, buf + nout);
+        std::vector<uint8_t> out(buf, buf + nout);
+        SecureMemory::secureWipe(static_cast<void*>(buf), sizeof(buf));
+        return out;
     }
 #endif
 

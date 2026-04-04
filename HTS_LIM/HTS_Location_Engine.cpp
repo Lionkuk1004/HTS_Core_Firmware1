@@ -14,6 +14,7 @@
 //  앵커 4+개 → 최소제곱 → ±30m
 // =========================================================================
 #include "HTS_Location_Engine.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Mesh_Sync.h"
 #include "HTS_Priority_Scheduler.h"
 
@@ -39,21 +40,6 @@ namespace ProtectedEngine {
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t loc_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void loc_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t loc_critical_enter() noexcept { return 0u; }
-    static inline void loc_critical_exit(uint32_t) noexcept {}
-#endif
 
     // =====================================================================
     //  좌표 변환 상수
@@ -386,21 +372,21 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        const uint32_t pm = loc_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // 앵커 갱신
         int32_t slot = p->find_anchor(node_id);
         if (slot >= 0) {
             p->anchors[static_cast<size_t>(slot)].lat_1e4 = lat_1e4;
             p->anchors[static_cast<size_t>(slot)].lon_1e4 = lon_1e4;
-            loc_critical_exit(pm);
+            irq.release();
             return true;
         }
 
         // 신규 등록
         slot = p->find_free_anchor();
         if (slot < 0) {
-            loc_critical_exit(pm);
+            irq.release();
             return false;
         }
 
@@ -410,7 +396,7 @@ namespace ProtectedEngine {
         a.lon_1e4 = lon_1e4;
         a.valid = 1u;
 
-        loc_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -442,11 +428,10 @@ namespace ProtectedEngine {
 
         AnchorEntry anchors_snap[MAX_ANCHORS];
         {
-            const uint32_t pm_snap = loc_critical_enter();
+            Armv7m_Irq_Mask_Guard irq_snap;
             for (size_t a = 0u; a < MAX_ANCHORS; ++a) {
                 anchors_snap[a] = p->anchors[static_cast<size_t>(a)];
             }
-            loc_critical_exit(pm_snap);
         }
 
         // 앵커-거리 매칭 (데시미터 단위 — 10cm 정밀도)
@@ -511,11 +496,10 @@ namespace ProtectedEngine {
 
         // 최소 3앵커
         if (match_count < 3u || !ref_set) {
-            const uint32_t pm = loc_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             p->position.valid = 0u;
             p->position.map_10m_cert = 0u;
             p->position.anchor_count = static_cast<uint8_t>(match_count);
-            loc_critical_exit(pm);
             return;
         }
 
@@ -572,10 +556,9 @@ namespace ProtectedEngine {
         }
 
         if (valid_count == 0u) {
-            const uint32_t pm = loc_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             p->position.valid = 0u;
             p->position.map_10m_cert = 0u;
-            loc_critical_exit(pm);
             return;
         }
 
@@ -608,32 +591,32 @@ namespace ProtectedEngine {
         }
         if (quality >= 80u) { acc_m = static_cast<uint8_t>(acc_m >> 1u); }
 
-        const uint32_t pm = loc_critical_enter();
-        // ③ 다중 에폭 링버퍼에 추가 + 평균 산출 (Impl 일관성)
-        p->push_epoch(new_lat, new_lon);
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            // ③ 다중 에폭 링버퍼에 추가 + 평균 산출 (Impl 일관성)
+            p->push_epoch(new_lat, new_lon);
 
-        int32_t avg_lat = 0;
-        int32_t avg_lon = 0;
-        p->avg_epoch(avg_lat, avg_lon);
+            int32_t avg_lat = 0;
+            int32_t avg_lon = 0;
+            p->avg_epoch(avg_lat, avg_lon);
 
-        if (p->epoch_count >= 4u) { acc_m = static_cast<uint8_t>(acc_m >> 1u); }  // ③ 에폭
+            if (p->epoch_count >= 4u) { acc_m = static_cast<uint8_t>(acc_m >> 1u); }  // ③ 에폭
 
-        // 상황실 지도 「10m 이내」 표시: 앵커 4+ · 동기 품질 · 에폭 안정 · 오차 상한 10m 이하
-        uint8_t map_10m_cert = 0u;
-        if (match_count >= 4u && quality >= 80u && p->epoch_count >= 4u
-            && acc_m <= 10u) {
-            map_10m_cert = 1u;
+            // 상황실 지도 「10m 이내」 표시: 앵커 4+ · 동기 품질 · 에폭 안정 · 오차 상한 10m 이하
+            uint8_t map_10m_cert = 0u;
+            if (match_count >= 4u && quality >= 80u && p->epoch_count >= 4u
+                && acc_m <= 10u) {
+                map_10m_cert = 1u;
+            }
+
+            p->position.lat_1e4 = avg_lat;
+            p->position.lon_1e4 = avg_lon;
+            p->position.accuracy_m = acc_m;
+            p->position.anchor_count = static_cast<uint8_t>(match_count);
+            p->position.quality = quality;
+            p->position.map_10m_cert = map_10m_cert;
+            p->position.valid = 1u;
         }
-
-        p->position.lat_1e4 = avg_lat;
-        p->position.lon_1e4 = avg_lon;
-        p->position.accuracy_m = acc_m;
-        p->position.anchor_count = static_cast<uint8_t>(match_count);
-        p->position.quality = quality;
-        p->position.map_10m_cert = map_10m_cert;
-        p->position.valid = 1u;
-
-        loc_critical_exit(pm);
     }
 
     PositionResult HTS_Location_Engine::Get_Position() const noexcept {
@@ -642,9 +625,11 @@ namespace ProtectedEngine {
             PositionResult empty = {};
             return empty;
         }
-        const uint32_t pm = loc_critical_enter();
-        const PositionResult result = p->position;
-        loc_critical_exit(pm);
+        PositionResult result = {};
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            result = p->position;
+        }
         return result;
     }
 
@@ -718,14 +703,14 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        const uint32_t pm = loc_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // 대상 확인: 내 ID 또는 와일드카드(0xFFFF)
         const bool is_wildcard =
             (token.target_device_id == DEVICE_ID_WILDCARD);
         if (!is_wildcard && token.target_device_id != p->my_id) {
             p->log_audit(current_sec, token.agency_id, 3u);
-            loc_critical_exit(pm);
+            irq.release();
             return false;
         }
 
@@ -736,7 +721,7 @@ namespace ProtectedEngine {
                 (token.agency_id == 0x0119u);    // 소방청
             if (!valid_agency) {
                 p->log_audit(current_sec, token.agency_id, 3u);
-                loc_critical_exit(pm);
+                irq.release();
                 return false;
             }
         }
@@ -744,7 +729,7 @@ namespace ProtectedEngine {
         // 시간 유효성 (발급 시각 이후여야)
         if (current_sec < token.issue_time) {
             p->log_audit(current_sec, token.agency_id, 3u);
-            loc_critical_exit(pm);
+            irq.release();
             return false;
         }
 
@@ -755,13 +740,13 @@ namespace ProtectedEngine {
             p->position.lon_1e4, token))
         {
             p->log_audit(current_sec, token.agency_id, 3u);
-            loc_critical_exit(pm);
+            irq.release();
             return false;
         }
 
         if (!verify_token_signature(token)) {
             p->log_audit(current_sec, token.agency_id, 3u);
-            loc_critical_exit(pm);
+            irq.release();
             return false;
         }
 
@@ -772,7 +757,7 @@ namespace ProtectedEngine {
         p->last_gasp_remain = Impl::LAST_GASP_IDLE;
         p->tracking_mode = TrackingMode::EMERGENCY_AUTH;
         p->log_audit(current_sec, token.agency_id, 0u);
-        loc_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -784,18 +769,18 @@ namespace ProtectedEngine {
         if (!p->owner_pin_set) { return false; }
         if (p->owner_pin_hash != owner_pin) { return false; }
 
-        const uint32_t pm = loc_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // 중복 확인
         for (size_t i = 0u; i < p->family_count; ++i) {
             if (p->family_ids[i] == family_id) {
-                loc_critical_exit(pm);
+                irq.release();
                 return true;  // 이미 등록
             }
         }
 
         if (p->family_count >= MAX_FAMILY_DEVS) {
-            loc_critical_exit(pm);
+            irq.release();
             return false;
         }
 
@@ -803,7 +788,7 @@ namespace ProtectedEngine {
         p->family_count++;
         p->tracking_mode = TrackingMode::FAMILY_CONSENT;
         p->log_audit(0u, family_id, 0u);
-        loc_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -818,14 +803,14 @@ namespace ProtectedEngine {
         if (!p->owner_pin_set) { return false; }
         if (p->owner_pin_hash != owner_pin) { return false; }
 
-        const uint32_t pm = loc_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->tracking_mode = TrackingMode::TRACKING_OFF;
         p->auth_valid = false;
         p->family_count = 0u;
         Loc_Secure_Wipe(p->family_ids, sizeof(p->family_ids));
         Loc_Secure_Wipe(&p->auth_token, sizeof(p->auth_token));
         p->log_audit(0u, p->my_id, 2u);  // 소유자 해제
-        loc_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -857,10 +842,10 @@ namespace ProtectedEngine {
         // 기관 ID 일치 확인 (다른 기관이 갱신 시도 차단)
         if (p->auth_token.agency_id != agency_id) { return false; }
 
-        const uint32_t pm = loc_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->auth_token.last_heartbeat = current_sec;
         p->log_audit(current_sec, agency_id, 4u);  // 4=갱신
-        loc_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -882,12 +867,14 @@ namespace ProtectedEngine {
     {
         const Impl* p = get_impl();
         if (p == nullptr || out == nullptr || cap == 0u) { return 0u; }
-        const uint32_t pm = loc_critical_enter();
-        const size_t n = (p->audit_count < cap) ? p->audit_count : cap;
-        for (size_t i = 0u; i < n; ++i) {
-            out[i] = p->audit_log[i];
+        size_t n = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            n = (p->audit_count < cap) ? p->audit_count : cap;
+            for (size_t i = 0u; i < n; ++i) {
+                out[i] = p->audit_log[i];
+            }
         }
-        loc_critical_exit(pm);
         return n;
     }
 
@@ -911,7 +898,7 @@ namespace ProtectedEngine {
 
         // [갱신형] 하트비트 타임아웃 체크 (48시간 미수신 → 만료)
         {
-            const uint32_t pm = loc_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             if (p->tracking_mode == TrackingMode::EMERGENCY_AUTH &&
                 p->auth_valid)
             {
@@ -927,7 +914,6 @@ namespace ProtectedEngine {
                     Loc_Secure_Wipe(&p->auth_token, sizeof(p->auth_token));
                 }
             }
-            loc_critical_exit(pm);
         }
 
         // ── Last Gasp: 배터리 < 5% → 즉시 3회 버스트 ────────────────
@@ -994,9 +980,9 @@ namespace ProtectedEngine {
             flags = 0x00u;
         }
         else {
-            const uint32_t pm = loc_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             if (p->position.valid == 0u) {
-                loc_critical_exit(pm);
+                irq.release();
                 return;
             }
             lat = p->position.lat_1e4;
@@ -1008,7 +994,7 @@ namespace ProtectedEngine {
             flags |= static_cast<uint8_t>(
                 (p->position.quality / 14u) & 0x07u);
             pkt8_map_cert = p->position.map_10m_cert;
-            loc_critical_exit(pm);
+            irq.release();
         }
 
         // 패킷 조립 + 전송 (인스턴스 로컬 풀)
@@ -1037,7 +1023,7 @@ namespace ProtectedEngine {
     void HTS_Location_Engine::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = loc_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         Loc_Secure_Wipe(p->anchors, sizeof(p->anchors));
         Loc_Secure_Wipe(&p->auth_token, sizeof(p->auth_token));
         Loc_Secure_Wipe(p->family_ids, sizeof(p->family_ids));
@@ -1046,7 +1032,6 @@ namespace ProtectedEngine {
         p->tracking_mode = TrackingMode::TRACKING_OFF;
         p->auth_valid = false;
         p->family_count = 0u;
-        loc_critical_exit(pm);
     }
 
 } // namespace ProtectedEngine

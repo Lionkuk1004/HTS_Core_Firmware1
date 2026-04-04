@@ -327,8 +327,14 @@ namespace ProtectedEngine {
             }
 #endif
 
-            // Flash write bounds check
-            if (write_offset + static_cast<uint32_t>(chunk_len) > OTA_BANK_SIZE) {
+            // Flash write bounds check (뺄셈 기반 — write_offset+chunk_len 합산 오버플로우 회피)
+            if (write_offset > OTA_BANK_SIZE) {
+                last_result = OTA_Result::SIZE_FAIL;
+                Transition_State(OTA_State::ERROR);
+                return;
+            }
+            const uint32_t bank_remain = OTA_BANK_SIZE - write_offset;
+            if (static_cast<uint32_t>(chunk_len) > bank_remain) {
                 last_result = OTA_Result::SIZE_FAIL;
                 Transition_State(OTA_State::ERROR);
                 return;

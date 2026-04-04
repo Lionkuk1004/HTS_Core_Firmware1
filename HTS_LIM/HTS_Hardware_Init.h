@@ -10,6 +10,19 @@
 //  → 파트너사 보드 설계에 따라 레지스터 주소를 교체하십시오.
 //  → DWT CYCCNT(0xE0001004) / DEMCR(0xE000EDFC)는 Cortex-M4 표준
 //
+// [Secure Provisioning / 부트 FSM 연계]
+//  · 공정(Unprovisioned): SWD/JTAG·루트키 주입이 필요한 단계는 RDP/옵션·빌드 스위치
+//    (예: HTS_ALLOW_OPEN_DEBUG)로 “봉인 전”과 구분. Sealed 양산에서는
+//    HTS_BOOT_ENFORCE_RDP_LEVEL2·HTS_RDP_EXPECTED_BYTE 등으로 봉인 조건 강제.
+//  · 런타임 JTAG 핫플러깅 자폭(Anti_Debug 등)은 Sealed 전제에서 적용하고 공정 모드와
+//    상태 전이를 분리할 것.
+//
+// [독립 클럭 Watchdog]
+//  · WDT_CTRL/FEED(0x80003000대)는 AMI placeholder. HSE/HSI 정지 시에도 리셋을 보장하려면
+//    STM32 IWDG(LSI, RM0090 0x40003000) 등 메인 PLL과 독립 클럭의 HW WDT를 병행하거나
+//    본 레지스터를 IWDG 리로드 경로에 매핑해 Kick_Watchdog()이 실제 독립 WDT를 갱신하도록
+//    양산 보드에서 확정할 것.
+//
 // [Cache 함수 명칭 참고]
 //  STM32F407 (Cortex-M4)에는 I/D 캐시가 없습니다.
 //  Cache_Clean_Tx / Cache_Invalidate_Rx / Cache_Invalidate_Tx는

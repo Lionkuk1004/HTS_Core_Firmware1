@@ -14,6 +14,7 @@
 //  · 소멸자: PRIMASK 또는 스핀 상한(op_busy_)
 // =========================================================================
 #include "HTS_OTA_AMI_Manager.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_ConstantTimeUtil.h"
 #include "HTS_Secure_Memory.h"
 
@@ -24,13 +25,6 @@
 #include <new>
 
 // Cortex-M 임베디드: atomic_flag 스핀 중 ISR 재진입 시 데드락 → PRIMASK (Key_Rotator 동일 판별)
-#if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
-    !defined(__aarch64__)
-#define HTS_OTA_AMI_PRIMASK_DESTRUCTOR 1
-#else
-#define HTS_OTA_AMI_PRIMASK_DESTRUCTOR 0
-#endif
 
 namespace ProtectedEngine {
     struct OTA_Busy_Guard {
@@ -251,20 +245,14 @@ namespace ProtectedEngine {
             }
         }
         impl_valid_.store(false, std::memory_order_release);
-#if HTS_OTA_AMI_PRIMASK_DESTRUCTOR && (defined(__GNUC__) || defined(__clang__))
-        uint32_t primask_saved;
-        __asm__ __volatile__("mrs %0, primask\n\t"
-            "cpsid i"
-            : "=r"(primask_saved) :: "memory");
-#endif
-        Impl* p =
-            reinterpret_cast<Impl*>(impl_buf_);
-        if (p != nullptr) { p->~Impl(); }
-        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
-        op_busy_.clear(std::memory_order_release);
-#if HTS_OTA_AMI_PRIMASK_DESTRUCTOR && (defined(__GNUC__) || defined(__clang__))
-        __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
-#endif
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            Impl* p =
+                reinterpret_cast<Impl*>(impl_buf_);
+            if (p != nullptr) { p->~Impl(); }
+            SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
+            op_busy_.clear(std::memory_order_release);
+        }
     }
 
     void HTS_OTA_AMI_Manager::Register_Crypto(

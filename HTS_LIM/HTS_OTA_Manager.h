@@ -29,6 +29,10 @@
 ///   - CRC-32 전체 검증 후에만 커밋 허용
 ///   - ABORT: 수신 중 언제든 중단 가능
 ///
+/// @note Flash wear: 동일 두 섹터만 반복 erase/program 하면 수명 한계에 조기 도달.
+///   EEPROM 에뮬·카운터·메타 슬롯 등 고빈도 갱신은 웨어 레벨링, 스페이어 섹터 순환,
+///   또는 HW 쓰기 카운터 기반 정책을 Flash HAL/보드 측과 병행 설계할 것.
+///
 /// @warning sizeof(HTS_OTA_Manager) ~ 512B. 전역/정적 배치 권장.
 ///
 /// @author 임영준 (Lim Young-jun)

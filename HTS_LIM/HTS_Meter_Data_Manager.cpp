@@ -4,6 +4,7 @@
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
 // =========================================================================
 #include "HTS_Meter_Data_Manager.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Crc32Util.h"
 #include "HTS_Priority_Scheduler.h"
 
@@ -35,21 +36,6 @@ namespace ProtectedEngine {
 #endif
         std::atomic_thread_fence(std::memory_order_release);
     }
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t mtr_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void mtr_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t mtr_critical_enter() noexcept { return 0u; }
-    static inline void mtr_critical_exit(uint32_t) noexcept {}
-#endif
 
     static void ser_u16(uint8_t* dst, uint16_t v) noexcept {
         dst[0] = static_cast<uint8_t>(v & 0xFFu);
@@ -166,11 +152,10 @@ namespace ProtectedEngine {
         norm.pad[0] = 0u;
         norm.pad[1] = 0u;
         const uint32_t crc = meter_reading_crc(norm);
-        const uint32_t pm = mtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->latest = norm;
         p->latest_crc = crc;
         p->crc_fault_latched = false;
-        mtr_critical_exit(pm);
     }
 
     void HTS_Meter_Data_Manager::Register_Meter_Reading_Verify(
@@ -178,10 +163,9 @@ namespace ProtectedEngine {
     {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = mtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->verify_fn = fn;
         p->verify_user = user;
-        mtr_critical_exit(pm);
     }
 
     void HTS_Meter_Data_Manager::Log_Event(
@@ -189,7 +173,7 @@ namespace ProtectedEngine {
     {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = mtr_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const size_t hi = static_cast<size_t>(p->event_head);
         MeterLogEntry& e = p->event_log[hi];
         e.timestamp = timestamp;
@@ -198,7 +182,6 @@ namespace ProtectedEngine {
             (static_cast<uint32_t>(p->event_head) + 1u) & EVENT_LOG_MASK;
         p->event_head = static_cast<uint8_t>(nh);
         if (p->event_count < EVENT_LOG_SIZE) { p->event_count++; }
-        mtr_critical_exit(pm);
     }
 
     // =====================================================================
@@ -211,15 +194,13 @@ namespace ProtectedEngine {
         MeterReading r;
         uint32_t expect;
         {
-            const uint32_t pm = mtr_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             r = p->latest;
             expect = p->latest_crc;
-            mtr_critical_exit(pm);
         }
         if (meter_reading_crc(r) != expect) {
-            const uint32_t pm = mtr_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             p->crc_fault_latched = true;
-            mtr_critical_exit(pm);
             MeterReading z = {};
             return z;
         }
@@ -229,9 +210,11 @@ namespace ProtectedEngine {
     bool HTS_Meter_Data_Manager::Is_Meter_Integrity_Fault() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
-        const uint32_t pm = mtr_critical_enter();
-        const bool f = p->crc_fault_latched;
-        mtr_critical_exit(pm);
+        bool f = false;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            f = p->crc_fault_latched;
+        }
         return f;
     }
 
@@ -240,9 +223,11 @@ namespace ProtectedEngine {
     {
         const Impl* p = get_impl();
         if (p == nullptr || slot >= PROFILE_SLOTS) { return 0u; }
-        const uint32_t pm = mtr_critical_enter();
-        const uint32_t v = p->profile[static_cast<size_t>(slot)];
-        mtr_critical_exit(pm);
+        uint32_t v = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            v = p->profile[static_cast<size_t>(slot)];
+        }
         return v;
     }
 
@@ -251,19 +236,21 @@ namespace ProtectedEngine {
     {
         const Impl* p = get_impl();
         if (p == nullptr || out == nullptr || cap == 0u) { return 0u; }
-        const uint32_t pm = mtr_critical_enter();
-        const size_t n = (p->event_count < cap) ? p->event_count : cap;
-        const uint8_t ec = p->event_count;
-        const uint8_t eh = p->event_head;
-        for (size_t i = 0u; i < n; ++i) {
-            const uint32_t sum =
-                static_cast<uint32_t>(eh) + EVENT_LOG_SIZE
-                - static_cast<uint32_t>(ec) + static_cast<uint32_t>(i);
-            const size_t idx =
-                static_cast<size_t>(sum & EVENT_LOG_MASK);
-            out[i] = p->event_log[idx];
+        size_t n = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            n = (p->event_count < cap) ? p->event_count : cap;
+            const uint8_t ec = p->event_count;
+            const uint8_t eh = p->event_head;
+            for (size_t i = 0u; i < n; ++i) {
+                const uint32_t sum =
+                    static_cast<uint32_t>(eh) + EVENT_LOG_SIZE
+                    - static_cast<uint32_t>(ec) + static_cast<uint32_t>(i);
+                const size_t idx =
+                    static_cast<size_t>(sum & EVENT_LOG_MASK);
+                out[i] = p->event_log[idx];
+            }
         }
-        mtr_critical_exit(pm);
         return n;
     }
 
@@ -289,13 +276,12 @@ namespace ProtectedEngine {
             MeterReading lr;
             uint32_t expect;
             {
-                const uint32_t pm = mtr_critical_enter();
+                Armv7m_Irq_Mask_Guard irq;
                 lr = p->latest;
                 expect = p->latest_crc;
-                mtr_critical_exit(pm);
             }
             if (meter_reading_crc(lr) == expect) {
-                const uint32_t pm = mtr_critical_enter();
+                Armv7m_Irq_Mask_Guard irq;
                 const size_t ph = static_cast<size_t>(p->profile_head);
                 p->profile[ph] = lr.watt_hour;
                 // PROFILE_SLOTS=96 → 2의 거듭제곱 아님 — 비교·래핑으로 UDIV 회피
@@ -303,12 +289,10 @@ namespace ProtectedEngine {
                 if (phn >= static_cast<uint32_t>(PROFILE_SLOTS)) { phn = 0u; }
                 p->profile_head = static_cast<uint8_t>(phn);
                 p->last_profile_ms += PROFILE_INTERVAL_MS;
-                mtr_critical_exit(pm);
             }
             else {
-                const uint32_t pm = mtr_critical_enter();
+                Armv7m_Irq_Mask_Guard irq;
                 p->crc_fault_latched = true;
-                mtr_critical_exit(pm);
             }
         }
 
@@ -324,18 +308,16 @@ namespace ProtectedEngine {
         uint8_t evc = 0u;
         uint16_t my_id_snap = 0u;
         {
-            const uint32_t pm = mtr_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             lr = p->latest;
             expect = p->latest_crc;
             evc = p->event_count;
             my_id_snap = p->my_id;
-            mtr_critical_exit(pm);
         }
         const bool ok = (meter_reading_crc(lr) == expect);
         if (!ok) {
-            const uint32_t pm = mtr_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             p->crc_fault_latched = true;
-            mtr_critical_exit(pm);
             return;
         }
         ser_u16(&pkt[0], my_id_snap);
@@ -354,10 +336,11 @@ namespace ProtectedEngine {
     void HTS_Meter_Data_Manager::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = mtr_critical_enter();
-        p->verify_fn = nullptr;
-        p->verify_user = nullptr;
-        mtr_critical_exit(pm);
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            p->verify_fn = nullptr;
+            p->verify_user = nullptr;
+        }
         Mtr_Secure_Wipe(p->profile, sizeof(p->profile));
         Mtr_Secure_Wipe(p->event_log, sizeof(p->event_log));
     }

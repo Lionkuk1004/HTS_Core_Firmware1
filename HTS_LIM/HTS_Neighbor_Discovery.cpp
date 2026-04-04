@@ -11,6 +11,7 @@
 //  · 3중 보안 소거
 // =========================================================================
 #include "HTS_Neighbor_Discovery.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Priority_Scheduler.h"
 
 #if defined(_MSC_VER)
@@ -42,22 +43,8 @@ namespace ProtectedEngine {
     }
 
     // =====================================================================
-    //  PRIMASK 크리티컬 섹션
+    //  PRIMASK 크리티컬 섹션 — STAGE 3: Armv7m_Irq_Mask_Guard (RAII + release)
     // =====================================================================
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t nd_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void nd_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t nd_critical_enter() noexcept { return 0u; }
-    static inline void nd_critical_exit(uint32_t) noexcept {}
-#endif
 
     // =====================================================================
     //  엔디안 독립 직렬화/역직렬화
@@ -268,9 +255,8 @@ namespace ProtectedEngine {
     {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->link_down_cb = cb;
-        nd_critical_exit(pm);
     }
 
     // =====================================================================
@@ -283,7 +269,7 @@ namespace ProtectedEngine {
         if (p == nullptr) { return; }
         const uint8_t mode_v = static_cast<uint8_t>(mode);
         if (mode_v > static_cast<uint8_t>(DiscoveryMode::REALTIME)) { return; }
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         const DiscoveryMode prev = p->mode;
         const uint32_t old_interval = p->get_interval();
@@ -306,16 +292,16 @@ namespace ProtectedEngine {
         {
             p->first_tick = true;
         }
-
-        nd_critical_exit(pm);
     }
 
     DiscoveryMode HTS_Neighbor_Discovery::Get_Mode() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return DiscoveryMode::DEEP_SLEEP; }
-        const uint32_t pm = nd_critical_enter();
-        const DiscoveryMode mode = p->mode;
-        nd_critical_exit(pm);
+        DiscoveryMode mode = DiscoveryMode::DEEP_SLEEP;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            mode = p->mode;
+        }
         return mode;
     }
 
@@ -325,10 +311,13 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        const uint32_t pm = nd_critical_enter();
-        const uint32_t last_beacon_ms = p->last_beacon_ms;
-        const uint32_t rx_win = p->get_rx_window();
-        nd_critical_exit(pm);
+        uint32_t last_beacon_ms = 0u;
+        uint32_t rx_win = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            last_beacon_ms = p->last_beacon_ms;
+            rx_win = p->get_rx_window();
+        }
 
         const uint32_t since_tx = systick_ms - last_beacon_ms;
         return since_tx < rx_win;
@@ -340,17 +329,15 @@ namespace ProtectedEngine {
     void HTS_Neighbor_Discovery::Set_My_Hop(uint8_t hop) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->my_hop = hop;
-        nd_critical_exit(pm);
     }
 
     void HTS_Neighbor_Discovery::Set_My_TX_Power(int8_t dbm) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->my_tx_power = dbm;
-        nd_critical_exit(pm);
     }
 
     // =====================================================================
@@ -374,7 +361,7 @@ namespace ProtectedEngine {
         // 자기 비콘 무시
         if (src_id == p->my_id) { return; }
 
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         int32_t slot = p->find_by_id(src_id);
 
@@ -413,8 +400,6 @@ namespace ProtectedEngine {
             }
             // 테이블 풀: 드롭 (가장 약한 RSSI 대체도 가능하나 복잡도 증가)
         }
-
-        nd_critical_exit(pm);
     }
 
     // =====================================================================
@@ -430,9 +415,9 @@ namespace ProtectedEngine {
         //  TX 차단: RF/PA 미가동 → 배터리 보존
         //  타임아웃 차단: 이웃 테이블 동결 (WATCH 전환 시 재활용)
         //  WATCH/ALERT 전환 시 first_tick=true로 즉시 비콘 재개
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         if (p->mode == DiscoveryMode::DEEP_SLEEP) {
-            nd_critical_exit(pm);
+            irq.release();
             return;
         }
 
@@ -503,7 +488,7 @@ namespace ProtectedEngine {
             send_beacon = true;
         }
 
-        nd_critical_exit(pm);
+        irq.release();
 
         // ── 크리티컬 밖 ──
 
@@ -533,9 +518,11 @@ namespace ProtectedEngine {
     size_t HTS_Neighbor_Discovery::Get_Neighbor_Count() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = nd_critical_enter();
-        const size_t c = static_cast<size_t>(p->neighbor_count);
-        nd_critical_exit(pm);
+        size_t c = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            c = static_cast<size_t>(p->neighbor_count);
+        }
         return c;
     }
 
@@ -545,10 +532,10 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr || idx >= MAX_NBR) { return false; }
 
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const NbrEntry& e = p->table[idx];
         if (e.valid == 0u) {
-            nd_critical_exit(pm);
+            irq.release();
             return false;
         }
         out.node_id = e.node_id;
@@ -559,7 +546,7 @@ namespace ProtectedEngine {
         out.capability = e.capability;
         out.tx_power_dbm = e.tx_power_dbm;
         out.valid = 1u;
-        nd_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -569,10 +556,10 @@ namespace ProtectedEngine {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
 
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const int32_t slot = p->find_by_id(node_id);
         if (slot < 0) {
-            nd_critical_exit(pm);
+            irq.release();
             return false;
         }
         const NbrEntry& e = p->table[static_cast<size_t>(slot)];
@@ -584,7 +571,7 @@ namespace ProtectedEngine {
         out.capability = e.capability;
         out.tx_power_dbm = e.tx_power_dbm;
         out.valid = 1u;
-        nd_critical_exit(pm);
+        irq.release();
         return true;
     }
 
@@ -594,10 +581,9 @@ namespace ProtectedEngine {
     void HTS_Neighbor_Discovery::Shutdown() noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = nd_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         ND_Secure_Wipe(p->table, sizeof(p->table));
         p->neighbor_count = 0u;
-        nd_critical_exit(pm);
     }
 
 } // namespace ProtectedEngine

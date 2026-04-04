@@ -4,6 +4,7 @@
 // Target: STM32F407VGT6 (Cortex-M4F, 168MHz)
 //
 #include "HTS_Universal_API.h"
+#include "HTS_BitOps.h"
 #include "HTS_Secure_Memory.h"
 
 #include <atomic>
@@ -99,7 +100,7 @@ namespace ProtectedEngine {
         std::memcpy(&u, tail, rem);
         scrambler = uapi_scramble_advance(scrambler, word_count);
         const uint32_t tail_active =
-            (static_cast<uint32_t>(rem) + 3u) >> 2;
+            align_up_pow2_mask_u32(static_cast<uint32_t>(rem), 3u) >> 2;
         const uint32_t tail_mask = static_cast<uint32_t>(0u - tail_active);
         u ^= scrambler & tail_mask;
         checksum ^= u & tail_mask;

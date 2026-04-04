@@ -18,6 +18,7 @@
 //   ④ RDP: HTS_Hardware_Init 부트 검사.
 // =========================================================================
 #include "HTS_Priority_Scheduler.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Anti_Debug.h"
 #include "HTS_Secure_Memory.h"
 
@@ -134,22 +135,8 @@ namespace ProtectedEngine {
     //  Dequeue: TX 타이머 ISR에서 호출 가능
     //  Tick:    SysTick ISR에서 호출
     //  → 3곳의 인터럽트 우선순위가 다를 수 있음 → PRIMASK 필수
+    //     (STAGE 3: Armv7m_Irq_Mask_Guard + release()로 기존 exit 시점 보존)
     // =====================================================================
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void critical_exit(uint32_t primask) noexcept {
-        __asm volatile ("MSR PRIMASK, %0"
-        :: "r"(primask) : "memory");
-    }
-#else
-    static inline uint32_t critical_enter() noexcept { return 0u; }
-    static inline void critical_exit(uint32_t) noexcept {}
-#endif
 
     // =====================================================================
     //  NF 임계값 (FEC_HARQ와 동일 기준)
@@ -253,7 +240,7 @@ namespace ProtectedEngine {
         item.len = static_cast<uint8_t>(len);
         item.orig_priority = static_cast<uint8_t>(priority);
 
-        const uint32_t pm = critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         bool ok = false;
 
         switch (priority) {
@@ -270,11 +257,11 @@ namespace ProtectedEngine {
                 p->q_data.tail, p->q_data.count, item);
             break;
         default:
-            critical_exit(pm);
+            irq.release();
             return EnqueueResult::NULL_INPUT;
         }
 
-        critical_exit(pm);
+        irq.release();
         return ok ? EnqueueResult::OK : EnqueueResult::QUEUE_FULL;
     }
 
@@ -293,13 +280,13 @@ namespace ProtectedEngine {
 
         QueueItem item = {};
 
-        const uint32_t pm = critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // P0: SOS (항상 최우선)
         if (ring_pop(p->q_sos.items, static_cast<uint8_t>(SOS_CAP),
             p->q_sos.head, p->q_sos.count, item))
         {
-            critical_exit(pm);
+            irq.release();
             std::memcpy(out_data, item.data, item.len);
             out_len = static_cast<size_t>(item.len);
             out_priority = PacketPriority::SOS;
@@ -311,7 +298,7 @@ namespace ProtectedEngine {
         if (ring_pop(p->q_voice.items, static_cast<uint8_t>(VOICE_CAP),
             p->q_voice.head, p->q_voice.count, item))
         {
-            critical_exit(pm);
+            irq.release();
             std::memcpy(out_data, item.data, item.len);
             out_len = static_cast<size_t>(item.len);
             out_priority = PacketPriority::VOICE;
@@ -324,7 +311,7 @@ namespace ProtectedEngine {
             if (ring_pop(p->q_data.items, static_cast<uint8_t>(DATA_CAP),
                 p->q_data.head, p->q_data.count, item))
             {
-                critical_exit(pm);
+                irq.release();
                 std::memcpy(out_data, item.data, item.len);
                 out_len = static_cast<size_t>(item.len);
                 out_priority = PacketPriority::DATA;
@@ -333,7 +320,6 @@ namespace ProtectedEngine {
             }
         }
 
-        critical_exit(pm);
         return false;
     }
 
@@ -352,7 +338,7 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // NF 기반 DATA 억제 정책
         p->last_nf = current_nf;
@@ -379,14 +365,12 @@ namespace ProtectedEngine {
                 ring_push(p->q_voice.items, static_cast<uint8_t>(VOICE_CAP),
                     p->q_voice.tail, p->q_voice.count, aged);
 
-                critical_exit(pm);
+                irq.release();
                 SecureMemory::secureWipe(static_cast<void*>(&aged), sizeof(aged));
-                return;  // pm 이미 해제됨 → 아래 exit 건너뜀
+                return;
             }
             // 조건 미충족 시: pop 하지 않음 → FIFO 순서 보존
         }
-
-        critical_exit(pm);
     }
 
     // =====================================================================
@@ -396,14 +380,13 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         ring_flush(p->q_sos.items, sizeof(p->q_sos.items),
             p->q_sos.head, p->q_sos.tail, p->q_sos.count);
         ring_flush(p->q_voice.items, sizeof(p->q_voice.items),
             p->q_voice.head, p->q_voice.tail, p->q_voice.count);
         ring_flush(p->q_data.items, sizeof(p->q_data.items),
             p->q_data.head, p->q_data.tail, p->q_data.count);
-        critical_exit(pm);
     }
 
     // =====================================================================
@@ -412,36 +395,44 @@ namespace ProtectedEngine {
     size_t HTS_Priority_Scheduler::Get_SOS_Count() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = critical_enter();
-        const size_t n = static_cast<size_t>(p->q_sos.count);
-        critical_exit(pm);
+        size_t n = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            n = static_cast<size_t>(p->q_sos.count);
+        }
         return n;
     }
 
     size_t HTS_Priority_Scheduler::Get_VOICE_Count() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = critical_enter();
-        const size_t n = static_cast<size_t>(p->q_voice.count);
-        critical_exit(pm);
+        size_t n = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            n = static_cast<size_t>(p->q_voice.count);
+        }
         return n;
     }
 
     size_t HTS_Priority_Scheduler::Get_DATA_Count() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = critical_enter();
-        const size_t n = static_cast<size_t>(p->q_data.count);
-        critical_exit(pm);
+        size_t n = 0u;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            n = static_cast<size_t>(p->q_data.count);
+        }
         return n;
     }
 
     bool HTS_Priority_Scheduler::Is_DATA_Suppressed() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return false; }
-        const uint32_t pm = critical_enter();
-        const bool s = p->data_suppressed;
-        critical_exit(pm);
+        bool s = false;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            s = p->data_suppressed;
+        }
         return s;
     }
 

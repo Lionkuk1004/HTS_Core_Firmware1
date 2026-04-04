@@ -6,6 +6,7 @@
 /// @copyright INNOViD 2026. All rights reserved.
 
 #include "HTS_Console_Manager.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_IPC_Protocol.h"
 #include "HTS_Role_Auth.h"
 #include "HTS_Secure_Logger.h"
@@ -19,24 +20,10 @@
 //  channel_config(ChannelConfig, ~28B)는 원자 타입이 아니므로
 //  Apply_Param(IPC ISR 경로) vs Set_Channel_Config(앱 태스크 경로)
 //  동시 접근 시 Torn Write 발생 가능.
-//  -> PRIMASK(ARM: __disable_irq/__enable_irq)로 인터럽트 차단,
+//  -> PRIMASK(ARM: CPSID I)로 인터럽트 차단 — Armv7m_Irq_Mask_Guard(RAII)로 복원 보장.
 //     memcpy 단위로 원자적 복사 보장.
 //  ISR 내부에서는 중첩 진입 불가(재진입 없음) -> PRIMASK 안전.
 // ============================================================
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-static inline uint32_t con_critical_enter() noexcept {
-    uint32_t pm;
-    __asm__ volatile ("MRS %0, PRIMASK" : "=r"(pm));
-    __asm__ volatile ("CPSID I" ::: "memory");
-    return pm;
-}
-static inline void con_critical_exit(uint32_t pm) noexcept {
-    __asm__ volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-}
-#else
-static inline uint32_t con_critical_enter() noexcept { return 0u; }
-static inline void con_critical_exit(uint32_t) noexcept {}
-#endif
 
 namespace ProtectedEngine {
 
@@ -48,7 +35,7 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
             __asm__ __volatile__("" ::: "memory");
 #else
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            std::atomic_thread_fence(std::memory_order_release);
 #endif
         }
 
@@ -322,7 +309,7 @@ namespace ProtectedEngine {
             //  두 경로가 channel_config 멤버를 바이트 단위로 동시 수정 시
             //  Torn Write 발생 -> 트랜시버 오동작(엉뚱한 RF 주파수/변조).
             //  -> PRIMASK 크리티컬 섹션으로 원자적 단일 파라미터 수정 보장.
-            const uint32_t pm = con_critical_enter();
+            Armv7m_Irq_Mask_Guard irq;
             switch (pid) {
             case ParamId::BPS_MODE:
                 if (len >= 1u && val[0] < static_cast<uint8_t>(BpsLevel::LEVEL_COUNT)) {
@@ -392,7 +379,6 @@ namespace ProtectedEngine {
                 // Read-only or unknown param -- silently ignore
                 break;
             }
-            con_critical_exit(pm);  // Torn Write 방어 크리티컬 섹션 해제
         }
 
         // ============================================================
@@ -684,9 +670,8 @@ namespace ProtectedEngine {
         }
         const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
         //  Apply_Param(IPC 경로)과 동시 실행 시 부분 읽기 방지
-        const uint32_t pm = con_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         std::memcpy(&out_config, &impl->channel_config, sizeof(ChannelConfig));
-        con_critical_exit(pm);
     }
 
     IPC_Error HTS_Console_Manager::Set_Channel_Config(const ChannelConfig& config) noexcept
@@ -708,9 +693,8 @@ namespace ProtectedEngine {
 
         //  Apply_Param(IPC 경로)과 동시 실행 시 구조체 찢어짐 방지
         //  (RF 주파수 상위/하위 바이트가 각각 다른 설정에서 오는 현상 차단)
-        const uint32_t pm = con_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         std::memcpy(&impl->channel_config, &config, sizeof(ChannelConfig));
-        con_critical_exit(pm);
         return IPC_Error::OK;
     }
 

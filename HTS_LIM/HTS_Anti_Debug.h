@@ -16,6 +16,12 @@
 //  [RDP/퓨즈] 옵션 바이트 RDP Level 검사는 부팅 경로(예: HTS_Hardware_Init,
 //   HTS_BOOT_ENFORCE_RDP_LEVEL2)에서 수행 — 본 모듈은 런타임 DHCSR 보완 탐지
 //
+//  [프로비저닝 FSM] Unprovisioned(공정·SWD/JTAG 허용) 단계와 Sealed 양산 단계를 부트·
+//   빌드 스위치(예: HTS_ALLOW_OPEN_DEBUG)로 분리. HTS_ALLOW_OPEN_DEBUG 정의 시
+//   pollHardwareOrFault / checkDebuggerPresence 는 즉시 반환(공정 디버그 허용).
+//   양산 Release에서는 반드시 미정의 — Sealed 후 런타임 핫플러깅 자폭과 HTS_Key_Provisioning
+//   정책을 정합할 것.
+//
 //  [사용법]
 //   AntiDebugManager::checkDebuggerPresence();
 //   → 탐지 시 forceHalt() 호출 — 반환하지 않음 ([[noreturn]])

@@ -411,8 +411,16 @@ namespace ProtectedEngine {
 
             default:
                 // Application-level frames: push to RX ring for main thread
-                Ring_RX_Push(spi_rx_buf, static_cast<uint16_t>(
-                    IPC_HEADER_SIZE + static_cast<uint32_t>(payload_len) + IPC_CRC_SIZE));
+                {
+                    static constexpr uint32_t k_ipc_frame_ov =
+                        IPC_HEADER_SIZE + IPC_CRC_SIZE;
+                    const uint32_t pl = static_cast<uint32_t>(payload_len);
+                    if (pl > IPC_MAX_FRAME_SIZE - k_ipc_frame_ov) {
+                        break;
+                    }
+                    Ring_RX_Push(spi_rx_buf,
+                        static_cast<uint16_t>(k_ipc_frame_ov + pl));
+                }
                 break;
             }
 

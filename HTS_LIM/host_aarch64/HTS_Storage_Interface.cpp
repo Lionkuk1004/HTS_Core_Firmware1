@@ -36,7 +36,7 @@ namespace {
 namespace ProtectedEngine {
     void Storage_Interface::Initialize_Storage(const std::vector<uint8_t>& pqc_seed) noexcept {
         adapter.Initialize_Device(DeviceType::SERVER_STORAGE);
-        key_bridge.Inject_Quantum_Entropy(pqc_seed);
+        key_bridge.Inject_Quantum_Entropy(pqc_seed.data(), pqc_seed.size());
         key_bridge.Synchronize_CTR_State(file_session_id);
     }
     bool Storage_Interface::Protect_File(std::vector<uint32_t>& file_buffer) noexcept {

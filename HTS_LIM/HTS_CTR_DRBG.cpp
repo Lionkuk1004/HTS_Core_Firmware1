@@ -19,6 +19,7 @@
 // [제약] try-catch 0, float/double 0, heap 0, iostream 0
 // =========================================================================
 #include "HTS_CTR_DRBG.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Physical_Entropy_Engine.h"
 #include "HTS_Secure_Logger.h"
 
@@ -49,21 +50,6 @@ namespace ProtectedEngine {
         std::atomic_thread_fence(std::memory_order_release);
     }
 
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t drbg_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-            : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void drbg_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t drbg_critical_enter() noexcept { return 0u; }
-    static inline void drbg_critical_exit(uint32_t) noexcept {}
-#endif
-
     // =====================================================================
     //  생성자 / 소멸자
     // =====================================================================
@@ -80,14 +66,13 @@ namespace ProtectedEngine {
     //  Uninstantiate — 키 소재 완전 소거
     // =====================================================================
     void HTS_CTR_DRBG::Uninstantiate() noexcept {
-        const uint32_t pm = drbg_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         DRBG_Wipe(key, sizeof(key));
         DRBG_Wipe(V, sizeof(V));
         DRBG_Wipe(prev_block, sizeof(prev_block));
         prev_block_valid = false;
         reseed_counter.store(0u, std::memory_order_release);
         instantiated.store(false, std::memory_order_release);
-        drbg_critical_exit(pm);
     }
 
     // =====================================================================
@@ -192,11 +177,10 @@ namespace ProtectedEngine {
             alignas(uint32_t) uint8_t v_snapshot[BLOCK_LEN] = {};
 
             {
-                const uint32_t pm = drbg_critical_enter();
+                Armv7m_Irq_Mask_Guard irq;
                 Increment_V(V);
                 std::memcpy(key_snapshot, key, KEY_LEN);
                 std::memcpy(v_snapshot, V, BLOCK_LEN);
-                drbg_critical_exit(pm);
             }
 
             if (Block_Encrypt(key_snapshot, v_snapshot, block_out) != SECURE_TRUE) {
@@ -221,11 +205,12 @@ namespace ProtectedEngine {
         }
 
         // 새 Key, V 설정 (원자적 갱신)
-        const uint32_t pm = drbg_critical_enter();
-        std::memcpy(key, temp, KEY_LEN);
-        std::memcpy(V, temp + KEY_LEN, BLOCK_LEN);
-        DRBG_Wipe(temp, sizeof(temp));
-        drbg_critical_exit(pm);
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            std::memcpy(key, temp, KEY_LEN);
+            std::memcpy(V, temp + KEY_LEN, BLOCK_LEN);
+            DRBG_Wipe(temp, sizeof(temp));
+        }
         return SECURE_TRUE;
     }
 
@@ -334,7 +319,7 @@ namespace ProtectedEngine {
             bool prev_valid_snapshot = false;
 
             {
-                const uint32_t pm = drbg_critical_enter();
+                Armv7m_Irq_Mask_Guard irq;
                 Increment_V(V);
                 std::memcpy(key_snapshot, key, KEY_LEN);
                 std::memcpy(v_snapshot, V, BLOCK_LEN);
@@ -342,7 +327,6 @@ namespace ProtectedEngine {
                 if (prev_valid_snapshot) {
                     std::memcpy(prev_snapshot, prev_block, BLOCK_LEN);
                 }
-                drbg_critical_exit(pm);
             }
 
             alignas(uint32_t) uint8_t block_out[BLOCK_LEN] = {};
@@ -372,12 +356,11 @@ namespace ProtectedEngine {
             }
             // 현재 블록을 이전 블록으로 저장
             {
-                const uint32_t pm = drbg_critical_enter();
+                Armv7m_Irq_Mask_Guard irq;
                 for (size_t j = 0u; j < BLOCK_LEN; ++j) {
                     prev_block[j] = block_out[j];
                 }
                 prev_block_valid = true;
-                drbg_critical_exit(pm);
             }
 
             const size_t remain = output_len - generated;

@@ -791,8 +791,18 @@ namespace ProtectedEngine {
             case IPC_Command::BPS_NOTIFY:
             case IPC_Command::RESET_CMD:
                 // Push to RX ring for main-loop processing
-                Ring_RX_Push(spi_rx_buf, static_cast<uint16_t>(
-                    IPC_HEADER_SIZE + static_cast<uint32_t>(payload_len) + IPC_CRC_SIZE));
+                {
+                    static constexpr uint32_t k_ipc_frame_ov =
+                        IPC_HEADER_SIZE + IPC_CRC_SIZE;
+                    const uint32_t pl = static_cast<uint32_t>(payload_len);
+                    if (pl > IPC_MAX_FRAME_SIZE - k_ipc_frame_ov) {
+                        stats.crc_errors.fetch_add(1u, std::memory_order_relaxed);
+                        Queue_NACK(static_cast<uint8_t>(IPC_Error::INVALID_LEN));
+                        break;
+                    }
+                    Ring_RX_Push(spi_rx_buf,
+                        static_cast<uint16_t>(k_ipc_frame_ov + pl));
+                }
                 // ACK the command
                 Queue_ACK(seq);
                 break;

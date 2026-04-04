@@ -56,7 +56,7 @@ namespace ProtectedEngine {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("" : : "r"(p) : "memory");
 #else
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_release);
 #endif
     }
 

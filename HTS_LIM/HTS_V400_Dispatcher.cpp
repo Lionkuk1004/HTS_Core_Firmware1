@@ -907,7 +907,11 @@ namespace ProtectedEngine {
             uint8_t correct_syms[FEC_HARQ::NSYM16] = {};
             const int enc_n = FEC_HARQ::Encode16(
                 data, data_len, correct_syms, il, wb_);
-            if (enc_n <= 0) return;
+            if (enc_n <= 0) {
+                SecureMemory::secureWipe(
+                    static_cast<void*>(correct_syms), sizeof(correct_syms));
+                return;
+            }
             const int nsym = (sym_idx_ < FEC_HARQ::NSYM16)
                 ? sym_idx_ : FEC_HARQ::NSYM16;
             for (int s = 0; s < nsym; ++s) {
@@ -927,13 +931,19 @@ namespace ProtectedEngine {
                         0xFFFFFFFFu, 0u, nc, true);
                 }
             }
+            SecureMemory::secureWipe(
+                static_cast<void*>(correct_syms), sizeof(correct_syms));
         }
         else if (nc == 64) {
             const int nsym64 = cur_nsym64_();
             uint8_t correct_syms[FEC_HARQ::NSYM64] = {};
             const int enc_n = FEC_HARQ::Encode64_A(
                 data, data_len, correct_syms, il, cur_bps64_, wb_);
-            if (enc_n <= 0) return;
+            if (enc_n <= 0) {
+                SecureMemory::secureWipe(
+                    static_cast<void*>(correct_syms), sizeof(correct_syms));
+                return;
+            }
             const int nsym = (sym_idx_ < nsym64) ? sym_idx_ : nsym64;
             for (int s = 0; s < nsym; ++s) {
                 if (ajc_enabled_) {
@@ -951,6 +961,8 @@ namespace ProtectedEngine {
                         0xFFFFFFFFu, 0u, nc, true);
                 }
             }
+            SecureMemory::secureWipe(
+                static_cast<void*>(correct_syms), sizeof(correct_syms));
         }
     }
 
@@ -1015,33 +1027,59 @@ namespace ProtectedEngine {
         if (mode == PayloadMode::VIDEO_1) {
             uint8_t syms[80] = {};
             int n = FEC_HARQ::Encode1(info, ilen, syms);
-            if (pos + n > max_c) return 0;
+            if (n <= 0) {
+                SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                return 0;
+            }
+            {
+                const int space = max_c - pos;
+                if (space < n) {
+                    SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                    return 0;
+                }
+            }
             for (int s = 0; s < n; ++s) {
                 oI[pos] = syms[s] ? static_cast<int16_t>(-amp) : amp;
                 oQ[pos] = oI[pos]; pos++;
             }
+            SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
         }
         else if (mode == PayloadMode::VIDEO_16 || mode == PayloadMode::VOICE) {
             uint8_t syms[FEC_HARQ::NSYM16] = {};
             const int enc_n = FEC_HARQ::Encode16(info, ilen, syms, il, wb_);
-            if (enc_n <= 0) return 0;
+            if (enc_n <= 0) {
+                SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                return 0;
+            }
             for (int s = 0; s < FEC_HARQ::NSYM16; ++s) {
-                if (pos + 16 > max_c) return 0;
+                const int space = max_c - pos;
+                if (space < 16) {
+                    SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                    return 0;
+                }
                 walsh_enc(syms[s], 16, amp, &oI[pos], &oQ[pos]); pos += 16;
             }
+            SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
         }
         else if (mode == PayloadMode::DATA) {
             const int nsym = cur_nsym64_();
             uint8_t syms[FEC_HARQ::NSYM64] = {};
             const int enc_n = FEC_HARQ::Encode64_A(
                 info, ilen, syms, il, cur_bps64_, wb_);
-            if (enc_n <= 0) return 0;
+            if (enc_n <= 0) {
+                SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                return 0;
+            }
 
             if (iq_mode_ == IQ_Mode::IQ_INDEPENDENT) {
                 // [적응형 I/Q] I/Q 독립: 2심볼/칩슬롯 → 칩 수 절반
                 //  짝수 인덱스 → I 채널, 홀수 인덱스 → Q 채널
                 for (int s = 0; s < nsym; s += 2) {
-                    if (pos + 64 > max_c) return 0;
+                    const int space = max_c - pos;
+                    if (space < 64) {
+                        SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                        return 0;
+                    }
                     const uint8_t sI = syms[s];
                     const uint8_t sQ = (s + 1 < nsym)
                         ? syms[s + 1] : 0u;  // 홀수 심볼일 때 패딩
@@ -1053,12 +1091,17 @@ namespace ProtectedEngine {
             else {
                 // I=Q 동일: 기존 방식 (재밍 방어)
                 for (int s = 0; s < nsym; ++s) {
-                    if (pos + 64 > max_c) return 0;
+                    const int space = max_c - pos;
+                    if (space < 64) {
+                        SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
+                        return 0;
+                    }
                     walsh_enc(syms[s], 64, amp,
                         &oI[pos], &oQ[pos]);
                     pos += 64;
                 }
             }
+            SecureMemory::secureWipe(static_cast<void*>(syms), sizeof(syms));
         }
         tx_seq_++;
         return pos;

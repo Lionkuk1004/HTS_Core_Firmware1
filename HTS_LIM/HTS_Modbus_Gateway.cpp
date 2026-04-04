@@ -5,6 +5,7 @@
 /// @copyright INNOViD 2026. All rights reserved.
 
 #include "HTS_Modbus_Gateway.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_IPC_Protocol.h"
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -14,14 +15,6 @@
 #include <cstring>  // memset
 
 namespace ProtectedEngine {
-
-#if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
-    !defined(__aarch64__)
-#define HTS_MODBUS_PRIMASK_SHUTDOWN 1
-#else
-#define HTS_MODBUS_PRIMASK_SHUTDOWN 0
-#endif
 
     namespace {
         struct Modbus_Busy_Guard {
@@ -348,7 +341,7 @@ namespace ProtectedEngine {
                     scaled = static_cast<uint16_t>((diff * 1280u) >> 6u);
                 }
 
-                if (pos + 2u > rsp_buf_size) { break; }
+                if (rsp_buf_size < pos || (rsp_buf_size - pos) < 2u) { break; }
                 MB_Write_U16(&rsp_buf_out[pos], scaled);
                 pos += 2u;
             }
@@ -375,7 +368,7 @@ namespace ProtectedEngine {
                 return;
             }
             if (data_len > MODBUS_MAX_PDU_DATA) { return; }
-            if (len < MODBUS_GW_HEADER_SIZE + static_cast<uint16_t>(data_len)) { return; }
+            if (static_cast<uint16_t>(len - MODBUS_GW_HEADER_SIZE) < data_len) { return; }
 
             const uint8_t* req_data = (data_len > 0u) ? &payload[MODBUS_GW_HEADER_SIZE] : nullptr;
 
@@ -585,38 +578,27 @@ namespace ProtectedEngine {
             }
         }
 
-#if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
-        uint32_t primask_saved;
-        __asm__ __volatile__("mrs %0, primask\n\t"
-            "cpsid i"
-            : "=r"(primask_saved) :: "memory");
-#endif
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            if (!initialized_.load(std::memory_order_acquire)) {
+                op_busy_.clear(std::memory_order_release);
+                return;
+            }
 
-        if (!initialized_.load(std::memory_order_acquire)) {
+            Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+            // 파괴 시작 전에 공개 API 차단 — ~Impl/소거 중 Get_State 등 UAF 방지
+            initialized_.store(false, std::memory_order_release);
+            impl->state = Modbus_State::OFFLINE;
+            impl->ipc = nullptr;
+            impl->~Impl();
+
+            //  tx_buf(256B) + rx_buf(256B) + gw_rsp_buf(256B) = 768B 전체 소거
+            //  소멸자만 호출하면 데이터가 SRAM에 잔류 (Data Remanence)
+            //  → 메모리 덤프 공격 시 산업 제어 명령 노출
+            Modbus_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+
             op_busy_.clear(std::memory_order_release);
-#if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
-            __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
-#endif
-            return;
         }
-
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
-        // 파괴 시작 전에 공개 API 차단 — ~Impl/소거 중 Get_State 등 UAF 방지
-        initialized_.store(false, std::memory_order_release);
-        impl->state = Modbus_State::OFFLINE;
-        impl->ipc = nullptr;
-        impl->~Impl();
-
-        //  tx_buf(256B) + rx_buf(256B) + gw_rsp_buf(256B) = 768B 전체 소거
-        //  소멸자만 호출하면 데이터가 SRAM에 잔류 (Data Remanence)
-        //  → 메모리 덤프 공격 시 산업 제어 명령 노출
-        Modbus_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-
-        op_busy_.clear(std::memory_order_release);
-
-#if HTS_MODBUS_PRIMASK_SHUTDOWN && (defined(__GNUC__) || defined(__clang__))
-        __asm__ __volatile__("msr primask, %0" :: "r"(primask_saved) : "memory");
-#endif
     }
 
     void HTS_Modbus_Gateway::Register_PHY_Callbacks(

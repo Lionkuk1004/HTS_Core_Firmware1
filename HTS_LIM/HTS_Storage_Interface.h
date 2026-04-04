@@ -22,6 +22,8 @@
 //   file_session_id: Quantum_Key_Bridge CTR 동기화 기반
 //   Protect_File_Partial: Dynamic_Key_Rotator 스택 + 반환 직전 SecureMemory 파쇄(이중 방어)
 //   키 로테이션: 1,048,576 연산마다 키 자동 갱신 (통계적 공격 차단)
+//   동일 파일·메타데이터 고빈도 갱신 시 호스트 스토리지(eMMC/SSD) 마모 — FS/드라이버
+//   웨어 레벨링·저널 정책은 플랫폼 가이드와 병행 검토.
 //
 //  [플랫폼]
 //   통합콘솔 (A55 Linux): 정상 동작 — Linux 파일시스템 + DDR 힙 사용 가능

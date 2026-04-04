@@ -331,6 +331,13 @@ namespace ProtectedEngine {
         for (uint16_t blk = 0u; blk < num_blocks; ++blk) {
             const size_t chip_offset = static_cast<size_t>(
                 static_cast<uint32_t>(blk) * static_cast<uint32_t>(N));
+            {
+                const uint64_t need =
+                    static_cast<uint64_t>(chip_offset) + static_cast<uint64_t>(N);
+                if (need > static_cast<uint64_t>(chip_count)) {
+                    return SECURE_FALSE;
+                }
+            }
 
             //
             //  누적합은 int32 — (I+Q)/2 대신 ASR >>1 (SDIV 회피, soft-decision 유지)

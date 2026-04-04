@@ -11,6 +11,7 @@
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
 #include "HTS_Entropy_Arrow.hpp"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include <atomic>
 
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
@@ -56,18 +57,6 @@ namespace ProtectedEngine {
         return static_cast<uint32_t>(
             Hardware_Bridge::Get_Physical_CPU_Tick() & 0xFFFFFFFFu);
     }
-
-    struct Entropy_Primask_Guard {
-        uint32_t saved_;
-        Entropy_Primask_Guard() noexcept {
-            __asm__ __volatile__("mrs %0, primask\n\tcpsid i" : "=r"(saved_) :: "memory");
-        }
-        ~Entropy_Primask_Guard() noexcept {
-            __asm__ __volatile__("msr primask, %0" :: "r"(saved_) : "memory");
-        }
-        Entropy_Primask_Guard(const Entropy_Primask_Guard&) = delete;
-        Entropy_Primask_Guard& operator=(const Entropy_Primask_Guard&) = delete;
-    };
 #endif
 
     // =====================================================================
@@ -120,7 +109,7 @@ namespace ProtectedEngine {
         bool collapse_now = false;
         bool expired = false;
         {
-            Entropy_Primask_Guard irq_guard;
+            Armv7m_Irq_Mask_Guard irq_guard;
             const uint32_t now_tick = Read_DWT_Tick();
             const uint32_t delta = now_tick - last_tick;
             last_tick = now_tick;

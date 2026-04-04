@@ -4,6 +4,7 @@
 // Target: STM32F407 (Cortex-M4, 168MHz)
 //
 #include "HTS_Dynamic_Key_Rotator.hpp"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Secure_Memory.h"
 #include <cstddef>
 #include <cstdint>
@@ -12,21 +13,6 @@
 #endif
 
 namespace ProtectedEngine {
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t keyrot_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-            : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void keyrot_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t keyrot_critical_enter() noexcept { return 0u; }
-    static inline void keyrot_critical_exit(uint32_t) noexcept {}
-#endif
 
     static inline uint64_t RotL64(uint64_t x, uint32_t k) noexcept {
         k &= 63u;
@@ -70,7 +56,7 @@ namespace ProtectedEngine {
     // =====================================================================
     // =====================================================================
     Dynamic_Key_Rotator::~Dynamic_Key_Rotator() noexcept {
-        const uint32_t pm = keyrot_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         SecureMemory::secureWipe(
             static_cast<void*>(&internal_state), sizeof(internal_state));
         SecureMemory::secureWipe(
@@ -79,7 +65,6 @@ namespace ProtectedEngine {
             static_cast<void*>(&operation_count), sizeof(operation_count));
         SecureMemory::secureWipe(
             static_cast<void*>(&rotation_interval), sizeof(rotation_interval));
-        keyrot_critical_exit(pm);
     }
 
     // =====================================================================
@@ -98,19 +83,21 @@ namespace ProtectedEngine {
         //  검사·LCG·Murmur·상태·카운트를 한 PRIMASK 구역에서 원자화 — 이중 검사/스핀 분할 금지.
         //  PRIMASK 밖 스핀 대기는 ISR이 메인의 커밋을 기다리며 교착(우선순위 역전) 가능.
         //  회전 시점만 IRQ 짧게 지연(interval 크면 드묾); ISR에서 본 API 호출 금지(헤더 참고).
-        const uint32_t pm = keyrot_critical_enter();
-        if (operation_count >= rotation_interval) {
-            uint64_t lcg_state = internal_state;
-            lcg_state = (lcg_state * 0x5851F42D4C957F2DULL) + 0x14057B7EF767814FULL;
-            lcg_state = RotL64(lcg_state, k_LCG_ROT);
-            const uint64_t new_key = Murmur3_Fmix64(lcg_state) ^ lcg_state;
-            internal_state = lcg_state;
-            current_key = new_key;
-            operation_count = 0ULL;
+        uint64_t out = 0ULL;
+        {
+            Armv7m_Irq_Mask_Guard irq;
+            if (operation_count >= rotation_interval) {
+                uint64_t lcg_state = internal_state;
+                lcg_state = (lcg_state * 0x5851F42D4C957F2DULL) + 0x14057B7EF767814FULL;
+                lcg_state = RotL64(lcg_state, k_LCG_ROT);
+                const uint64_t new_key = Murmur3_Fmix64(lcg_state) ^ lcg_state;
+                internal_state = lcg_state;
+                current_key = new_key;
+                operation_count = 0ULL;
+            }
+            operation_count++;
+            out = current_key;
         }
-        operation_count++;
-        const uint64_t out = current_key;
-        keyrot_critical_exit(pm);
         return out;
     }
 

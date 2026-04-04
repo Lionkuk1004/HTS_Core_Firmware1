@@ -11,6 +11,7 @@
 //  · 3중 보안 소거
 //
 #include "HTS_Emergency_Beacon.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Priority_Scheduler.h"
 #include "HTS_Secure_Memory.h"
 
@@ -32,24 +33,6 @@ namespace ProtectedEngine {
     static void Beacon_Secure_Wipe(void* p, size_t n) noexcept {
         SecureMemory::secureWipe(p, n);
     }
-
-    // =====================================================================
-    //  PRIMASK 크리티컬 섹션 (Trigger는 ISR에서 호출 가능)
-    // =====================================================================
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM)
-    static inline uint32_t bcn_critical_enter() noexcept {
-        uint32_t primask;
-        __asm volatile ("MRS %0, PRIMASK\n CPSID I"
-        : "=r"(primask) :: "memory");
-        return primask;
-    }
-    static inline void bcn_critical_exit(uint32_t pm) noexcept {
-        __asm volatile ("MSR PRIMASK, %0" :: "r"(pm) : "memory");
-    }
-#else
-    static inline uint32_t bcn_critical_enter() noexcept { return 0u; }
-    static inline void bcn_critical_exit(uint32_t) noexcept {}
-#endif
 
     // =====================================================================
     //  GPS 압축
@@ -111,11 +94,10 @@ namespace ProtectedEngine {
     static uint8_t g_beacon_pkt_slot = 0u;
 
     static uint8_t* acquire_beacon_pkt_slot() noexcept {
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         uint8_t* const pkt = g_beacon_pkt_pool[g_beacon_pkt_slot];
         g_beacon_pkt_slot = static_cast<uint8_t>(
             (g_beacon_pkt_slot + 1u) & BEACON_PKT_SLOT_MASK);
-        bcn_critical_exit(pm);
         return pkt;
     }
 
@@ -181,11 +163,10 @@ namespace ProtectedEngine {
 
     HTS_Emergency_Beacon::~HTS_Emergency_Beacon() noexcept {
         impl_valid_.store(false, std::memory_order_release);
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         Impl* p = reinterpret_cast<Impl*>(impl_buf_);
         if (p != nullptr) { p->~Impl(); }
         Beacon_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        bcn_critical_exit(pm);
     }
 
     // =====================================================================
@@ -196,10 +177,9 @@ namespace ProtectedEngine {
     {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->lat_1e4 = lat_1e4;
         p->lon_1e4 = lon_1e4;
-        bcn_critical_exit(pm);
     }
 
     // =====================================================================
@@ -209,7 +189,7 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->alert_flags |= flag;
 
         // 이미 활성이면 플래그만 갱신 → exit
@@ -230,33 +210,28 @@ namespace ProtectedEngine {
                 p->tx_count = 0u;
             }
         }
-
-        bcn_critical_exit(pm);
     }
 
     void HTS_Emergency_Beacon::Set_Flags(uint16_t flags) noexcept {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->alert_flags = flags;
-        bcn_critical_exit(pm);
     }
 
     uint16_t HTS_Emergency_Beacon::Get_Flags() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return 0u; }
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const uint16_t v = p->alert_flags;
-        bcn_critical_exit(pm);
         return v;
     }
 
     uint32_t HTS_Emergency_Beacon::Is_Active() const noexcept {
         const Impl* p = get_impl();
         if (p == nullptr) { return SECURE_FALSE; }
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         const bool v = p->active;
-        bcn_critical_exit(pm);
         return v ? SECURE_TRUE : SECURE_FALSE;
     }
 
@@ -284,10 +259,10 @@ namespace ProtectedEngine {
         int32_t  snap_lat_1e4 = 0;
         int32_t  snap_lon_1e4 = 0;
 
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         if (!p->active) {
-            bcn_critical_exit(pm);
+            irq.release();
             return;
         }
 
@@ -301,7 +276,7 @@ namespace ProtectedEngine {
         // 500ms 간격 확인
         const uint32_t elapsed_since_tx = systick_ms - p->last_tx_ms;
         if (elapsed_since_tx < BEACON_INTERVAL_MS) {
-            bcn_critical_exit(pm);
+            irq.release();
             return;
         }
 
@@ -335,7 +310,7 @@ namespace ProtectedEngine {
             p->tx_count = 0u;
         }
 
-        bcn_critical_exit(pm);
+        irq.release();
 
         if (!should_tx) { return; }
 
@@ -362,11 +337,11 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
 
         // POWER_LOSS는 수동 취소 불가 (물리적 복전 필요)
         if ((p->alert_flags & AlertFlag::POWER_LOSS) != 0u) {
-            bcn_critical_exit(pm);
+            irq.release();
             return;
         }
 
@@ -382,8 +357,6 @@ namespace ProtectedEngine {
         }
         // tx_count < MIN_TX_COUNT: alert_flags=0 설정 완료 → Tick에 위임
         // Tick은 min_duration_met && flags_cleared 조건으로 정시 종료 보장
-
-        bcn_critical_exit(pm);
     }
 
     // =====================================================================
@@ -393,10 +366,9 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
-        const uint32_t pm = bcn_critical_enter();
+        Armv7m_Irq_Mask_Guard irq;
         p->active = false;
         p->alert_flags = 0u;
-        bcn_critical_exit(pm);
     }
 
 } // namespace ProtectedEngine

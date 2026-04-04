@@ -6,6 +6,7 @@
 // resp: MAX_PKT_SIZE 기반, dest_id 2B 프리픽스, IMPL_BUF_SIZE 768B(x64 패딩 안전).
 // =========================================================================
 #include "HTS_CoAP_Engine.h"
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Priority_Scheduler.h"
 
 #include <atomic>
@@ -475,12 +476,7 @@ namespace ProtectedEngine {
             uint8_t local_msg[MPKT];
             size_t  local_msg_len = 0u;
 
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
-            uint32_t primask;
-            __asm__ __volatile__("mrs %0, primask\n\tcpsid i"
-                : "=r"(primask) : : "memory");
-#endif
+            Armv7m_Irq_Mask_Guard irq;
 
             // 선행 검사와 IRQ 차단 사이 경합 가능성 방어: 잠금 후 상태 재확인
             if (pm.alloc_state.load(std::memory_order_acquire) == 2u) {
@@ -508,11 +504,6 @@ namespace ProtectedEngine {
                     }
                 }
             }
-
-#if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
-    defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
-            __asm__ __volatile__("msr primask, %0" : : "r"(primask) : "memory");
-#endif
 
             // PRIMASK 외부: 스케줄러 호출 (ISR 정상 동작)
             if (need_enqueue) {

@@ -228,6 +228,7 @@ namespace ProtectedEngine {
         tmp[2] = static_cast<uint8_t>((raw >> 8) & 0xFFu);
         tmp[3] = static_cast<uint8_t>(raw & 0xFFu);
         std::memcpy(p, tmp, static_cast<size_t>(bytes));
+        SecureMemory::secureWipe(static_cast<void*>(tmp), sizeof(tmp));
     }
     class Trng_Scope_Guard final {
     private:
