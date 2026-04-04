@@ -223,8 +223,12 @@ namespace ProtectedEngine {
             if (re.valid == 0u) { continue; }
             if (re.dest_id == p->my_id) { continue; }
 
+            // 비잔틴/오염 광고: hop_count=255 등으로 uint8_t +1 래핑 시 비정상 홉이 통과하는 것 방지
+            if (static_cast<uint32_t>(re.hop_count) + 1u
+                > static_cast<uint32_t>(MAX_HOP)) {
+                continue;
+            }
             const uint8_t new_hops = re.hop_count + 1u;
-            if (new_hops > MAX_HOP) { continue; }
 
             const uint8_t path_lqi =
                 (neighbor_lqi < re.lqi) ? neighbor_lqi : re.lqi;
@@ -518,6 +522,11 @@ namespace ProtectedEngine {
             return FwdResult::NO_ROUTE;
         }
         const uint16_t next = p->table[static_cast<size_t>(slot)].next_hop;
+        // 스플릿 브레인 병합 직후 등: 직전 홉으로 되돌아가는 유니캐스트 중계 → 2노드 루프
+        if (next == src_neighbor) {
+            irq.release();
+            return FwdResult::NO_ROUTE;
+        }
         irq.release();
 
         return build_and_enqueue(

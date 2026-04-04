@@ -546,8 +546,27 @@ namespace ProtectedEngine {
         }
 
         if (ipc == nullptr) {
+#if defined(HTS_ALLOW_HOST_BUILD)
+            // 호스트 단위검증: IPC 하드웨어 없이 Flash 콜백·OTA FSM만 검증(Send_Status는 ipc nullptr 시 no-op).
+            Impl* impl_host = new (impl_buf_) Impl{};
+            impl_host->ipc = nullptr;
+            impl_host->state = OTA_State::IDLE;
+            impl_host->last_result = OTA_Result::OK;
+            impl_host->cfi_violation_count = 0u;
+            impl_host->received_chunks = 0u;
+            impl_host->expected_next_seq = 0u;
+            impl_host->write_offset = 0u;
+            impl_host->inv_progress_q16 = 0u;
+            impl_host->flash_cb.erase_sector = nullptr;
+            impl_host->flash_cb.write_flash = nullptr;
+            impl_host->flash_cb.read_flash = nullptr;
+            impl_host->flash_cb.execute_bank_swap = nullptr;
+            impl_host->flash_cb.get_current_fw_version = nullptr;
+            return IPC_Error::OK;
+#else
             initialized_.store(false, std::memory_order_release);
             return IPC_Error::NOT_INITIALIZED;
+#endif
         }
 
         Impl* impl = new (impl_buf_) Impl{};

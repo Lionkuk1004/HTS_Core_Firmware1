@@ -274,6 +274,10 @@ namespace ProtectedEngine {
             std::memcpy(out, g_otp_hash_emu, len);
             return;
         }
+        if (offset == OTP_HMAG_ADDR && len <= sizeof(g_hash_magic_emu)) {
+            std::memcpy(out, &g_hash_magic_emu, len);
+            return;
+        }
         std::memset(out, 0, len);
     }
 
@@ -286,6 +290,16 @@ namespace ProtectedEngine {
         std::memset(out32, 0xAA, 32);
         return true;
     }
+
+#if defined(HTS_ALLOW_HOST_BUILD)
+    /// PC OTP 에뮬 + 부트 플래그 초기화 — 호스트 결함주입/연속 검증 전용 (실칩 미사용).
+    extern "C" void HTS_Test_Host_Reset_SecureBoot_OTP_Emulation(void) noexcept {
+        std::memset(g_otp_hash_emu, 0, sizeof(g_otp_hash_emu));
+        g_hash_magic_emu = 0u;
+        g_boot_verified = 0u;
+        g_safe_mode = 0u;
+    }
+#endif
 #endif
 
     // =====================================================================

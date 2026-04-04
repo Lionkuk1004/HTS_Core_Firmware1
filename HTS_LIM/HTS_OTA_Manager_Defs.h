@@ -116,6 +116,9 @@ namespace ProtectedEngine {
 
     /// @brief Flash 하드웨어 추상 계층 콜백
     /// @note  ASIC에서는 내부 Flash 컨트롤러 레지스터로 대체.
+    /// @note  무한 재시도 금지: HAL 구현은 erase/write/read 실패 시 고정 상한(예: 3회) 이내에서만
+    ///        재시도한 뒤 false를 반환할 것. OTA_Manager는 단일 false에 즉시 FLASH_FAIL·ERROR로 중단
+    ///        (맹목적 while 재시도 루프 없음). 웨어 레벨링·스페이어 섹터는 HAL 내부 또는 보드 정책.
     struct OTA_Flash_Callbacks {
         /// @brief Flash 섹터 소거
         /// @param sector_addr  섹터 시작 주소

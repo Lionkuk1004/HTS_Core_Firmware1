@@ -272,6 +272,19 @@ namespace ProtectedEngine {
         g_rdp_level = 2u;
         return true;
     }
+
+#if defined(HTS_ALLOW_HOST_BUILD)
+    /// 호스트 전원차단/복원 시뮬레이션 전용 — 실칩 미사용.
+    extern "C" void HTS_Test_Host_KeyProv_OTP_Clear(void) noexcept {
+        std::memset(g_otp_emu, 0, sizeof(g_otp_emu));
+        g_rdp_level = 0u;
+    }
+
+    extern "C" void HTS_Test_Host_KeyProv_OTP_Import(const uint8_t* src, size_t len) noexcept {
+        if (src == nullptr || len != sizeof(g_otp_emu)) { return; }
+        std::memcpy(g_otp_emu, src, sizeof(g_otp_emu));
+    }
+#endif
 #endif
 
     // =====================================================================

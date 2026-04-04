@@ -12,6 +12,9 @@
 //  ARM: Physical_Entropy_Engine + AntiDebug + AntiGlitch → 하드웨어 보안 체인
 //  마스터 시드는 외부로 원시 복사되지 않음 — 도메인 분리 KDF(SHA-256)로만 파생.
 //
+//  @note 크로노스 기만(벽시각 비정상 점프) 시 Close_Session + 리플레이 윈도우 리셋 후
+//        재동기 권장 — 공용 가드: HTS_TimeSpace_Guard.h (AntiReplayWindow64 등).
+//
 //  [사용법]
 //   Session_Gateway::Open_Session();
 //   if (Session_Gateway::Is_Session_Active()) { ... }

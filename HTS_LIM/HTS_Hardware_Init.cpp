@@ -8,6 +8,9 @@
 #include "HTS_BitOps.h"
 #include <cstdio>
 #include <cstdlib>
+#if defined(HTS_ALLOW_HOST_BUILD)
+#include <atomic>
+#endif
 
 // =========================================================================
 //  플랫폼 감지
@@ -55,6 +58,12 @@ extern uint32_t __stack_bottom__ __attribute__((weak));
 #else
 #define HTS_BOOT_ENFORCE_RDP_LEVEL2 0
 #endif
+#endif
+
+#if defined(HTS_ALLOW_HOST_BUILD)
+namespace {
+std::atomic<uint64_t> s_hts_host_wdt_kicks{0};
+}
 #endif
 
 namespace ProtectedEngine {
@@ -355,8 +364,18 @@ namespace ProtectedEngine {
             : "memory"
             );
         HW_BARRIER();
+#elif defined(HTS_ALLOW_HOST_BUILD)
+        s_hts_host_wdt_kicks.fetch_add(1u, std::memory_order_relaxed);
+#else
+        (void)0;
 #endif
     }
+
+#if defined(HTS_ALLOW_HOST_BUILD)
+    uint64_t Hardware_Init_Manager::Debug_Host_WdtKick_Count() noexcept {
+        return s_hts_host_wdt_kicks.load(std::memory_order_relaxed);
+    }
+#endif
 
     // =====================================================================
     //  Cache_Clean_Tx — DMA TX 전 CPU→RAM 메모리 배리어

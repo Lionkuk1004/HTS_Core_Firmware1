@@ -698,6 +698,9 @@
     <ClInclude Include="HTS_Holo_Tensor_4D_Defs.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="HTS_Sensor_ADC_Guard.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="HTS_Holo_Dispatcher.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
@@ -788,6 +791,12 @@
     <ClInclude Include="HTS_Quantum_Key_Bridge.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="HTS_Arm_Irq_Mask_Guard.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="HTS_TimeSpace_Guard.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Text Include="Hts session15 handoff · MD" />
@@ -805,5 +814,7 @@
     <None Include="HTS_Storage_Adapter.def">
       <Filter>소스 파일</Filter>
     </None>
+    <None Include=".audit_log.md" />
+    <None Include="cpp.hint" />
   </ItemGroup>
 </Project>

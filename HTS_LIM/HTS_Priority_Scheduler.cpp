@@ -27,6 +27,9 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#if defined(HTS_ALLOW_HOST_BUILD)
+#include <mutex>
+#endif
 
 static_assert(sizeof(uint8_t) == 1, "uint8_t must be 1 byte");
 static_assert(sizeof(uint32_t) == 4, "uint32_t must be 4 bytes");
@@ -155,6 +158,10 @@ namespace ProtectedEngine {
     //    Total: ≈ 337B (< 512B IMPL_BUF_SIZE)
     // =====================================================================
     struct HTS_Priority_Scheduler::Impl {
+#if defined(HTS_ALLOW_HOST_BUILD)
+        /// 호스트 멀티스레드 스트레스: PRIMASK 가드가 no-op이므로 큐 정합용 상호배제
+        mutable std::mutex host_concurrency_mu;
+#endif
         RingQ_SOS    q_sos;
         RingQ_Voice  q_voice;
         RingQ_Data   q_data;
@@ -240,6 +247,9 @@ namespace ProtectedEngine {
         item.len = static_cast<uint8_t>(len);
         item.orig_priority = static_cast<uint8_t>(priority);
 
+#if defined(HTS_ALLOW_HOST_BUILD)
+        std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
         Armv7m_Irq_Mask_Guard irq;
         bool ok = false;
 
@@ -280,6 +290,9 @@ namespace ProtectedEngine {
 
         QueueItem item = {};
 
+#if defined(HTS_ALLOW_HOST_BUILD)
+        std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
         Armv7m_Irq_Mask_Guard irq;
 
         // P0: SOS (항상 최우선)
@@ -338,6 +351,9 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
+#if defined(HTS_ALLOW_HOST_BUILD)
+        std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
         Armv7m_Irq_Mask_Guard irq;
 
         // NF 기반 DATA 억제 정책
@@ -380,6 +396,9 @@ namespace ProtectedEngine {
         Impl* p = get_impl();
         if (p == nullptr) { return; }
 
+#if defined(HTS_ALLOW_HOST_BUILD)
+        std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
         Armv7m_Irq_Mask_Guard irq;
         ring_flush(p->q_sos.items, sizeof(p->q_sos.items),
             p->q_sos.head, p->q_sos.tail, p->q_sos.count);
@@ -397,6 +416,9 @@ namespace ProtectedEngine {
         if (p == nullptr) { return 0u; }
         size_t n = 0u;
         {
+#if defined(HTS_ALLOW_HOST_BUILD)
+            std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
             Armv7m_Irq_Mask_Guard irq;
             n = static_cast<size_t>(p->q_sos.count);
         }
@@ -408,6 +430,9 @@ namespace ProtectedEngine {
         if (p == nullptr) { return 0u; }
         size_t n = 0u;
         {
+#if defined(HTS_ALLOW_HOST_BUILD)
+            std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
             Armv7m_Irq_Mask_Guard irq;
             n = static_cast<size_t>(p->q_voice.count);
         }
@@ -419,6 +444,9 @@ namespace ProtectedEngine {
         if (p == nullptr) { return 0u; }
         size_t n = 0u;
         {
+#if defined(HTS_ALLOW_HOST_BUILD)
+            std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
             Armv7m_Irq_Mask_Guard irq;
             n = static_cast<size_t>(p->q_data.count);
         }
@@ -430,6 +458,9 @@ namespace ProtectedEngine {
         if (p == nullptr) { return false; }
         bool s = false;
         {
+#if defined(HTS_ALLOW_HOST_BUILD)
+            std::lock_guard<std::mutex> host_lock(p->host_concurrency_mu);
+#endif
             Armv7m_Irq_Mask_Guard irq;
             s = p->data_suppressed;
         }

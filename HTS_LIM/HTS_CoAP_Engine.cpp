@@ -115,8 +115,40 @@ namespace ProtectedEngine {
         std::atomic<uint16_t> next_token{ 0x0100u };
         uint8_t  pad[2] = {};
 
+        // CON 재전송(동일 src+MID) 시 핸들러·상위 계층 중복 인입 방지 (비대칭 링크·ACK 유실 대비)
+        static constexpr size_t DEDUP_WIN = 8u;
+        struct DedupRec {
+            uint16_t src_id;
+            uint16_t mid;
+            uint8_t  valid;
+            uint8_t  pad_d[1];
+        };
+        DedupRec dedup_[DEDUP_WIN] = {};
+        uint8_t  dedup_rr_ = 0u;
+
         explicit Impl(uint16_t id) noexcept : my_id(id) {}
         ~Impl() noexcept = default;
+
+        [[nodiscard]] bool is_duplicate_con(uint16_t src_id, uint16_t mid) const noexcept
+        {
+            for (size_t i = 0u; i < DEDUP_WIN; ++i) {
+                if (dedup_[i].valid != 0u &&
+                    dedup_[i].src_id == src_id && dedup_[i].mid == mid) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void record_con_processed(uint16_t src_id, uint16_t mid) noexcept
+        {
+            const size_t idx =
+                static_cast<size_t>(dedup_rr_) % DEDUP_WIN;
+            dedup_[idx].src_id = src_id;
+            dedup_[idx].mid = mid;
+            dedup_[idx].valid = 1u;
+            dedup_rr_ = static_cast<uint8_t>(dedup_rr_ + 1u);
+        }
 
         int32_t find_resource(const char* uri) const noexcept {
             char uri_norm[24];
@@ -309,6 +341,10 @@ namespace ProtectedEngine {
             return;
         }
 
+        if (p->is_duplicate_con(src_id, mid)) {
+            return;
+        }
+
         // 페이로드: dest(2) + hdr(6) 이후
         const uint8_t* payload = &msg[DST + HDR];
         const size_t   pay_len = msg_len - DST - HDR;
@@ -388,6 +424,8 @@ namespace ProtectedEngine {
         const size_t resp_total = DST + HDR + resp_pay_len;
         static_assert(MPKT == DST + HDR + MPAY,
             "MAX_PKT_SIZE 불일치");
+
+        p->record_con_processed(src_id, mid);
 
         const EnqueueResult enq = scheduler.Enqueue(
             PacketPriority::DATA,

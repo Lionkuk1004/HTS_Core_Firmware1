@@ -308,6 +308,7 @@
   <ItemGroup>
     <ClInclude Include="arm_arch.h" />
     <ClInclude Include="cpu_info.h" />
+    <ClInclude Include="HTS_Arm_Irq_Mask_Guard.h" />
     <ClInclude Include="HTS_CoAP_Engine.h" />
     <ClInclude Include="HTS_Data_Loader.h" />
     <ClInclude Include="HTS_Device_Status_Reporter.h" />
@@ -350,6 +351,7 @@
     <ClInclude Include="HTS_Holo_Dispatcher_Defs.h" />
     <ClInclude Include="HTS_Holo_Tensor_4D.h" />
     <ClInclude Include="HTS_Holo_Tensor_4D_Defs.h" />
+    <ClInclude Include="HTS_Sensor_ADC_Guard.h" />
     <ClInclude Include="HTS_Holo_Tensor_Engine.h" />
     <ClInclude Include="HTS_IoT_Codec.h" />
     <ClInclude Include="HTS_IoT_Codec_Defs.h" />
@@ -385,6 +387,7 @@
     <ClInclude Include="HTS_Polymorphic_Shield.h" />
     <ClInclude Include="HTS_Sparse_Recovery.h" />
     <ClInclude Include="HTS_Storage_Interface.h" />
+    <ClInclude Include="HTS_TimeSpace_Guard.h" />
     <ClInclude Include="HTS_Universal_API.h" />
     <ClInclude Include="HTS_Universal_API.hpp" />
     <ClInclude Include="BB1_Core_Engine.hpp" />
@@ -462,6 +465,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="# HTS B-CDMA 전수검사 통합 기준서.md" />
+    <None Include=".audit_log.md" />
+    <None Include="cpp.hint" />
     <None Include="HTS_Storage_Adapter.def" />
     <None Include="HTS_Universal_Adapter.def" />
     <None Include="HTS_Universal_API.def" />

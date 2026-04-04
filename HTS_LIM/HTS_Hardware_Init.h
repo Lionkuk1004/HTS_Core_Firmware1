@@ -110,6 +110,11 @@ namespace ProtectedEngine {
         // 워치독 타이머 킥 (ARM: WDT 피드 / PC: no-op)
         static void Kick_Watchdog() noexcept;
 
+#if defined(HTS_ALLOW_HOST_BUILD)
+        /// 호스트 TU 전용: `Kick_Watchdog()` 호출 누적(실칩 IWDG 미연동)
+        static uint64_t Debug_Host_WdtKick_Count() noexcept;
+#endif
+
     private:
         // @param stack_bottom_addr  스택 가드 리전 베이스 (링커 __stack_bottom__ 또는 폴백)
         // @note ARM 전용 — PC 빌드에서 no-op

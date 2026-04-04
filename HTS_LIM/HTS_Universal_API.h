@@ -35,42 +35,7 @@ namespace ProtectedEngine {
 
 } // namespace ProtectedEngine
 
-// =========================================================================
-// HTS_API — 외부 연동 인터페이스 (구현부는 HTS_API.cpp)
-// =========================================================================
-namespace HTS_API {
-
-    enum class HTS_Status : uint32_t {
-        OK = 0x00u,
-        ERR_ALREADY_INITIALIZED = 0x01u,
-        ERR_NULL_POINTER = 0x02u,
-        ERR_POST_FAILED = 0x03u,
-        ERR_BUFFER_UNDERFLOW = 0x04u,
-        ERR_RECOVERY_FAILED = 0x05u,
-        ERR_TAMPERED = 0x06u,
-        ERR_NOT_INITIALIZED = 0x07u,
-        ERR_UNSUPPORTED_MEDIUM = 0x08u
-    };
-
-    enum class HTS_CommMedium : uint32_t {
-        B_CDMA_RAW_RF = 0x01u,
-        DIGITAL_5G_LTE = 0x02u,
-        WIRED_ETHERNET = 0x03u,
-        SATELLITE_LINK = 0x04u
-    };
-
-    HTS_Status Initialize_Core(
-        volatile uint32_t* hw_irq_status_reg,
-        volatile uint32_t* hw_irq_clear_reg,
-        volatile int16_t* hw_rx_fifo_addr,
-        HTS_CommMedium     target_medium
-    ) noexcept;
-
-    HTS_Status Fetch_And_Heal_Rx_Payload(
-        uint32_t* out_buffer, size_t required_size) noexcept;
-
-    HTS_Status Is_System_Operational() noexcept;
-
-} // namespace HTS_API
+// HTS_API 선언·열거형 단일 출처 — 중복 정의(Odr/MSVC C2011) 방지
+#include "HTS_API.h"
 
 #endif // HTS_UNIVERSAL_API_H
