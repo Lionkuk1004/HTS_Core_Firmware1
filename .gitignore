@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# CMake ARM (arm-none-eabi) out-of-tree builds
+HTS_LIM/build-arm-m4*/
+HTS_LIM/build-manual-test/

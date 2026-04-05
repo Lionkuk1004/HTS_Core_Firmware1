@@ -1,0 +1,36 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "arm-m4-release",
+      "displayName": "ARM Cortex-M4F (STM32F407-class) Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-arm-m4-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/arm-none-eabi-toolchain.cmake"
+      }
+    },
+    {
+      "name": "arm-m4-debug",
+      "displayName": "ARM Cortex-M4F Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-arm-m4-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/arm-none-eabi-toolchain.cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "arm-m4-release",
+      "configurePreset": "arm-m4-release"
+    },
+    {
+      "name": "arm-m4-debug",
+      "configurePreset": "arm-m4-debug"
+    }
+  ]
+}
