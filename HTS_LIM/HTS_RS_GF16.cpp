@@ -201,7 +201,7 @@ uint32_t gf_gauss_ct(uint8_t a[4][5], int n, uint8_t x[3]) noexcept
                 static_cast<uint8_t>((oldv & ~use_m) | (scaled & use_m));
             const uint8_t outv =
                 static_cast<uint8_t>((oldv & ~actm) | (newv & actm));
-            a[static_cast<std::size_t>(col)][static_cast<std::size_t>(c)] = outv;
+            a[static_cast<std::size_t>(col)][static_cast<std::size_t>(c)] = outv;  
         }
 
         for (int r = 0; r < 4; ++r) {
