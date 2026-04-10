@@ -264,24 +264,26 @@ namespace ProtectedEngine {
         uint32_t Encode(const int8_t* data, uint16_t K,
             int8_t* chips, uint16_t N) noexcept
         {
-            if (N > HOLO_CHIP_COUNT) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if (K > HOLO_MAX_BLOCK_BITS) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if (K > N) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if (N == 0u) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            //  비2의거듭제곱 N(예: 48) → 계층 간 직교성 붕괴 → 복구 불가
-            //  검사: (N & (N-1)) == 0 ↔ N이 정확히 2의거듭제곱
-            if ((N & static_cast<uint16_t>(N - 1u)) != 0u) {
-                return HTS_Holo_Tensor_4D::SECURE_FALSE;
-            }
-
             const uint8_t L = profile.num_layers;
             const uint32_t L32e = static_cast<uint32_t>(L);
             const uint32_t K32e = static_cast<uint32_t>(K);
             const uint32_t N32e = static_cast<uint32_t>(N);
-            if (L32e * K32e > N32e) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
+
+            // TPE: 6개 분기 → 단일 비트마스크 (파이프라인 스톨 0)
+            const uint32_t valid =
+                static_cast<uint32_t>(N <= HOLO_CHIP_COUNT) &
+                static_cast<uint32_t>(K <= HOLO_MAX_BLOCK_BITS) &
+                static_cast<uint32_t>(K <= N) &
+                static_cast<uint32_t>(N != 0u) &
+                static_cast<uint32_t>((N & static_cast<uint16_t>(N - 1u)) == 0u) &
+                static_cast<uint32_t>(L32e * K32e <= N32e);
+
+            // TPE: invalid → 루프 범위 0, 연산 전부 스킵, 출력 미접촉
+            const uint16_t N_eff = static_cast<uint16_t>(N32e * valid);
+            const uint16_t K_eff = static_cast<uint16_t>(K32e * valid);
 
             // Column permutation + Binary Phase Mask 생성
-            Generate_Partitioned_Params(scratch_rows, K, N, L, scratch_perm, time_slot);
+            Generate_Partitioned_Params(scratch_rows, K_eff, N_eff, L, scratch_perm, time_slot);
 
             // [Binary Phase Mask] 전 모드 적용 (16/64칩 공통)
             //  보안: +2^N (16칩: +2^16=65536, 64칩: +2^64)
@@ -295,13 +297,13 @@ namespace ProtectedEngine {
                     | static_cast<uint64_t>(mask_rng.Next());
             }
 
-            std::memset(accum, 0, static_cast<size_t>(N) * sizeof(int32_t));
+            std::memset(accum, 0, static_cast<size_t>(N_eff) * sizeof(int32_t));
 
             // ── 통합 Walsh 홀로그램 투영 (16/64칩 공통) ──
             //  chip[π[i]] = mask[i] × Σ_L Σ_k data[k]×walsh(σ[k],i)  — ms(i)는 L과 무관
             //  루프: i 바깥 → ms·phys 1회, Σ_L 후 accum[phys] += sumL×ms (동치·마스크 추출 L배↓)
             //  최적화: k 루프 4비트(4요소) 전개 → 분기·루프 오버헤드 감소, MAC 연속성 향상
-            for (uint16_t i = 0u; i < N; ++i) {
+            for (uint16_t i = 0u; i < N_eff; ++i) {
                 const int32_t ms = 1 - (static_cast<int32_t>(
                     (mask_bits >> static_cast<uint64_t>(i)) & 1ull) << 1);
                 const uint16_t phys = scratch_perm[static_cast<size_t>(i)];
@@ -314,7 +316,7 @@ namespace ProtectedEngine {
                         &scratch_rows[static_cast<size_t>(row_offset)];
                     int32_t chip_acc = 0;
                     uint16_t k = 0u;
-                    for (; k + 3u < K; k += 4u) {
+                    for (; k + 3u < K_eff; k += 4u) {
                         const int32_t dk0 =
                             static_cast<int32_t>(data[static_cast<size_t>(k)]);
                         const int32_t dk1 =
@@ -341,7 +343,7 @@ namespace ProtectedEngine {
                             static_cast<int32_t>(Walsh_Code(rk3, col_i));
                         chip_acc += dk0 * w0 + dk1 * w1 + dk2 * w2 + dk3 * w3;
                     }
-                    for (; k < K; ++k) {
+                    for (; k < K_eff; ++k) {
                         const int8_t w = Walsh_Code(
                             static_cast<uint32_t>(row_sel[static_cast<size_t>(k)]),
                             col_i);
@@ -354,25 +356,24 @@ namespace ProtectedEngine {
             }
 
             // Soft output: clamp to int8_t range
-            for (uint16_t i = 0u; i < N; ++i) {
+            for (uint16_t i = 0u; i < N_eff; ++i) {
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
                 chips[static_cast<size_t>(i)] = static_cast<int8_t>(
                     __SSAT(accum[static_cast<size_t>(i)], 8));
 #else
-                if (accum[static_cast<size_t>(i)] > 127) {
-                    chips[static_cast<size_t>(i)] = 127;
-                }
-                else if (accum[static_cast<size_t>(i)] < -127) {
-                    chips[static_cast<size_t>(i)] = -127;
-                }
-                else {
-                    chips[static_cast<size_t>(i)] =
-                        static_cast<int8_t>(accum[static_cast<size_t>(i)]);
-                }
+                const int32_t v = accum[static_cast<size_t>(i)];
+                const uint32_t ov_hi = static_cast<uint32_t>(v > 127);
+                const uint32_t ov_lo = static_cast<uint32_t>(v < -127);
+                const int32_t mhi = -static_cast<int32_t>(ov_hi);
+                const int32_t mlo = -static_cast<int32_t>(ov_lo);
+                chips[static_cast<size_t>(i)] = static_cast<int8_t>(
+                    (127 & mhi) | (-127 & mlo) | (v & ~mhi & ~mlo));
 #endif
             }
             Wipe_Sensitive_Scratch();
-            return HTS_Holo_Tensor_4D::SECURE_TRUE;
+            // TPE: valid → SECURE_TRUE, invalid → SECURE_FALSE
+            return (HTS_Holo_Tensor_4D::SECURE_TRUE & (0u - valid)) |
+                   (HTS_Holo_Tensor_4D::SECURE_FALSE & (0u - (valid ^ 1u)));
         }
 
         // ============================================================
@@ -384,21 +385,24 @@ namespace ProtectedEngine {
             uint64_t valid_mask,
             int8_t* output_bits, uint16_t K) noexcept
         {
-            if (N > HOLO_CHIP_COUNT) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if (K > HOLO_MAX_BLOCK_BITS) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if (K > N) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if (N == 0u) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
-            if ((N & static_cast<uint16_t>(N - 1u)) != 0u) {
-                return HTS_Holo_Tensor_4D::SECURE_FALSE;
-            }
-
             const uint8_t L = profile.num_layers;
             const uint32_t L32d = static_cast<uint32_t>(L);
             const uint32_t K32d = static_cast<uint32_t>(K);
             const uint32_t N32d = static_cast<uint32_t>(N);
-            if (L32d * K32d > N32d) { return HTS_Holo_Tensor_4D::SECURE_FALSE; }
 
-            Generate_Partitioned_Params(scratch_rows, K, N, L, scratch_perm, time_slot);
+            // TPE: 6개 분기 → 단일 비트마스크
+            const uint32_t valid =
+                static_cast<uint32_t>(N <= HOLO_CHIP_COUNT) &
+                static_cast<uint32_t>(K <= HOLO_MAX_BLOCK_BITS) &
+                static_cast<uint32_t>(K <= N) &
+                static_cast<uint32_t>(N != 0u) &
+                static_cast<uint32_t>((N & static_cast<uint16_t>(N - 1u)) == 0u) &
+                static_cast<uint32_t>(L32d * K32d <= N32d);
+
+            const uint16_t N_eff = static_cast<uint16_t>(N32d * valid);
+            const uint16_t K_eff = static_cast<uint16_t>(K32d * valid);
+
+            Generate_Partitioned_Params(scratch_rows, K_eff, N_eff, L, scratch_perm, time_slot);
 
             // [Binary Phase Mask] 전 모드 적용 (Encode와 동일)
             uint64_t mask_bits = 0u;
@@ -411,8 +415,8 @@ namespace ProtectedEngine {
             }
 
             // Pre-compute: valid_mask + col_perm + binary phase mask 통합
-            std::memset(scratch_rx, 0, static_cast<size_t>(N) * sizeof(int16_t));
-            for (uint16_t i = 0u; i < N; ++i) {
+            std::memset(scratch_rx, 0, static_cast<size_t>(N_eff) * sizeof(int16_t));
+            for (uint16_t i = 0u; i < N_eff; ++i) {
                 const uint16_t phys = scratch_perm[static_cast<size_t>(i)];
                 const uint32_t phys_u = static_cast<uint32_t>(phys) & 63u;
                 const uint32_t vbit = static_cast<uint32_t>(
@@ -427,12 +431,12 @@ namespace ProtectedEngine {
                     static_cast<int16_t>(rx_val * ms);
             }
 
-            std::memset(accum, 0, static_cast<size_t>(K) * sizeof(int32_t));
+            std::memset(accum, 0, static_cast<size_t>(K_eff) * sizeof(int32_t));
 
             // ── 통합 Walsh 상관 디코딩 (16/64칩 공통) ──
             //  bit[k] = Σ_L Σ_i rx'[i]×walsh(σ[k],i) — k 바깥: accum[k] 1회 가산
             //  최적화: i 루프 4칩(4요소) 전개 → 역상관 MAC 연속성·브랜치 예측 부담 완화
-            for (uint16_t k = 0u; k < K; ++k) {
+            for (uint16_t k = 0u; k < K_eff; ++k) {
                 int32_t sumL = 0;
                 for (uint8_t layer = 0u; layer < L; ++layer) {
                     const uint16_t row_offset = static_cast<uint16_t>(
@@ -443,7 +447,7 @@ namespace ProtectedEngine {
                         static_cast<uint32_t>(row_sel[static_cast<size_t>(k)]);
                     int32_t acc = 0;
                     uint16_t ii = 0u;
-                    for (; ii + 3u < N; ii += 4u) {
+                    for (; ii + 3u < N_eff; ii += 4u) {
                         const uint32_t i0 = static_cast<uint32_t>(ii);
                         const uint32_t i1 = static_cast<uint32_t>(ii + 1u);
                         const uint32_t i2 = static_cast<uint32_t>(ii + 2u);
@@ -466,7 +470,7 @@ namespace ProtectedEngine {
                             static_cast<int32_t>(scratch_rx[static_cast<size_t>(ii + 3u)]);
                         acc += r0 * w0 + r1 * w1 + r2 * w2 + r3 * w3;
                     }
-                    for (; ii < N; ++ii) {
+                    for (; ii < N_eff; ++ii) {
                         const int8_t w = Walsh_Code(
                             row_k, static_cast<uint32_t>(ii));
                         acc += static_cast<int32_t>(scratch_rx[static_cast<size_t>(ii)]) *
@@ -478,14 +482,15 @@ namespace ProtectedEngine {
             }
 
             // Hard decision: 부호 비트는 uint32_t로 추출 (>>/<< on signed UB·MISRA 회피)
-            for (uint16_t k = 0u; k < K; ++k) {
+            for (uint16_t k = 0u; k < K_eff; ++k) {
                 const uint32_t sign_bit =
                     static_cast<uint32_t>(accum[static_cast<size_t>(k)]) >> 31u;
                 output_bits[static_cast<size_t>(k)] = static_cast<int8_t>(
                     1 - 2 * static_cast<int32_t>(sign_bit));
             }
             Wipe_Sensitive_Scratch();
-            return HTS_Holo_Tensor_4D::SECURE_TRUE;
+            return (HTS_Holo_Tensor_4D::SECURE_TRUE & (0u - valid)) |
+                   (HTS_Holo_Tensor_4D::SECURE_FALSE & (0u - (valid ^ 1u)));
         }
     };
 

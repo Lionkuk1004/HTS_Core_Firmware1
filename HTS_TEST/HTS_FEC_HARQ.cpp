@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 // HTS_FEC_HARQ.cpp — V400 3모드 (1칩/16칩/64칩)
 // Target: STM32F407VGT6 (Cortex-M4F) / PC
 //
@@ -490,56 +490,38 @@ void FEC_HARQ::Deinterleave(int16_t *I, int16_t *Q, const uint8_t *p,
 int FEC_HARQ::Encode_Core(const uint8_t *info, int len, uint8_t *syms,
                           uint32_t il, int bps, int nsym,
                           WorkBuf &wb) noexcept {
-    const uint32_t p_ok = (static_cast<uint32_t>(info != nullptr) &
-                           static_cast<uint32_t>(syms != nullptr));
-    const uint32_t len_ok = (static_cast<uint32_t>(len >= 1) &
-                             static_cast<uint32_t>(len <= MAX_INFO));
-    const uint32_t bps_ok = (static_cast<uint32_t>(bps >= 1) &
-                             static_cast<uint32_t>(bps <= BPS64_MAX));
-    const uint32_t nsym_ok = static_cast<uint32_t>(nsym > 0);
-    const int64_t slots =
-        static_cast<int64_t>(nsym) * static_cast<int64_t>(bps);
-    const uint32_t grid_ok = static_cast<uint32_t>(
-        slots >= static_cast<int64_t>(TOTAL_CODED));
-    const uint32_t full_ok =
-        p_ok & len_ok & bps_ok & nsym_ok & grid_ok;
-
+    if (!info || !syms || len < 1 || len > MAX_INFO)
+        return 0;
+    std::array<uint8_t, static_cast<std::size_t>(MAX_INFO + 2)> coded{};
+    for (int i = 0; i < len; ++i)
+        coded[static_cast<std::size_t>(i)] = info[i];
+    uint16_t crc = CRC16(coded.data(), MAX_INFO);
+    coded[static_cast<std::size_t>(MAX_INFO)] = static_cast<uint8_t>(crc >> 8u);
+    coded[static_cast<std::size_t>(MAX_INFO + 1)] =
+        static_cast<uint8_t>(crc & 0xFFu);
+    std::array<uint8_t, static_cast<std::size_t>(CONV_IN)> in_bits{};
+    for (int i = 0; i < INFO_BITS; ++i)
+        in_bits[static_cast<std::size_t>(i)] = static_cast<uint8_t>(
+            (coded[static_cast<std::size_t>(i >> 3)] >> (7 - (i & 7))) & 1u);
+    std::array<uint8_t, k_conv_out_sz> conv{};
+    Conv_Encode(in_bits.data(), CONV_IN, conv.data());
+    for (int r = 0; r < REP; ++r)
+        for (int i = 0; i < CONV_OUT; ++i)
+            wb.ru.rep[r * CONV_OUT + i] = conv[static_cast<std::size_t>(i)];
+    Bit_Interleave(wb.ru.rep, TOTAL_CODED, il);
     int idx = 0;
-    for (int pass = 0; pass < static_cast<int>(full_ok); ++pass) {
-        std::array<uint8_t, static_cast<std::size_t>(MAX_INFO + 2)> coded{};
-        for (int i = 0; i < len; ++i)
-            coded[static_cast<std::size_t>(i)] = info[i];
-        uint16_t crc = CRC16(coded.data(), MAX_INFO);
-        coded[static_cast<std::size_t>(MAX_INFO)] =
-            static_cast<uint8_t>(crc >> 8u);
-        coded[static_cast<std::size_t>(MAX_INFO + 1)] =
-            static_cast<uint8_t>(crc & 0xFFu);
-        std::array<uint8_t, static_cast<std::size_t>(CONV_IN)> in_bits{};
-        for (int i = 0; i < INFO_BITS; ++i)
-            in_bits[static_cast<std::size_t>(i)] = static_cast<uint8_t>(
-                (coded[static_cast<std::size_t>(i >> 3)] >> (7 - (i & 7))) &
-                1u);
-        std::array<uint8_t, k_conv_out_sz> conv{};
-        Conv_Encode(in_bits.data(), CONV_IN, conv.data());
-        for (int r = 0; r < REP; ++r)
-            for (int i = 0; i < CONV_OUT; ++i)
-                wb.ru.rep[r * CONV_OUT + i] = conv[static_cast<std::size_t>(i)];
-        Bit_Interleave(wb.ru.rep, TOTAL_CODED, il);
-        idx = 0;
-        for (int s = 0; s < nsym; ++s) {
-            uint8_t sym = 0u;
-            for (int b = 0; b < bps; ++b) {
-                int bi = s * bps + b;
-                // TPE: OOB → safe_bi=0 읽고 마스크로 소거
-                const uint32_t in_range =
-                    0u - static_cast<uint32_t>(bi < TOTAL_CODED);
-                const int safe_bi = bi & static_cast<int>(in_range);
-                sym |= static_cast<uint8_t>(
-                    (wb.ru.rep[safe_bi] << (bps - 1 - b)) &
-                    static_cast<uint8_t>(in_range));
-            }
-            syms[idx++] = sym;
+    for (int s = 0; s < nsym; ++s) {
+        uint8_t sym = 0u;
+        for (int b = 0; b < bps; ++b) {
+            int bi = s * bps + b;
+            // TPE: OOB → safe_bi=0 읽고 마스크로 소거
+            const uint32_t in_range =
+                0u - static_cast<uint32_t>(bi < TOTAL_CODED);
+            const int safe_bi = bi & static_cast<int>(in_range);
+            sym |= static_cast<uint8_t>((wb.ru.rep[safe_bi] << (bps - 1 - b)) &
+                                        static_cast<uint8_t>(in_range));
         }
+        syms[idx++] = sym;
     }
     return idx;
 }
@@ -549,117 +531,120 @@ int FEC_HARQ::Encode_Core(const uint8_t *info, int len, uint8_t *syms,
 bool FEC_HARQ::Decode_Core(const int32_t *accI, const int32_t *accQ, int nsym,
                            int nc, int bps, uint8_t *out, int *olen,
                            uint32_t il, WorkBuf &wb) noexcept {
-    if (olen == nullptr) {
+    if (!accI || !accQ || !out || !olen)
+        return false;
+    if (nsym <= 0 || nc <= 0 || bps <= 0)
+        return false;
+    if (bps > BPS64_MAX) {
+        *olen = 0;
         return false;
     }
-    *olen = 0;
-
-    const uint32_t ptr_ok = (static_cast<uint32_t>(accI != nullptr) &
-                             static_cast<uint32_t>(accQ != nullptr) &
-                             static_cast<uint32_t>(out != nullptr));
-    const uint32_t dim_ok = (static_cast<uint32_t>(nsym > 0) &
-                             static_cast<uint32_t>(nc > 0) &
-                             static_cast<uint32_t>(bps > 0));
-    const uint32_t bps_ok = static_cast<uint32_t>(bps <= BPS64_MAX);
-    const uint32_t nsym_ok = static_cast<uint32_t>(nsym <= NSYM64);
-    const uint32_t nc_ok = static_cast<uint32_t>(nc <= FEC_HARQ::C64);
+    if (nsym > NSYM64) {
+        *olen = 0;
+        return false;
+    }
+    // fI/fQ 스택 버퍼 = k_fwht_buf_sz(=C64). nc 초과 시 memcpy/FWHT OOB → 스택
+    // 파손
+    if (nc > FEC_HARQ::C64) {
+        *olen = 0;
+        return false;
+    }
+    // Encode 경로는 항상 TOTAL_CODED 비트를 인터리브함(Bit_Interleave(...,
+    // TOTAL_CODED)). 심볼 격자(nsym×bps)가 그보다 작으면 LLR 슬롯이 비어
+    // 복호화가 붕괴됨.
     const int64_t llr_slots =
         static_cast<int64_t>(nsym) * static_cast<int64_t>(bps);
-    const uint32_t slot_ok = static_cast<uint32_t>(
-        llr_slots >= static_cast<int64_t>(TOTAL_CODED));
-    // TPE: single validity mask — pass loop runs 0× when any check fails
-    const uint32_t full_ok =
-        ptr_ok & dim_ok & bps_ok & nsym_ok & nc_ok & slot_ok;
-
-    std::array<uint8_t, static_cast<std::size_t>(CONV_IN)> dec{};
-    std::array<uint8_t, static_cast<std::size_t>(MAX_INFO + 2)> rx{};
-    bool dec_ok = false;
-
-    for (int pass = 0; pass < static_cast<int>(full_ok); ++pass) {
-#if defined(HTS_FEC_PROFILE)
-        ++g_fec_prof.calls;
-        uint64_t fec_t0 = fec_prof_now();
-#endif
-        std::array<int32_t, k_fwht_buf_sz> &fI = g_fec_dec_fI;
-        std::array<int32_t, k_fwht_buf_sz> &fQ = g_fec_dec_fQ;
-        std::array<int32_t, k_llr_buf_sz> &llr = g_fec_dec_llr;
-        llr.fill(static_cast<int32_t>(0));
-        for (int sym = 0; sym < nsym; ++sym) {
-            const int base = sym * nc;
-            std::memcpy(fI.data(), accI + base,
-                        static_cast<std::size_t>(nc) * sizeof(int32_t));
-            std::memcpy(fQ.data(), accQ + base,
-                        static_cast<std::size_t>(nc) * sizeof(int32_t));
-            FWHT(fI.data(), nc);
-            FWHT(fQ.data(), nc);
-            Bin_To_LLR(fI.data(), fQ.data(), nc, bps, llr.data());
-            for (int b = 0; b < bps; ++b) {
-                const int bi = sym * bps + b;
-                // TPE: bi < TOTAL_CODED 마스크 — OOB 방지
-                const uint32_t in_range =
-                    0u - static_cast<uint32_t>(bi < TOTAL_CODED);
-                const int32_t val =
-                    tpe_clamp_llr(llr[static_cast<std::size_t>(b)]) &
-                    static_cast<int32_t>(in_range);
-                wb.ru.all_llr[static_cast<std::size_t>(bi)] = val;
-            }
-        }
-#if defined(HTS_FEC_PROFILE)
-        uint64_t fec_t1 = fec_prof_now();
-        g_fec_prof.sym += (fec_t1 - fec_t0);
-        fec_t0 = fec_t1;
-#endif
-        Bit_Deinterleave(wb.ru.all_llr, TOTAL_CODED, il, wb);
-#if defined(HTS_FEC_PROFILE)
-        fec_t1 = fec_prof_now();
-        g_fec_prof.deint += (fec_t1 - fec_t0);
-        fec_t0 = fec_t1;
-#endif
-        for (int i = 0; i < CONV_OUT; ++i) {
-            int32_t acc = wb.ru.all_llr[i];
-            for (int r = 1; r < REP; ++r) {
-                acc = tpe_sat_add_llr(acc, wb.ru.all_llr[r * CONV_OUT + i]);
-            }
-            wb.ru.all_llr[i] = acc;
-        }
-#if defined(HTS_FEC_PROFILE)
-        fec_t1 = fec_prof_now();
-        g_fec_prof.rep += (fec_t1 - fec_t0);
-        fec_t0 = fec_t1;
-#endif
-        dec.fill(static_cast<uint8_t>(0));
-        Viterbi_Decode(wb.ru.all_llr, CONV_OUT, dec.data(), CONV_IN, wb);
-#if defined(HTS_FEC_PROFILE)
-        fec_t1 = fec_prof_now();
-        g_fec_prof.vit += (fec_t1 - fec_t0);
-        fec_t0 = fec_t1;
-#endif
-        rx.fill(static_cast<uint8_t>(0));
-        for (int i = 0; i < INFO_BITS; ++i) {
-            const uint32_t bit =
-                static_cast<uint32_t>(dec[static_cast<std::size_t>(i)]) & 1u;
-            rx[static_cast<std::size_t>(i >> 3)] |=
-                static_cast<uint8_t>(bit << static_cast<unsigned>(7 - (i & 7)));
-        }
-        uint16_t calc = CRC16(rx.data(), MAX_INFO);
-        uint16_t stored =
-            (static_cast<uint16_t>(rx[static_cast<std::size_t>(MAX_INFO)])
-             << 8u) |
-            static_cast<uint16_t>(rx[static_cast<std::size_t>(MAX_INFO + 1)]);
-#if defined(HTS_FEC_PROFILE)
-        fec_t1 = fec_prof_now();
-        g_fec_prof.tail += (fec_t1 - fec_t0);
-#endif
-        const uint32_t ok_mask = 0u - static_cast<uint32_t>(calc == stored);
-        for (int i = 0; i < MAX_INFO; ++i) {
-            out[i] = static_cast<uint8_t>(
-                static_cast<uint32_t>(rx[static_cast<std::size_t>(i)]) &
-                ok_mask);
-        }
-        *olen = static_cast<int>(static_cast<uint32_t>(MAX_INFO) & ok_mask);
-        dec_ok = (ok_mask != 0u);
+    if (llr_slots < static_cast<int64_t>(TOTAL_CODED)) {
+        *olen = 0;
+        return false;
     }
-
+#if defined(HTS_FEC_PROFILE)
+    ++g_fec_prof.calls;
+    uint64_t fec_t0 = fec_prof_now();
+#endif
+    // llr_slots >= TOTAL_CODED 이면 (sym,b) 격자가 bi=0..TOTAL_CODED-1 전부를
+    // 한 번씩 기록 — all_llr memset 불필요 FWHT(d, nc) / Bin_To_LLR 는 [0, nc)
+    // / [0, bps) 만 사용 — nc·bps 칩 이후 슬롯은 미사용
+    std::array<int32_t, k_fwht_buf_sz> &fI = g_fec_dec_fI;
+    std::array<int32_t, k_fwht_buf_sz> &fQ = g_fec_dec_fQ;
+    std::array<int32_t, k_llr_buf_sz> &llr = g_fec_dec_llr;
+    llr.fill(static_cast<int32_t>(0));
+    for (int sym = 0; sym < nsym; ++sym) {
+        const int base = sym * nc;
+        std::memcpy(fI.data(), accI + base,
+                    static_cast<std::size_t>(nc) * sizeof(int32_t));
+        std::memcpy(fQ.data(), accQ + base,
+                    static_cast<std::size_t>(nc) * sizeof(int32_t));
+        FWHT(fI.data(), nc);
+        FWHT(fQ.data(), nc);
+        Bin_To_LLR(fI.data(), fQ.data(), nc, bps, llr.data());
+        for (int b = 0; b < bps; ++b) {
+            const int bi = sym * bps + b;
+            // TPE: bi < TOTAL_CODED 마스크 — OOB 방지
+            const uint32_t in_range =
+                0u - static_cast<uint32_t>(bi < TOTAL_CODED);
+            const int32_t val =
+                tpe_clamp_llr(llr[static_cast<std::size_t>(b)]) &
+                static_cast<int32_t>(in_range);
+            // bi는 항상 < k_llr_buf_sz (guard line 637 보장)
+            wb.ru.all_llr[static_cast<std::size_t>(bi)] = val;
+        }
+    }
+#if defined(HTS_FEC_PROFILE)
+    uint64_t fec_t1 = fec_prof_now();
+    g_fec_prof.sym += (fec_t1 - fec_t0);
+    fec_t0 = fec_t1;
+#endif
+    // 역순열 길이는 인코더와 동일하게 TOTAL_CODED(perm/tmp_soft/all_llr 경계와
+    // 일치)
+    Bit_Deinterleave(wb.ru.all_llr, TOTAL_CODED, il, wb);
+#if defined(HTS_FEC_PROFILE)
+    fec_t1 = fec_prof_now();
+    g_fec_prof.deint += (fec_t1 - fec_t0);
+    fec_t0 = fec_t1;
+#endif
+    // REP 슬롯 합산 in-place: all_llr[0..CONV_OUT) — TPE 포화 가산 (±500000)
+    for (int i = 0; i < CONV_OUT; ++i) {
+        int32_t acc = wb.ru.all_llr[i];
+        for (int r = 1; r < REP; ++r) {
+            acc = tpe_sat_add_llr(acc, wb.ru.all_llr[r * CONV_OUT + i]);
+        }
+        wb.ru.all_llr[i] = acc;
+    }
+#if defined(HTS_FEC_PROFILE)
+    fec_t1 = fec_prof_now();
+    g_fec_prof.rep += (fec_t1 - fec_t0);
+    fec_t0 = fec_t1;
+#endif
+    std::array<uint8_t, static_cast<std::size_t>(CONV_IN)> dec{};
+    Viterbi_Decode(wb.ru.all_llr, CONV_OUT, dec.data(), CONV_IN, wb);
+#if defined(HTS_FEC_PROFILE)
+    fec_t1 = fec_prof_now();
+    g_fec_prof.vit += (fec_t1 - fec_t0);
+    fec_t0 = fec_t1;
+#endif
+    std::array<uint8_t, static_cast<std::size_t>(MAX_INFO + 2)> rx{};
+    for (int i = 0; i < INFO_BITS; ++i) {
+        const uint32_t bit =
+            static_cast<uint32_t>(dec[static_cast<std::size_t>(i)]) & 1u;
+        rx[static_cast<std::size_t>(i >> 3)] |=
+            static_cast<uint8_t>(bit << static_cast<unsigned>(7 - (i & 7)));
+    }
+    uint16_t calc = CRC16(rx.data(), MAX_INFO);
+    uint16_t stored =
+        (static_cast<uint16_t>(rx[static_cast<std::size_t>(MAX_INFO)]) << 8u) |
+        static_cast<uint16_t>(rx[static_cast<std::size_t>(MAX_INFO + 1)]);
+#if defined(HTS_FEC_PROFILE)
+    fec_t1 = fec_prof_now();
+    g_fec_prof.tail += (fec_t1 - fec_t0);
+#endif
+    const uint32_t ok_mask = 0u - static_cast<uint32_t>(calc == stored);
+    for (int i = 0; i < MAX_INFO; ++i) {
+        out[i] = static_cast<uint8_t>(
+            static_cast<uint32_t>(rx[static_cast<std::size_t>(i)]) & ok_mask);
+    }
+    *olen = static_cast<int>(static_cast<uint32_t>(MAX_INFO) & ok_mask);
+    const bool dec_ok = (ok_mask != 0u);
     fec_secure_wipe_stack(static_cast<void *>(dec.data()), dec.size());
     fec_secure_wipe_stack(static_cast<void *>(rx.data()), rx.size());
     return dec_ok;

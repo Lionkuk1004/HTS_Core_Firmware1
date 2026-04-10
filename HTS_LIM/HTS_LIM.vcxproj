@@ -242,7 +242,7 @@
     <ClCompile Include="HTS_Dynamic_Key_Rotator.cpp" />
     <ClCompile Include="HTS_Entropy_Arrow.cpp" />
     <ClCompile Include="HTS_Entropy_Monitor.cpp" />
-    <ClCompile Include="HTS_FEC_HARQ.cpp" />
+    <ClCompile Include="HTS_FEC_HARQ.cpp" Condition="'$(ExcludeHTS_FEC_HARQ_FromLib)'!='true'" />
     <ClCompile Include="HTS_RS_GF16.cpp" />
     <ClCompile Include="HTS_Gyro_Engine.cpp" />
     <ClCompile Include="HTS_Hardware_Bridge.cpp" />
@@ -299,7 +299,7 @@
     <ClCompile Include="HTS_Security_Pipeline.cpp" />
     <ClCompile Include="HTS_Unified_Scheduler.cpp" />
     <ClCompile Include="HTS_Universal_Adapter.cpp" />
-    <ClCompile Include="HTS_V400_Dispatcher.cpp" />
+    <ClCompile Include="HTS_V400_Dispatcher.cpp" Condition="'$(ExcludeV400DispatcherFromStaticLib)'!='true'" />
     <ClCompile Include="HTS_Voice_Codec_Bridge.cpp" />
     <ClCompile Include="KISA_HMAC.c" />
     <ClCompile Include="KISA_SHA256.c" />

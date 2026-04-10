@@ -162,10 +162,9 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="benchmark\HTS_Fractal_Channel_Compare.cpp" />
-    <!-- HTS_Microbench_Run.cpp 는 별도 main() 보유 — 동일 exe에 넣으면 LNK2005(main 중복).
-         CMake: add_executable(HTS_Microbench_Run ...) 전용. -->
-    <ClCompile Include="benchmark\HTS_Pipeline_V2_Compare.cpp" />
+    <ClCompile Include="AMI_종합_통합_테스트.cpp" />
+    <!-- benchmark/*.cpp 는 각각 main() 또는 단독 벤치 전용 — 본 exe(단일 진입점)에 포함 시 LNK2005.
+         Fractal / Pipeline_V2 는 별도 vcxproj 또는 수동 링크로 실행. -->
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

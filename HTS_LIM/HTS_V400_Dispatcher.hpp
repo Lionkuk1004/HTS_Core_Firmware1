@@ -205,6 +205,11 @@ namespace ProtectedEngine {
         /// @brief AJC 노이즈 플로어 기반 적응형 BPS 갱신
         void Update_Adaptive_BPS(uint32_t nf) noexcept;
 
+        /// @brief PC·시험 하네스: 64칩 DATA BPS(3~6) 직접 설정 (`bps_clamp_runtime`).
+        void Set_Lab_BPS64(int bps) noexcept;
+        /// @brief 재밍 시험 하네스: I/Q 모드 IQ_SAME 고정.
+        void Set_Lab_IQ_Mode_Jam_Harness() noexcept;
+
         /// @brief RF 측정값 컨테이너 주입 (선택적)
         void Set_RF_Metrics(HTS_RF_Metrics* p) noexcept;
 
@@ -215,9 +220,9 @@ namespace ProtectedEngine {
         void Set_IR_Mode(bool enable) noexcept;
         [[nodiscard]] bool Get_IR_Mode() const noexcept;
 
-        /* BUG-FIX-PRE1: 프리앰블 반복 — 고재밍 동기 확보 */
+        /* BUG-FIX-PRE1: 프리앰블 반복 — 고재밍 동기 확보 (상한 200, 테스트·양산 튜닝). */
         void Set_Preamble_Reps(int reps) noexcept {
-            pre_reps_ = (reps < 1) ? 1 : (reps > 8) ? 8 : reps;
+            pre_reps_ = (reps < 1) ? 1 : (reps > 200) ? 200 : reps;
         }
         [[nodiscard]] int Get_Preamble_Reps() const noexcept { return pre_reps_; }
 
@@ -510,8 +515,10 @@ namespace ProtectedEngine {
             uint32_t second_eQ;  ///< Q 채널 차순위 에너지
         };
 
-        SymDecResult walsh_dec_full_(
-            const int16_t* I, const int16_t* Q, int n) noexcept;
+        /// @param cap_search_to_bps true=페이로드용(에너지 탐색을 2^BPS로 제한),
+        /// false=프리앰블·헤더(0..63 Walsh 전체). BPS<6 시 동기 필수.
+        SymDecResult walsh_dec_full_(const int16_t* I, const int16_t* Q, int n,
+                                     bool cap_search_to_bps = true) noexcept;
 
         /// @brief I/Q 독립 디코딩 — 각 채널 FWHT 분리 수행
         SymDecResultSplit walsh_dec_split_(
