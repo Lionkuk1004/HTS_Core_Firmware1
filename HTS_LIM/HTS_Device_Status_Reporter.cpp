@@ -179,7 +179,7 @@ namespace ProtectedEngine {
     HTS_Device_Status_Reporter::~HTS_Device_Status_Reporter() noexcept {
         impl_valid_.store(false, std::memory_order_release);
         Armv7m_Irq_Mask_Guard irq;
-        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (p != nullptr) { p->~Impl(); }
         Rpt_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
     }

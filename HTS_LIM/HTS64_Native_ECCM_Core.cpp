@@ -23,14 +23,6 @@ static_assert(sizeof(int32_t) == 4u, "int32_t must be 4 bytes");
 
 namespace ProtectedEngine {
 
-#if (defined(__cpp_lib_launder) && __cpp_lib_launder >= 201606L) || \
-    (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L) || \
-    (!defined(_MSVC_LANG) && defined(__cplusplus) && __cplusplus >= 201703L)
-#define HTS64_USE_STD_LAUNDER 1
-#else
-#define HTS64_USE_STD_LAUNDER 0
-#endif
-
     // =============================================================================
     //  모듈 상수
     // =============================================================================
@@ -510,11 +502,7 @@ namespace ProtectedEngine {
         if (!impl_valid_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-#if HTS64_USE_STD_LAUNDER
         return std::launder(reinterpret_cast<Impl*>(impl_buf_));
-#else
-        return reinterpret_cast<Impl*>(impl_buf_);
-#endif
     }
 
     const HTS64_Native_ECCM_Core::Impl*
@@ -522,11 +510,7 @@ namespace ProtectedEngine {
         if (!impl_valid_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-#if HTS64_USE_STD_LAUNDER
         return std::launder(reinterpret_cast<const Impl*>(impl_buf_));
-#else
-        return reinterpret_cast<const Impl*>(impl_buf_);
-#endif
     }
 
     // =============================================================================

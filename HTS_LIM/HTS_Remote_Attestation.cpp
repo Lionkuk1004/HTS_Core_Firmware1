@@ -5,6 +5,7 @@
 //
 #include "HTS_Remote_Attestation.hpp"
 #include "HTS_Hardware_Bridge.hpp"
+#include "HTS_Secure_Memory.h"
 
 #include <atomic>
 
@@ -142,7 +143,11 @@ namespace ProtectedEngine {
         key_lo ^= Murmur3_Fmix32(tick);
         key_hi ^= Murmur3_Fmix32(tick ^ GOLDEN_RATIO_32);
 
-        return Compute_Keyed_FNV1a_32(byte_ptr, size, key_lo, key_hi);
+        const uint64_t quote =
+            Compute_Keyed_FNV1a_32(byte_ptr, size, key_lo, key_hi);
+        SecureMemory::secureWipe(&key_lo, sizeof(key_lo));
+        SecureMemory::secureWipe(&key_hi, sizeof(key_hi));
+        return quote;
     }
 
     // =====================================================================

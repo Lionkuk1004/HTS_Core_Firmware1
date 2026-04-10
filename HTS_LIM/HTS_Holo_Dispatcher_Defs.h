@@ -87,20 +87,43 @@ namespace ProtectedEngine {
     //  홀로그램 모드별 프로파일 매핑
     // ============================================================
 
-    /// @brief 모드 → 프로파일 변환 (constexpr ROM)
-    inline HoloTensor_Profile Holo_Mode_To_Profile(uint8_t mode) noexcept
+    /// @brief 모드 → 프로파일 변환 (constexpr ROM, HTS_Holo_Tensor_4D_Defs.h 와 바이트 동일)
+    /// @note VOICE_HOLO 는 반드시 K=8, N=64, L=2 (잘못된 K=16,N=16,L=1 프리셋 금지)
+    inline constexpr HoloTensor_Profile Holo_Mode_To_Profile(uint8_t mode) noexcept
     {
         switch (mode) {
         case HoloPayload::VOICE_HOLO:
-            return k_holo_profiles[0];  // K=8, N=64, L=2
+            return { 8u, 64u, 2u, {0, 0, 0} };
         case HoloPayload::DATA_HOLO:
-            return k_holo_profiles[1];  // K=16, N=64, L=2
+            return { 16u, 64u, 2u, {0, 0, 0} };
         case HoloPayload::RESILIENT_HOLO:
-            return k_holo_profiles[2];  // K=8, N=64, L=4
+            return { 8u, 64u, 4u, {0, 0, 0} };
         default:
-            return k_holo_profiles[1];  // fallback DATA
+            return { 16u, 64u, 2u, {0, 0, 0} };
         }
     }
+
+    static_assert(Holo_Mode_To_Profile(HoloPayload::VOICE_HOLO).block_bits
+                      == k_holo_profiles[0].block_bits
+                  && Holo_Mode_To_Profile(HoloPayload::VOICE_HOLO).chip_count
+                      == k_holo_profiles[0].chip_count
+                  && Holo_Mode_To_Profile(HoloPayload::VOICE_HOLO).num_layers
+                      == k_holo_profiles[0].num_layers,
+        "VOICE holo profile must match k_holo_profiles[0] (K=8,N=64,L=2)");
+    static_assert(Holo_Mode_To_Profile(HoloPayload::DATA_HOLO).block_bits
+                      == k_holo_profiles[1].block_bits
+                  && Holo_Mode_To_Profile(HoloPayload::DATA_HOLO).chip_count
+                      == k_holo_profiles[1].chip_count
+                  && Holo_Mode_To_Profile(HoloPayload::DATA_HOLO).num_layers
+                      == k_holo_profiles[1].num_layers,
+        "DATA holo profile must match k_holo_profiles[1]");
+    static_assert(Holo_Mode_To_Profile(HoloPayload::RESILIENT_HOLO).block_bits
+                      == k_holo_profiles[2].block_bits
+                  && Holo_Mode_To_Profile(HoloPayload::RESILIENT_HOLO).chip_count
+                      == k_holo_profiles[2].chip_count
+                  && Holo_Mode_To_Profile(HoloPayload::RESILIENT_HOLO).num_layers
+                      == k_holo_profiles[2].num_layers,
+        "RESILIENT holo profile must match k_holo_profiles[2]");
 
     // ============================================================
     //  헤더 인코딩 (기존 Dispatcher 호환)

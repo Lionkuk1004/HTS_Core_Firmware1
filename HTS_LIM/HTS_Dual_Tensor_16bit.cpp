@@ -15,10 +15,10 @@
 // ── Self-Contained 표준 헤더 ─────────────────────────────────────────
 #include <algorithm>
 #include <atomic>
+#include <new>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <new>
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
 #include <bit>
@@ -240,7 +240,7 @@ namespace ProtectedEngine {
     // =====================================================================
     Dual_Tensor_Pipeline::~Dual_Tensor_Pipeline() noexcept {
         impl_valid_.store(false, std::memory_order_release);
-        Impl* p = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (p != nullptr) { p->~Impl(); }
         Secure_Wipe_Buffer(impl_buf_, sizeof(impl_buf_));
     }
@@ -267,7 +267,7 @@ namespace ProtectedEngine {
         ok &= static_cast<uint32_t>(raw_sensor_data != nullptr);
         ok &= static_cast<uint32_t>(data_len > 0u);
 
-        Impl& impl = *reinterpret_cast<Impl*>(impl_buf_);
+        Impl& impl = *std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // active_tensor_count는 "uint32(듀얼 텐서) 개수" 단위.
         // Stage①에서 16비트 센서 2개 → 32비트 1개 패킹하므로,

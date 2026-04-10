@@ -124,14 +124,15 @@ static SensResult run_one(const DispConfig &cfg, PayloadMode mode, double js_db,
     SensResult res{};
     res.js_db = js_db;
     res.trials = trials;
+    HTS_V400_Dispatcher disp;
     for (int t = 0; t < trials; ++t) {
+        disp.Reset();
         g_last = DecodedPacket{};
         const uint32_t ds =
             kSeedBase ^ static_cast<uint32_t>(t * 0x9E3779B9u) ^
             static_cast<uint32_t>(static_cast<int>(js_db * 100));
         const uint32_t ns =
             (kSeedBase << 1) ^ static_cast<uint32_t>(t * 0x85EBCA6Bu);
-        HTS_V400_Dispatcher disp;
         disp.Set_IR_Mode(true);
         disp.Set_Seed(ds);
         disp.Set_Preamble_Boost(cfg.pre_boost);
@@ -249,6 +250,7 @@ static void run_sweep(const DispConfig &cfg, PayloadMode mode, JamType jam,
     }
 }
 } // namespace
+#if !defined(HTS_BARRAGE30_RUN_FEC_LAYER_INSTEAD)
 int main() {
     static constexpr double js_points[] = {15, 20, 25, 30, 35};
     static constexpr int js_count = 5;
@@ -376,8 +378,8 @@ int main() {
     {
         FEC_HARQ::Set_IR_Erasure_Enabled(false);
         FEC_HARQ::Set_IR_Rs_Post_Enabled(true);
-        const int bps = 4;
-        const int nsym = FEC_HARQ::nsym_for_bps(bps);
+        static constexpr int bps = 4;
+        constexpr int nsym = FEC_HARQ::nsym_for_bps(bps);
         const int nc = 64;
         const int total_chips = nsym * nc;
         std::printf("\n── 64chip BPS=%d FEC직접 (프리앰블/헤더 없음) ──\n",
@@ -385,12 +387,18 @@ int main() {
         std::printf("  %5s | %6s | %6s | %5s\n", "J/S", "CRC%", "avgR", "maxR");
         std::printf("  ------+--------+--------+------\n");
         static constexpr double js_ref[] = {15, 20, 25, 30, 35, 40};
+        static std::vector<int16_t> txI;
+        static std::vector<int16_t> txQ;
+        static std::vector<int16_t> rxI;
+        static std::vector<int16_t> rxQ;
+        static std::vector<double> dbl;
+        const size_t chip_n = static_cast<size_t>(total_chips);
+        txI.resize(chip_n);
+        txQ.resize(chip_n);
+        rxI.resize(chip_n);
+        rxQ.resize(chip_n);
+        dbl.resize(chip_n);
         for (double js : js_ref) {
-            std::vector<int16_t> txI(static_cast<size_t>(total_chips));
-            std::vector<int16_t> txQ(static_cast<size_t>(total_chips));
-            std::vector<int16_t> rxI(static_cast<size_t>(total_chips));
-            std::vector<int16_t> rxQ(static_cast<size_t>(total_chips));
-            std::vector<double> dbl(static_cast<size_t>(total_chips));
             int ok_count = 0;
             double sum_rounds = 0.0;
             int max_r = 0;
@@ -489,3 +497,4 @@ int main() {
     std::printf("\n=== 완료 ===\n");
     return 0;
 }
+#endif // !HTS_BARRAGE30_RUN_FEC_LAYER_INSTEAD

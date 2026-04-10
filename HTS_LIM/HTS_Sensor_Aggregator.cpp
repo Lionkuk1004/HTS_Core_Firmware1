@@ -28,14 +28,6 @@
 
 namespace ProtectedEngine {
 
-#if (defined(__cpp_lib_launder) && __cpp_lib_launder >= 201606L) || \
-    (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L) || \
-    (!defined(_MSVC_LANG) && defined(__cplusplus) && __cplusplus >= 201703L)
-#define HTS_SENSOR_AGG_USE_STD_LAUNDER 1
-#else
-#define HTS_SENSOR_AGG_USE_STD_LAUNDER 0
-#endif
-
 #if !defined(HTS_SENSOR_AGG_SKIP_PHYS_TRUST)
 #if defined(HTS_ALLOW_OPEN_DEBUG) || !defined(NDEBUG)
 #define HTS_SENSOR_AGG_SKIP_PHYS_TRUST 1
@@ -252,11 +244,7 @@ namespace ProtectedEngine {
         if (!impl_valid_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-#if HTS_SENSOR_AGG_USE_STD_LAUNDER
         return std::launder(reinterpret_cast<Impl*>(impl_buf_));
-#else
-        return reinterpret_cast<Impl*>(impl_buf_);
-#endif
     }
 
     const HTS_Sensor_Aggregator::Impl*
@@ -269,11 +257,7 @@ namespace ProtectedEngine {
         if (!impl_valid_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-#if HTS_SENSOR_AGG_USE_STD_LAUNDER
         return std::launder(reinterpret_cast<const Impl*>(impl_buf_));
-#else
-        return reinterpret_cast<const Impl*>(impl_buf_);
-#endif
     }
 
     // =====================================================================
@@ -294,11 +278,7 @@ namespace ProtectedEngine {
     }
 
     HTS_Sensor_Aggregator::~HTS_Sensor_Aggregator() noexcept {
-#if HTS_SENSOR_AGG_USE_STD_LAUNDER
         Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
-#else
-        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
-#endif
         const bool was_valid = impl_valid_.exchange(false, std::memory_order_acq_rel);
         if (was_valid) { p->~Impl(); }
         Agg_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);

@@ -367,13 +367,8 @@ namespace ProtectedEngine {
                         Transition_State(OTA_State::ERROR);
                         return;
                     }
-                    bool rb_ok = true;
-                    for (uint32_t vi = 0u; vi < rb_len; ++vi) {
-                        if (rb[vi] != payload[static_cast<size_t>(5u + vi)]) {
-                            rb_ok = false;
-                        }
-                    }
-                    if (!rb_ok) {
+                    if (std::memcmp(rb, &payload[static_cast<size_t>(5u)],
+                            static_cast<size_t>(rb_len)) != 0) {
                         last_result = OTA_Result::FLASH_FAIL;
                         Transition_State(OTA_State::ERROR);
                         return;

@@ -11,9 +11,9 @@
 // ── Self-Contained 표준 헤더 ───────────────────────────────────────
 #include <atomic>
 #include <cstddef>
+#include <new>
 #include <cstdint>
 #include <cstring>
-#include <new>
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
 #include <bit>
@@ -236,7 +236,7 @@ namespace {
     DynamicKeyRotator::~DynamicKeyRotator() noexcept {
         if (impl_valid_.load(std::memory_order_acquire)) {
             impl_valid_.store(false, std::memory_order_release);
-            reinterpret_cast<Impl*>(impl_buf_)->~Impl();
+            std::launder(reinterpret_cast<Impl*>(impl_buf_))->~Impl();
         }
         Key_Rotator_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
     }

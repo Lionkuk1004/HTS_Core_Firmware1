@@ -653,7 +653,7 @@ namespace ProtectedEngine {
     //  Destroy_Key — 마스터 키 + 프로비저닝 매직 물리적 소각
     //
     //  키만 태우고 매직이 남으면 재부팅 후 Is_Provisioned()가 참이 될 수 있음.
-    //  키 블록 소각 직후 매직 블록도 0으로 덮어 프로비저닝 상태를 하드웨어에서 무효화.
+    //  매직 블록도 OTP에 0xFF(전부 1)로 소각해 프로비저닝 상태를 하드웨어에서 무효화.
     // =====================================================================
     void HTS_Key_Provisioning::Destroy_Key() noexcept {
         Impl* p = get_impl();

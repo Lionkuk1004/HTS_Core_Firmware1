@@ -82,18 +82,21 @@
 #include <cstdint>
 #include <cstddef>
 
-// HTS_FEC_M4_RAM_LAYOUT:
+// M4 RAM 레이아웃(실M4 또는 PC 시뮬 동일):
 //   · 실칩: ARM 계열 && !HTS_ALLOW_HOST_BUILD
-//   · PC 시뮬을 실M4와 동일하게: vcxproj 등에 HTS_FEC_SIMULATE_M4_RAM_LAYOUT 정의
-//   비활성(매크로 없음·호스트만): NSYM64=230·BPS3 허용 — 펌웨어와 불일치 시 시험 결과 왜곡
+//   · PC 시뮬: vcxproj 등에 HTS_FEC_SIMULATE_M4_RAM_LAYOUT 정의
+//   비활성(호스트만): NSYM64=230·BPS3 허용 — 펌웨어와 불일치 시 시험 결과 왜곡
+namespace ProtectedEngine {
+namespace fec_harq_build {
 #if defined(HTS_FEC_SIMULATE_M4_RAM_LAYOUT) || \
     ((defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
       defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) && \
      !defined(HTS_ALLOW_HOST_BUILD))
-#define HTS_FEC_M4_RAM_LAYOUT 1
+inline constexpr bool k_m4_ram_layout = true;
+#else
+inline constexpr bool k_m4_ram_layout = false;
 #endif
-
-namespace ProtectedEngine {
+} // namespace fec_harq_build
 
     class FEC_HARQ {
     public:
@@ -131,13 +134,9 @@ namespace ProtectedEngine {
         //
         static constexpr int BPS64_MIN = 3;   // 양산: 최대 보호 (군용급) — M4에서는 누적 버퍼 한계로 TX/RX 기본 4+
         static constexpr int BPS64_MAX = 6;   // 양산: 최고 속도 (AMI 평시)
-#if defined(HTS_FEC_M4_RAM_LAYOUT)
-        static constexpr int BPS64 = 4;       // M4: Encode64/Decode64 기본 (172심볼)
+        static constexpr int BPS64 =
+            fec_harq_build::k_m4_ram_layout ? 4 : BPS64_MIN; // M4: 172심볼
         static constexpr int NSYM64 = (TOTAL_CODED + BPS64 - 1) / BPS64;
-#else
-        static constexpr int BPS64 = BPS64_MIN;
-        static constexpr int NSYM64 = (TOTAL_CODED + BPS64_MIN - 1) / BPS64_MIN;
-#endif
 
         /// @brief BPS → 심볼 수 (컴파일 타임 계산)
         static constexpr int nsym_for_bps(int bps) noexcept {
@@ -165,21 +164,16 @@ namespace ProtectedEngine {
             int b = (nf > NF_HEAVY_JAM) ? BPS64_MIN :
                 (nf > NF_MED_JAM) ? 4 :
                 (nf > NF_LIGHT_JAM) ? 5 : BPS64_MAX;
-#if defined(HTS_FEC_M4_RAM_LAYOUT)
-            if (b < 4) { b = 4; }
-#endif
+            if (fec_harq_build::k_m4_ram_layout && b < 4) {
+                b = 4;
+            }
             return b;
         }
 
         /// 이 바이너리에서 64칩 DATA Encode64_A/Decode64_A·HARQ 누적이 가능한 최소 BPS
         /// (프로토콜 하한 BPS64_MIN=3 과 구분 — M4는 NSYM64=172 로 BPS3 상호운용 불가)
         static constexpr int BPS64_MIN_OPERABLE =
-#if defined(HTS_FEC_M4_RAM_LAYOUT)
-            4
-#else
-            BPS64_MIN
-#endif
-            ;
+            fec_harq_build::k_m4_ram_layout ? 4 : BPS64_MIN;
 
         static int bps_clamp_runtime(int b) noexcept {
             if (b > BPS64_MAX) b = BPS64_MAX;

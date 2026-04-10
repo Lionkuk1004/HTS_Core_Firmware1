@@ -248,7 +248,7 @@ namespace ProtectedEngine {
         {
             Armv7m_Irq_Mask_Guard irq;
             Impl* p =
-                reinterpret_cast<Impl*>(impl_buf_);
+                std::launder(reinterpret_cast<Impl*>(impl_buf_));
             if (p != nullptr) { p->~Impl(); }
             SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
             op_busy_.clear(std::memory_order_release);
@@ -430,13 +430,7 @@ namespace ProtectedEngine {
                 p->reject = AMI_OtaReject::FLASH_FAIL;
                 return false;
             }
-            bool rb_ok = true;
-            for (size_t vi = 0u; vi < rb_len; ++vi) {
-                if (rb[vi] != data[vi]) {
-                    rb_ok = false;
-                }
-            }
-            if (!rb_ok) {
+            if (std::memcmp(rb, data, rb_len) != 0) {
                 p->reject = AMI_OtaReject::FLASH_FAIL;
                 return false;
             }

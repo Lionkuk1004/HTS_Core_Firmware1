@@ -111,6 +111,7 @@ namespace ProtectedEngine {
         // ============================================================
         bool Transition_State(Modbus_State target) noexcept
         {
+            // CFI: MODBUS_SECURE_TRUE/FALSE 는 모두 비0 → !Modbus_Is_Legal_Transition(...) 금지
             if (Modbus_Is_Legal_Transition(state, target) != MODBUS_SECURE_TRUE) {
                 if (Modbus_Is_Legal_Transition(state, Modbus_State::ERROR) == MODBUS_SECURE_TRUE) {
                     state = Modbus_State::ERROR;

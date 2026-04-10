@@ -436,10 +436,11 @@ namespace ProtectedEngine {
 #endif
             }
         }
-        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
         const bool was_valid = impl_valid_;
         impl_valid_ = false;
-        if (was_valid) { p->~Impl(); }
+        if (was_valid) {
+            std::launder(reinterpret_cast<Impl*>(impl_buf_))->~Impl();
+        }
         SecureMemory::secureWipe(impl_buf_, IMPL_BUF_SIZE);
         g_sb_op_busy.clear(std::memory_order_release);
     }

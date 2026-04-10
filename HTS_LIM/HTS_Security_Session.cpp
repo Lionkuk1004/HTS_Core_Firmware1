@@ -29,14 +29,6 @@
 
 namespace ProtectedEngine {
 
-#if (defined(__cpp_lib_launder) && __cpp_lib_launder >= 201606L) || \
-    (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L) || \
-    (!defined(_MSVC_LANG) && defined(__cplusplus) && __cplusplus >= 201703L)
-#define HTS_SECURITY_SESSION_USE_STD_LAUNDER 1
-#else
-#define HTS_SECURITY_SESSION_USE_STD_LAUNDER 0
-#endif
-
 #if !defined(HTS_SECURITY_SESSION_SKIP_PHYS_TRUST)
 #if defined(HTS_ALLOW_OPEN_DEBUG) || !defined(NDEBUG)
 #define HTS_SECURITY_SESSION_SKIP_PHYS_TRUST 1
@@ -267,7 +259,10 @@ namespace ProtectedEngine {
                         ctr_store_be64(ctr_blk, ctr_hi);
                         ctr_store_be64(ctr_blk + 8u, ctr_lo);
                         uint8_t keystream[16];
-                        if (!cached_aria.Process_Block(ctr_blk, keystream)) return false;
+                        if (!cached_aria.Process_Block(ctr_blk, keystream)) {
+                            SecureMemory::secureWipe(ctr_blk, sizeof(ctr_blk));
+                            return false;
+                        }
                         for (int i = 0; i < 16; ++i) {
                             output[offset + b + i] = input[offset + b + i] ^ keystream[i];
                         }
@@ -276,6 +271,7 @@ namespace ProtectedEngine {
                     }
                     ctr_store_be64(counter, ctr_hi);
                     ctr_store_be64(counter + 8u, ctr_lo);
+                    SecureMemory::secureWipe(ctr_blk, sizeof(ctr_blk));
                 }
 #if defined(HTS_CRYPTO_FIPS) || defined(HTS_CRYPTO_DUAL)
                 else if (cipher_alg == CipherAlgorithm::AES_256_CTR) {
@@ -286,7 +282,10 @@ namespace ProtectedEngine {
                         ctr_store_be64(ctr_blk, ctr_hi);
                         ctr_store_be64(ctr_blk + 8u, ctr_lo);
                         uint8_t keystream[16];
-                        if (!cached_aes.Process_Block(ctr_blk, keystream)) return false;
+                        if (!cached_aes.Process_Block(ctr_blk, keystream)) {
+                            SecureMemory::secureWipe(ctr_blk, sizeof(ctr_blk));
+                            return false;
+                        }
                         for (int i = 0; i < 16; ++i) {
                             output[offset + b + i] = input[offset + b + i] ^ keystream[i];
                         }
@@ -295,6 +294,7 @@ namespace ProtectedEngine {
                     }
                     ctr_store_be64(counter, ctr_hi);
                     ctr_store_be64(counter + 8u, ctr_lo);
+                    SecureMemory::secureWipe(ctr_blk, sizeof(ctr_blk));
                 }
 #endif
                 else {
@@ -338,6 +338,7 @@ namespace ProtectedEngine {
                     std::memcpy(scratch_ctr, counter, 16);
                     uint8_t zeros[16] = { 0 };
                     lea_ctr_enc(partial_block, zeros, 16, scratch_ctr, &cached_lea_key);
+                    SecureMemory::secureWipe(scratch_ctr, sizeof(scratch_ctr));
                 }
 
                 for (size_t i = 0; i < remaining; ++i) {
@@ -380,21 +381,13 @@ namespace ProtectedEngine {
         if (!impl_valid_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-#if HTS_SECURITY_SESSION_USE_STD_LAUNDER
         return std::launder(reinterpret_cast<Impl*>(impl_buf_));
-#else
-        return reinterpret_cast<Impl*>(impl_buf_);
-#endif
     }
     const HTS_Security_Session::Impl* HTS_Security_Session::get_impl() const noexcept {
         if (!impl_valid_.load(std::memory_order_acquire)) {
             return nullptr;
         }
-#if HTS_SECURITY_SESSION_USE_STD_LAUNDER
         return std::launder(reinterpret_cast<const Impl*>(impl_buf_));
-#else
-        return reinterpret_cast<const Impl*>(impl_buf_);
-#endif
     }
 
     // =====================================================================
@@ -426,11 +419,7 @@ namespace ProtectedEngine {
     }
 
     HTS_Security_Session::~HTS_Security_Session() noexcept {
-#if HTS_SECURITY_SESSION_USE_STD_LAUNDER
         Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
-#else
-        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
-#endif
         const bool was_valid = impl_valid_.exchange(false, std::memory_order_acq_rel);
         if (was_valid) {
             p->Clean_State();       // 멤버 필드 보안 소거

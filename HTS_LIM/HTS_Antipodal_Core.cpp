@@ -66,7 +66,7 @@ namespace ProtectedEngine {
             const int8_t* __restrict b, size_t len) noexcept {
         if (!a || !b || len == 0u) return 0;
 
-        int32_t dot = 0;
+        int64_t dot = 0;
         uint32_t i = 0u;
         const uint32_t u_len = static_cast<uint32_t>(len);
 
@@ -100,14 +100,21 @@ namespace ProtectedEngine {
             const uint32_t sign_diff = (ua ^ ub) & 0x80808080u;
             const uint32_t diff_count =
                 ((sign_diff >> 7u) * 0x01010101u) >> 24u;
-            dot += 4 - static_cast<int32_t>(diff_count << 1u);
+            dot += static_cast<int64_t>(4) -
+                static_cast<int64_t>(static_cast<int32_t>(diff_count << 1u));
         }
         i = word_count << 2u;
 
         for (; i < u_len; ++i) {
-            dot += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+            dot += static_cast<int64_t>(a[i]) * static_cast<int64_t>(b[i]);
         }
-        return dot;
+        if (dot > static_cast<int64_t>(INT32_MAX)) {
+            return INT32_MAX;
+        }
+        if (dot < static_cast<int64_t>(INT32_MIN)) {
+            return INT32_MIN;
+        }
+        return static_cast<int32_t>(dot);
     }
 
 } // namespace ProtectedEngine

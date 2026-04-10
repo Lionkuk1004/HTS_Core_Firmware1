@@ -162,6 +162,11 @@
       <Properties>ExcludeV400DispatcherFromStaticLib=true;ExcludeHTS_FEC_HARQ_FromLib=true</Properties>
     </ProjectReference>
   </ItemGroup>
+  <!--
+    기본: 민감도 테스트가 main을 제공합니다.
+    FEC 레이어 단독 실행: 네 구성(Debug/Release × x64/Win32)의 ClCompile
+    PreprocessorDefinitions에 HTS_BARRAGE30_RUN_FEC_LAYER_INSTEAD 를 추가하세요.
+  -->
   <ItemGroup>
     <ClCompile Include="HTS_FEC_Layer_Test.cpp" />
     <ClCompile Include="HTS_Sensitivity_Test.cpp" />

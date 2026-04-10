@@ -385,6 +385,7 @@ static void print_row(const char *label, const LayerResult &r) noexcept {
                 pct, r.avg_rounds, r.max_rounds, label);
 }
 } // namespace
+#if defined(HTS_BARRAGE30_RUN_FEC_LAYER_INSTEAD)
 int main() {
     static constexpr int kTrials = 24;
     static constexpr int kMaxRounds = 32;
@@ -627,3 +628,4 @@ int main() {
     std::printf("\n=== 테스트 완료 ===\n");
     return 0;
 }
+#endif // HTS_BARRAGE30_RUN_FEC_LAYER_INSTEAD

@@ -61,11 +61,31 @@ namespace ProtectedEngine {
         return (x ^ mask) - mask;
     }
 
+    // uint64 ÷ uint32 — 런타임 64비트 나눗셈 루틴(__aeabi_uldivmod) 회피, 시프트·감산만 사용
+    static uint32_t mesh_u64_div_u32(uint64_t n, uint32_t d) noexcept {
+        if (d == 0u) {
+            return UINT32_MAX;
+        }
+        uint64_t q = 0u;
+        uint64_t r = 0u;
+        for (int bit = 63; bit >= 0; --bit) {
+            r = (r << 1) | ((n >> static_cast<unsigned>(bit)) & 1u);
+            const uint64_t dv = static_cast<uint64_t>(d);
+            if (r >= dv) {
+                r -= dv;
+                q |= (1uLL << static_cast<unsigned>(bit));
+            }
+        }
+        if (q > static_cast<uint64_t>(UINT32_MAX)) {
+            return UINT32_MAX;
+        }
+        return static_cast<uint32_t>(q);
+    }
+
     // ToA 거리(cm) — PRIMASK 밖에서도 동일 수식 사용 (Get_All_Ranging 스냅샷 후 호출)
     static uint32_t mesh_distance_cm_from_offset_q16(int32_t ofs_q16) noexcept {
         const uint32_t abs_ofs = static_cast<uint32_t>(fast_abs(ofs_q16));
-        // den = 65536 * 10000 = 655,360,000
-        // 분해: >>16 으로 65536 제거 → /10000 (64/64 ÷den 대신 >>16 + ÷10000)
+        // den = 65536 * 10000 (반올림: num + den/2 는 컴파일 타임 상수)
         const uint64_t num =
             static_cast<uint64_t>(abs_ofs) * LIGHT_CM_PER_US_NUM;
         static constexpr uint64_t den = 65536ULL * LIGHT_CM_PER_US_DEN;
@@ -73,11 +93,7 @@ namespace ProtectedEngine {
             static_cast<uint32_t>(LIGHT_CM_PER_US_DEN);  // 10000
         const uint64_t num_rounded = num + (den / 2ULL);
         const uint64_t num_hi = num_rounded >> 16u;
-        const uint64_t q64 = num_hi / static_cast<uint64_t>(DEN_HI);
-        if (q64 > static_cast<uint64_t>(UINT32_MAX)) {
-            return UINT32_MAX;
-        }
-        return static_cast<uint32_t>(q64);
+        return mesh_u64_div_u32(num_hi, DEN_HI);
     }
 
     // =====================================================================

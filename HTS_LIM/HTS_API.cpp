@@ -337,12 +337,17 @@ namespace HTS_API {
             return HTS_Status::OK;
         }
 
-        // strict aliasing 준수: uint32_t* → int32_t* 직접 캐스팅 금지
-        // Push_Waveform_Chunk가 const int32_t*를 받으므로 memcpy로 type-pun
+        // C-07 strict aliasing: uint32_t* 레인을 int32_t*로 reinterpret 금지 → memcpy만 사용
+        static_assert(sizeof(uint32_t) == sizeof(int32_t),
+            "lane word size must match waveform sample word");
+        // Push_Waveform_Chunk가 const int32_t*를 받으므로 memcpy로 복사
         // push_words ≤ lane_words ≤ kUnifiedTxScratchUint16 (1024) → 4KB 이하
         static int32_t g_tx_lane_i32[1024];
         const size_t copy_bytes = push_words * sizeof(int32_t);
-        std::memcpy(g_tx_lane_i32, lane, copy_bytes);
+        std::memcpy(
+            static_cast<void*>(g_tx_lane_i32),
+            static_cast<const void*>(lane),
+            copy_bytes);
         if (!g_tx_sched.Push_Waveform_Chunk(g_tx_lane_i32, push_words)) {
             return HTS_Status::ERR_TX_PIPELINE_FAILED;
         }
