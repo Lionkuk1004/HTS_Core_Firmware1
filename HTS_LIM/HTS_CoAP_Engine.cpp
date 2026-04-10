@@ -226,7 +226,7 @@ namespace ProtectedEngine {
         HTS_CoAP_Engine::get_impl() const noexcept
     {
         return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     HTS_CoAP_Engine::HTS_CoAP_Engine(uint16_t my_id) noexcept

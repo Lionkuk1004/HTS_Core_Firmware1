@@ -1362,7 +1362,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_State::UNINITIALIZED;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->state;
     }
 
@@ -1372,14 +1372,14 @@ namespace ProtectedEngine {
             IPC_Statistics_Reset(out_stats);
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         IPC_Statistics_Copy(impl->stats, out_stats);
     }
 
     uint32_t HTS_IPC_Protocol::Is_Link_Alive() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->Is_Heartbeat_Alive(impl->state_entry_tick)
             ? SECURE_TRUE : SECURE_FALSE;
     }
@@ -1387,14 +1387,14 @@ namespace ProtectedEngine {
     uint32_t HTS_IPC_Protocol::Get_TX_Pending() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->Ring_TX_Count();
     }
 
     uint32_t HTS_IPC_Protocol::Get_RX_Pending() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->Ring_RX_Count();
     }
 

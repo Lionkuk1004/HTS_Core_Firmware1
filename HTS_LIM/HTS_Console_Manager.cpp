@@ -691,7 +691,7 @@ namespace ProtectedEngine {
             out_config = k_default_channel_config;
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         //  Apply_Param(IPC 경로)과 동시 실행 시 부분 읽기 방지
         Armv7m_Irq_Mask_Guard irq;
         std::memcpy(&out_config, &impl->channel_config, sizeof(ChannelConfig));
@@ -726,7 +726,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return ConsoleState::OFFLINE;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->state;
     }
 
@@ -736,7 +736,7 @@ namespace ProtectedEngine {
             out_report = DiagReport{};
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         impl->Build_Report(out_report);
     }
 

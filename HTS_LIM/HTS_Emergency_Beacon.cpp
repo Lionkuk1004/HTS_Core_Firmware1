@@ -147,7 +147,7 @@ namespace ProtectedEngine {
         HTS_Emergency_Beacon::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================

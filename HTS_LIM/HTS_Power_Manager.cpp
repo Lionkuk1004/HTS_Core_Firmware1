@@ -489,35 +489,35 @@ namespace ProtectedEngine {
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return PowerState::UNINITIALIZED; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     PowerMode HTS_Power_Manager::Get_Current_Mode() const noexcept
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return PowerMode::RUN; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->current_mode;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->current_mode;
     }
 
     uint16_t HTS_Power_Manager::Get_Battery_MV() const noexcept
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->last_battery_mv;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->last_battery_mv;
     }
 
     uint16_t HTS_Power_Manager::Get_Last_Wake_Source() const noexcept
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->last_wake_source;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->last_wake_source;
     }
 
     uint32_t HTS_Power_Manager::Get_Sleep_Count() const noexcept
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->sleep_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->sleep_count;
     }
 
 } // namespace ProtectedEngine

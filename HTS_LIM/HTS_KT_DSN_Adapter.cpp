@@ -655,7 +655,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return DSN_State::OFFLINE; }
         if (!initialized_.load(std::memory_order_acquire)) { return DSN_State::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_KT_DSN_Adapter::Get_Active_Alert_Count() const noexcept
@@ -663,7 +663,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->Count_Active_Alerts();
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->Count_Active_Alerts();
     }
 
     uint32_t HTS_KT_DSN_Adapter::Get_Total_Alerts_Received() const noexcept
@@ -671,7 +671,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->total_alerts_received;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->total_alerts_received;
     }
 
 } // namespace ProtectedEngine

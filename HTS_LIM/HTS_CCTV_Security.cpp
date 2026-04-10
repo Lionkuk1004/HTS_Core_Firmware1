@@ -790,20 +790,20 @@ namespace ProtectedEngine {
     CCTV_SecState HTS_CCTV_Security::Get_State() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return CCTV_SecState::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state.load(
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state.load(
             std::memory_order_acquire);
     }
 
     uint32_t HTS_CCTV_Security::Get_Event_Count() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->total_event_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->total_event_count;
     }
 
     uint32_t HTS_CCTV_Security::Get_Critical_Count() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->critical_event_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->critical_event_count;
     }
 
     void HTS_CCTV_Security::Get_Recent_Events(CCTV_EventLog* out_log,
@@ -814,7 +814,7 @@ namespace ProtectedEngine {
         if (out_log == nullptr || max_count == 0u) { return; }
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
 
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         const uint32_t total = (impl->log_head < CCTV_EVENT_LOG_SIZE)
             ? impl->log_head : CCTV_EVENT_LOG_SIZE;
         const uint8_t  count = (static_cast<uint8_t>(total) < max_count)

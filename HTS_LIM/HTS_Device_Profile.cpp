@@ -275,7 +275,7 @@ namespace ProtectedEngine {
         if (init_state_.load(std::memory_order_acquire) != PROFILE_INIT_READY) {
             return DeviceMode::SENSOR_GATEWAY;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->current_mode;
     }
 
@@ -285,7 +285,7 @@ namespace ProtectedEngine {
             out_preset = k_device_presets[0];
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         out_preset = impl->current_preset;
     }
 
@@ -304,14 +304,14 @@ namespace ProtectedEngine {
         if (init_state_.load(std::memory_order_acquire) != PROFILE_INIT_READY) {
             return ProfileState::UNCONFIGURED;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->state.load(std::memory_order_acquire);
     }
 
     uint8_t HTS_Device_Profile::Get_Active_Periph_Mask() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != PROFILE_INIT_READY) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->active_periph_mask;
     }
 

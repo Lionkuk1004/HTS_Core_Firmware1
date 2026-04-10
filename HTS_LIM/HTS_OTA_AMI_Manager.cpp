@@ -169,7 +169,7 @@ namespace ProtectedEngine {
     HTS_OTA_AMI_Manager::ImplCPtr HTS_OTA_AMI_Manager::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // 점진 검증 종료: CRC 불일치 등으로 return 전 HMAC 컨텍스트 소비(플러시)

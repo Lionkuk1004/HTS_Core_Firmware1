@@ -862,13 +862,13 @@ namespace ProtectedEngine {
     BLE_GW_State HTS_BLE_NFC_Gateway::Get_State() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return BLE_GW_State::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_BLE_NFC_Gateway::Get_Active_Session_Count() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->Count_Active_Sessions();
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->Count_Active_Sessions();
     }
 
 } // namespace ProtectedEngine

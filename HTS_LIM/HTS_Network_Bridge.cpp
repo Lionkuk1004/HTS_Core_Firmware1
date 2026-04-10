@@ -504,7 +504,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return BridgeState::DISABLED;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->state;
     }
 
@@ -513,7 +513,7 @@ namespace ProtectedEngine {
         Bridge_Busy_Guard guard(op_busy_);
         if (guard.locked != BRIDGE_SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->tx_frag_count;
     }
 
@@ -522,7 +522,7 @@ namespace ProtectedEngine {
         Bridge_Busy_Guard guard(op_busy_);
         if (guard.locked != BRIDGE_SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->rx_reassembled_count;
     }
 
@@ -531,7 +531,7 @@ namespace ProtectedEngine {
         Bridge_Busy_Guard guard(op_busy_);
         if (guard.locked != BRIDGE_SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->timeout_count;
     }
 

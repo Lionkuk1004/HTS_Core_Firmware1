@@ -746,7 +746,7 @@ namespace ProtectedEngine {
 
     const HTS16_DIOC_Core::Impl* HTS16_DIOC_Core::get_impl() const noexcept {
         return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_))
             : nullptr;
     }
 

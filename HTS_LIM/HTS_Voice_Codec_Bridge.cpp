@@ -533,25 +533,25 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return VoiceState::OFFLINE;
         }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     VocoderCodec HTS_Voice_Codec_Bridge::Get_Codec() const noexcept {
         if (!initialized_.load(std::memory_order_acquire)) {
             return VocoderCodec::MELP_600;
         }
-        return reinterpret_cast<const Impl*>(impl_buf_)->codec;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->codec;
     }
 
     uint32_t HTS_Voice_Codec_Bridge::Get_TX_Frame_Count() const noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->tx_frame_count.load(
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->tx_frame_count.load(
             std::memory_order_relaxed);
     }
 
     uint32_t HTS_Voice_Codec_Bridge::Get_RX_Frame_Count() const noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->rx_frame_count.load(
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->rx_frame_count.load(
             std::memory_order_relaxed);
     }
 

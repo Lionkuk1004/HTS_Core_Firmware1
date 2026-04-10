@@ -214,7 +214,7 @@ namespace ProtectedEngine {
         HTS_Mesh_Sync::get_impl() const noexcept
     {
         return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================

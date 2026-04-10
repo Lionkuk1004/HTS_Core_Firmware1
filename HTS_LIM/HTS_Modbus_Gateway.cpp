@@ -700,7 +700,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return Modbus_State::OFFLINE; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return Modbus_State::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_Modbus_Gateway::Get_Request_Count() const noexcept
@@ -708,7 +708,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->request_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->request_count;
     }
 
     uint32_t HTS_Modbus_Gateway::Get_Error_Count() const noexcept
@@ -716,7 +716,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->error_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->error_count;
     }
 
 } // namespace ProtectedEngine

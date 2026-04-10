@@ -681,7 +681,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return OTA_State::IDLE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     // [OTA-1] Get_Progress_Percent — 나눗셈 완전 제거
@@ -699,7 +699,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         if (impl->image_header.total_chunks == 0u) { return 0u; }
 
         // 완료 시 정확히 100% 반환 (Q16 절삭 보정)
@@ -724,7 +724,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return OTA_Result::NOT_READY; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->last_result;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->last_result;
     }
 
     uint16_t HTS_OTA_Manager::Get_Received_Chunks() const noexcept
@@ -732,7 +732,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->received_chunks;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->received_chunks;
     }
 
 } // namespace ProtectedEngine

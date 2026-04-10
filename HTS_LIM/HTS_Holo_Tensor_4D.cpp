@@ -732,7 +732,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return HoloState::OFFLINE; }
         if (!initialized_.load(std::memory_order_acquire)) { return HoloState::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_Holo_Tensor_4D::Get_Encode_Count() const noexcept
@@ -740,7 +740,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->encode_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->encode_count;
     }
 
     uint32_t HTS_Holo_Tensor_4D::Get_Decode_Count() const noexcept
@@ -748,7 +748,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->decode_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->decode_count;
     }
 
     uint32_t HTS_Holo_Tensor_4D::Get_Time_Slot() const noexcept
@@ -756,7 +756,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->time_slot;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->time_slot;
     }
 
 } // namespace ProtectedEngine
