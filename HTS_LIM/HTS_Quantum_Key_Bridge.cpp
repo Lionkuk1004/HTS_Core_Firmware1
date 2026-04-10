@@ -58,9 +58,6 @@ void Quantum_Key_Bridge::Inject_Quantum_Entropy(
     quantum_master_seed[2] ^= folded[2];
     quantum_master_seed[3] ^= folded[3];
 
-    // D-2: 키 파생 데이터 스택 잔류 방지 (물리 RAM 덤프 대응)
-    SecureMemory::secureWipe(static_cast<void*>(acc), sizeof(acc));
-    SecureMemory::secureWipe(static_cast<void*>(folded), sizeof(folded));
 #if defined(__GNUC__) || defined(__clang__)
     __asm__ __volatile__("" ::: "memory");
 #endif
@@ -69,6 +66,10 @@ void Quantum_Key_Bridge::Inject_Quantum_Entropy(
     if (length >= 32u) {
         is_pqc_established = true;
     }
+
+    // D-2: 키 파생 데이터 스택 잔류 방지 (물리 RAM 덤프 대응)
+    SecureMemory::secureWipe(acc, sizeof(acc));
+    SecureMemory::secureWipe(folded, sizeof(folded));
 }
 
 uint64_t Quantum_Key_Bridge::Derive_Quantum_Session_ID() noexcept

@@ -168,8 +168,8 @@
     PreprocessorDefinitions에 HTS_BARRAGE30_RUN_FEC_LAYER_INSTEAD 를 추가하세요.
   -->
   <ItemGroup>
-    <ClCompile Include="HTS_FEC_Layer_Test.cpp" />
     <ClCompile Include="HTS_Sensitivity_Test.cpp" />
+    <ClCompile Include="HTS_FEC_Layer_Test.cpp" />
     <ClCompile Include="HTS_V400_Dispatcher.cpp" />
     <ClCompile Include="HTS_FEC_HARQ.cpp" />
   </ItemGroup>
