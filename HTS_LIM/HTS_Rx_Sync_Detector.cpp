@@ -210,6 +210,8 @@ namespace ProtectedEngine {
             const int32_t max_val_32 = static_cast<int32_t>(max_value);
             int32_t noise_floor_32 = 0;
             if (positive_count > 0u) {
+                // [항목⑨] 불가피: energy_sum은 int32 누적합(오버플로 방지)으로 int64 필수,
+                //  positive_count는 런타임 가변값. 메트릭스 전용 콜드 경로.
                 noise_floor_32 = static_cast<int32_t>(
                     energy_sum / static_cast<int64_t>(positive_count));
             }
