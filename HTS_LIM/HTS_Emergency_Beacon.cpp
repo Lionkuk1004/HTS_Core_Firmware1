@@ -140,14 +140,14 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 alignas를 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Emergency_Beacon::Impl*
         HTS_Emergency_Beacon::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================
@@ -162,11 +162,14 @@ namespace ProtectedEngine {
     }
 
     HTS_Emergency_Beacon::~HTS_Emergency_Beacon() noexcept {
-        impl_valid_.store(false, std::memory_order_release);
-        Armv7m_Irq_Mask_Guard irq;
-        Impl* p = reinterpret_cast<Impl*>(impl_buf_);
-        if (p != nullptr) { p->~Impl(); }
-        Beacon_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Armv7m_Irq_Mask_Guard irq;
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+            Beacon_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
     }
 
     // =====================================================================

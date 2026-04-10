@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 #if defined(_MSC_VER)
@@ -83,7 +84,7 @@ static void AuditRateCommit(uint32_t crc32, uint32_t tick32) noexcept {
     const uint16_t tick_sc_new = static_cast<uint16_t>((tick32 >> 16) & 0xFFFFu);
 
     uint32_t expected = s_audit_rate_packed.load(std::memory_order_relaxed);
-    for (;;) {
+    for (uint32_t spin = 0u; spin < 100000u; ++spin) {
         if (expected == 0u) {
             if (s_audit_rate_packed.compare_exchange_weak(
                     expected,
@@ -110,6 +111,7 @@ static void AuditRateCommit(uint32_t crc32, uint32_t tick32) noexcept {
             return;
         }
     }
+    ProtectedEngine::Hardware_Init_Manager::Terminal_Fault_Action();
 }
 
 static void AuditDropReleaseBarrier(char* slot, size_t idx) noexcept {

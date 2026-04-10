@@ -83,10 +83,10 @@ namespace ProtectedEngine {
 #if (defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)) \
     && !defined(__aarch64__)
-        // STM32: 인터럽트 비활성 → DBGMCU(워치독 프리즈 해제) → AIRCR SYSRESETREQ
+        // STM32/Cortex-M4: 인터럽트 비활성 → SCB->AIRCR(SYSRESETREQ) 선기입 →
+        //  이후 DBGMCU_APB1_FZ(워치독 프리즈 해제). ARM 코어 응용 노트 순서 준수.
         //  ※ SWD/JTAG 영구 차단은 옵션 바이트 RDP(부팅/키 프로비저닝) 영역.
-        //     여기서는 Anti_Debug와 동일하게 DBGMCU_APB1_FZ만 해제해 리셋 대기 중
-        //     WDT가 멈추지 않도록 함(리셋 창에서의 디버그 정지 완화는 HW 정책).
+        //     DBGMCU 해제는 리셋 진행과 병행 가능한 보조 경로(사양 순서 고정).
         static constexpr uintptr_t AIRCR_ADDR = 0xE000ED0Cu;
         static constexpr uintptr_t DBGMCU_APB1_FZ_ADDR = 0xE0042008u;
         static constexpr uint32_t  DBGMCU_WWDG_STOP = (1u << 11);
@@ -100,18 +100,18 @@ namespace ProtectedEngine {
         __asm__ __volatile__("" ::: "memory");
 #endif
         {
-            volatile uint32_t* const dbg_fz =
-                reinterpret_cast<volatile uint32_t*>(DBGMCU_APB1_FZ_ADDR);
-            const uint32_t fz = *dbg_fz;
-            *dbg_fz = fz & ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
-        }
-        __asm__ __volatile__("dsb sy\n\tisb" ::: "memory");
-
-        {
             volatile uint32_t* const aircr =
                 reinterpret_cast<volatile uint32_t*>(AIRCR_ADDR);
             const uint32_t aircr_val = AIRCR_VECTKEY | AIRCR_SYSRST;
             *aircr = aircr_val;
+        }
+        __asm__ __volatile__("dsb sy\n\tisb" ::: "memory");
+
+        {
+            volatile uint32_t* const dbg_fz =
+                reinterpret_cast<volatile uint32_t*>(DBGMCU_APB1_FZ_ADDR);
+            const uint32_t fz = *dbg_fz;
+            *dbg_fz = fz & ~(DBGMCU_WWDG_STOP | DBGMCU_IWDG_STOP);
         }
 
         __asm__ __volatile__("dsb sy\n\tisb" ::: "memory");

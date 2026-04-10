@@ -127,11 +127,12 @@ namespace ProtectedEngine {
         ///   - 상태/모드/마스크/패딩: ~16B
         ///   - 합계: ~80B, 여유 포함 256B
         static constexpr uint32_t IMPL_BUF_SIZE = 256u;
+        static constexpr unsigned IMPL_BUF_ALIGN = 8u;
 
     private:
         struct Impl;
 
-        alignas(4) uint8_t impl_buf_[IMPL_BUF_SIZE];
+        alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<uint32_t> init_state_{ 0u };  ///< 0=NONE, 1=BUSY, 2=READY
     };
 

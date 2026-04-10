@@ -382,12 +382,12 @@ namespace ProtectedEngine {
             "Impl이 IMPL_BUF_SIZE(81920B)를 초과합니다 — 버퍼 크기를 늘려주세요");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas(8)을 초과합니다");
-        return impl_valid_ ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+        return impl_valid_ ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const BB1_Core_Engine::Impl* BB1_Core_Engine::get_impl() const noexcept {
         return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_))
             : nullptr;
     }
 

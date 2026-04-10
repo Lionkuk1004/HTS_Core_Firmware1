@@ -60,6 +60,8 @@ namespace ProtectedEngine {
     };
     static_assert(sizeof(VocoderProfile) == 8u, "VocoderProfile must be 8 bytes");
 
+    // frame_period_ms=23: MELP 22.5ms 프레임을 스케줄 정렬용으로 23ms로 패딩
+    // (통합 틱·UDP 페이싱과 동일 슬롯; PLC 주석의 22.5ms 물리 프레임과 정합)
     static constexpr VocoderProfile k_vocoder_profiles[] = {
         { VocoderCodec::MELP_600,  7u,   3u, 0u, 23u, 600u  },
         { VocoderCodec::MELP_1200, 11u,  2u, 0u, 23u, 1200u },
@@ -142,34 +144,58 @@ namespace ProtectedEngine {
         return Voice_Valid_State_U32(s) != 0u;
     }
 
-    /// from 값(0..255) 직접 인덱스 — 미정의 슬롯 0 (switch/점프테이블 없음)
-    static constexpr uint32_t k_voice_legal_from_mask[256] = {
-        /*0 OFFLINE*/  static_cast<uint32_t>(VoiceState::IDLE),
-        /*1 IDLE*/     static_cast<uint32_t>(VoiceState::TX_ACTIVE)
-            | static_cast<uint32_t>(VoiceState::RX_ACTIVE)
-            | static_cast<uint32_t>(VoiceState::DUPLEX)
-            | VOICE_TO_OFFLINE_BIT,
-        /*2 TX_ACTIVE*/ static_cast<uint32_t>(VoiceState::DUPLEX)
-            | static_cast<uint32_t>(VoiceState::IDLE)
-            | static_cast<uint32_t>(VoiceState::ERROR),
-        /*3*/           0u,
-        /*4 RX_ACTIVE*/ static_cast<uint32_t>(VoiceState::DUPLEX)
-            | static_cast<uint32_t>(VoiceState::IDLE)
-            | static_cast<uint32_t>(VoiceState::ERROR),
-        /*5..7*/        0u, 0u, 0u,
-        /*8 DUPLEX*/    static_cast<uint32_t>(VoiceState::TX_ACTIVE)
-            | static_cast<uint32_t>(VoiceState::RX_ACTIVE)
-            | static_cast<uint32_t>(VoiceState::IDLE)
-            | static_cast<uint32_t>(VoiceState::ERROR),
-        /*9..15*/       0u, 0u, 0u, 0u, 0u, 0u, 0u,
-        /*16 ERROR*/    static_cast<uint32_t>(VoiceState::IDLE)
-            | VOICE_TO_OFFLINE_BIT
-    };
+    /// CFI: 정의된 from 상태만 허용 (희소 256엔트리 테이블 대신 ROM 스위치)
+    constexpr bool is_legal_voice_from(uint8_t v) noexcept {
+        switch (v) {
+        case static_cast<uint8_t>(VoiceState::OFFLINE):
+        case static_cast<uint8_t>(VoiceState::IDLE):
+        case static_cast<uint8_t>(VoiceState::TX_ACTIVE):
+        case static_cast<uint8_t>(VoiceState::RX_ACTIVE):
+        case static_cast<uint8_t>(VoiceState::DUPLEX):
+        case static_cast<uint8_t>(VoiceState::ERROR):
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    constexpr uint32_t voice_legal_from_allowed_mask(uint8_t from_raw) noexcept {
+        switch (from_raw) {
+        case static_cast<uint8_t>(VoiceState::OFFLINE):
+            return static_cast<uint32_t>(VoiceState::IDLE);
+        case static_cast<uint8_t>(VoiceState::IDLE):
+            return static_cast<uint32_t>(VoiceState::TX_ACTIVE)
+                | static_cast<uint32_t>(VoiceState::RX_ACTIVE)
+                | static_cast<uint32_t>(VoiceState::DUPLEX)
+                | VOICE_TO_OFFLINE_BIT;
+        case static_cast<uint8_t>(VoiceState::TX_ACTIVE):
+            return static_cast<uint32_t>(VoiceState::DUPLEX)
+                | static_cast<uint32_t>(VoiceState::IDLE)
+                | static_cast<uint32_t>(VoiceState::ERROR);
+        case static_cast<uint8_t>(VoiceState::RX_ACTIVE):
+            return static_cast<uint32_t>(VoiceState::DUPLEX)
+                | static_cast<uint32_t>(VoiceState::IDLE)
+                | static_cast<uint32_t>(VoiceState::ERROR);
+        case static_cast<uint8_t>(VoiceState::DUPLEX):
+            return static_cast<uint32_t>(VoiceState::TX_ACTIVE)
+                | static_cast<uint32_t>(VoiceState::RX_ACTIVE)
+                | static_cast<uint32_t>(VoiceState::IDLE)
+                | static_cast<uint32_t>(VoiceState::ERROR);
+        case static_cast<uint8_t>(VoiceState::ERROR):
+            return static_cast<uint32_t>(VoiceState::IDLE)
+                | VOICE_TO_OFFLINE_BIT;
+        default:
+            return 0u;
+        }
+    }
 
     inline bool Voice_Is_Legal_Transition(VoiceState from, VoiceState to) noexcept {
         const uint32_t fv = static_cast<uint32_t>(static_cast<uint8_t>(from));
         const uint32_t tv = static_cast<uint32_t>(static_cast<uint8_t>(to));
-        const uint32_t allowed = k_voice_legal_from_mask[fv];
+        if (!is_legal_voice_from(static_cast<uint8_t>(fv))) {
+            return false;
+        }
+        const uint32_t allowed = voice_legal_from_allowed_mask(static_cast<uint8_t>(fv));
         const uint32_t to_mask = tv
             | (static_cast<uint32_t>(tv == 0u) * VOICE_TO_OFFLINE_BIT);
         const uint32_t to_ok = Voice_Valid_State_U32(to);

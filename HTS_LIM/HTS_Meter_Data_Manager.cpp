@@ -111,15 +111,15 @@ namespace ProtectedEngine {
     {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Impl 초과");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN, "Impl 정렬 초과");
-        return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Meter_Data_Manager::Impl*
         HTS_Meter_Data_Manager::get_impl() const noexcept
     {
-        return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     HTS_Meter_Data_Manager::HTS_Meter_Data_Manager(uint16_t my_id) noexcept
@@ -127,14 +127,17 @@ namespace ProtectedEngine {
     {
         Mtr_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl(my_id);
-        impl_valid_ = true;
+        impl_valid_.store(true, std::memory_order_release);
     }
 
     HTS_Meter_Data_Manager::~HTS_Meter_Data_Manager() noexcept {
-        Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
-        Mtr_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        impl_valid_ = false;
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+            Mtr_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
     }
 
     // =====================================================================

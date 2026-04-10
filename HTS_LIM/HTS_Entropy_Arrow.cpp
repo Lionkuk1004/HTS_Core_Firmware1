@@ -50,7 +50,7 @@ namespace ProtectedEngine {
     //  168MHz → 1ms = 168,000 틱
     //  최대 수명: 2^64 / 168,000,000 ≈ 1.1 × 10^11 초 (무한에 가까움)
     // =====================================================================
-    static const uint64_t TICKS_PER_MS = 168000ULL;  // 168MHz / 1000
+    static constexpr uint64_t TICKS_PER_MS = 168000ULL;  // 168MHz / 1000
 
     // DWT CYCCNT 읽기 (32비트)
     static inline uint32_t Read_DWT_Tick() noexcept {
@@ -60,7 +60,7 @@ namespace ProtectedEngine {
 #endif
 
     // =====================================================================
-    //  생성자 — uint32_t(밀리초) 정수 기반
+    //  생성자 — static_cast<uint32_t>(…) 밀리초 정수 기반
     //  최대 수명: 30일(2,592,000,000ms)
     // =====================================================================
     Entropy_Time_Arrow::Entropy_Time_Arrow(uint32_t lifespan_ms) noexcept {

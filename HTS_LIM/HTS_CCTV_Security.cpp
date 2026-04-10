@@ -545,7 +545,7 @@ namespace ProtectedEngine {
     void HTS_CCTV_Security::Shutdown() noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Secure wipe (volatile + barrier — LTO가 impl 파괴 후 소거를 DCE하지 못하게)
         CCTV_Impl_Wipe_Memory(impl->hmac_key, HMAC_KEY_MAX_LEN);
@@ -565,7 +565,7 @@ namespace ProtectedEngine {
         const CCTV_Monitor_Callbacks& cb) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->mon_cb = cb;
 
         // Capture baselines on first registration
@@ -587,7 +587,7 @@ namespace ProtectedEngine {
         const CCTV_Auth_Callbacks& cb) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->auth_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->auth_cb = cb;
     }
 
     IPC_Error HTS_CCTV_Security::Set_HMAC_Key(const uint8_t* key,
@@ -597,7 +597,7 @@ namespace ProtectedEngine {
         if (key_len == 0u || key_len > HMAC_KEY_MAX_LEN) { return IPC_Error::INVALID_LEN; }
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return IPC_Error::NOT_INITIALIZED; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Wipe old key first
         CCTV_Impl_Wipe_Memory(impl->hmac_key, HMAC_KEY_MAX_LEN);
@@ -612,7 +612,7 @@ namespace ProtectedEngine {
     void HTS_CCTV_Security::Tick(uint32_t systick_ms) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->current_tick = systick_ms;
 
         // --- Lazy-init timing on first Tick() call ---
@@ -724,7 +724,7 @@ namespace ProtectedEngine {
         uint8_t detail_len) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->Send_Event(evt, severity, detail, detail_len);
 
         // Auto-escalate to ALERT on WARNING+
@@ -745,7 +745,7 @@ namespace ProtectedEngine {
     IPC_Error HTS_CCTV_Security::Enter_Lockdown() noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return IPC_Error::NOT_INITIALIZED; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (!impl->Transition_State(CCTV_SecState::LOCKDOWN)) {
             return IPC_Error::CFI_VIOLATION;
         }
@@ -757,7 +757,7 @@ namespace ProtectedEngine {
     IPC_Error HTS_CCTV_Security::Exit_Lockdown() noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return IPC_Error::NOT_INITIALIZED; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (!impl->Transition_State(CCTV_SecState::MONITORING)) {
             return IPC_Error::CFI_VIOLATION;
         }
@@ -790,20 +790,20 @@ namespace ProtectedEngine {
     CCTV_SecState HTS_CCTV_Security::Get_State() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return CCTV_SecState::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state.load(
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state.load(
             std::memory_order_acquire);
     }
 
     uint32_t HTS_CCTV_Security::Get_Event_Count() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->total_event_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->total_event_count;
     }
 
     uint32_t HTS_CCTV_Security::Get_Critical_Count() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->critical_event_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->critical_event_count;
     }
 
     void HTS_CCTV_Security::Get_Recent_Events(CCTV_EventLog* out_log,
@@ -814,7 +814,7 @@ namespace ProtectedEngine {
         if (out_log == nullptr || max_count == 0u) { return; }
         if (init_state_.load(std::memory_order_acquire) != CCTV_INIT_READY) { return; }
 
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         const uint32_t total = (impl->log_head < CCTV_EVENT_LOG_SIZE)
             ? impl->log_head : CCTV_EVENT_LOG_SIZE;
         const uint8_t  count = (static_cast<uint8_t>(total) < max_count)

@@ -307,7 +307,7 @@ namespace ProtectedEngine {
     /// @note  IPC CRC(CCITT 0x1021)과 다름. Modbus 표준 필수.
     inline uint16_t Modbus_CRC16(const uint8_t* data, uint32_t len) noexcept
     {
-        if ((data == NULL) && (len != 0u)) { return 0u; }
+        if ((data == nullptr) && (len != 0u)) { return 0u; }
         uint16_t crc = MODBUS_CRC_INIT;
         for (uint32_t i = 0u; i < len; ++i) {
             crc ^= static_cast<uint16_t>(data[i]);

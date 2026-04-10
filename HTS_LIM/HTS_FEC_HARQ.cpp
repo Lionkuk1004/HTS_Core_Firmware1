@@ -112,7 +112,7 @@ static inline void fec_fence_after_stack_wipe() noexcept {
 #elif defined(_MSC_VER)
     _ReadWriteBarrier();
 #endif
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    std::atomic_thread_fence(std::memory_order_release);
 }
 static inline void fec_secure_wipe_stack(void *p, std::size_t n) noexcept {
     SecureMemory::secureWipe(p, n);
@@ -363,11 +363,12 @@ void FEC_HARQ::Bin_To_LLR(const int32_t *fI, const int32_t *fQ, int nc, int bps,
         peak = (a & static_cast<int32_t>(gt)) |
                (peak & static_cast<int32_t>(~gt));
     }
-    static constexpr int64_t LLR_TARGET = 1024LL;
-    const int64_t scale = (LLR_TARGET * 65536LL) / static_cast<int64_t>(peak);
+    // 32비트 UDIV만 사용 (__aeabi_ldivmod 회피). peak≥1, 1024*65536 ≤ INT32_MAX.
+    static constexpr int32_t LLR_SCALE_NUM = 1024 * 65536;
+    const int32_t scale = LLR_SCALE_NUM / peak;
     for (int b = 0; b < bps; ++b) {
         llr[b] = static_cast<int32_t>(
-            (static_cast<int64_t>(raw[b]) * scale) >> 16);
+            (static_cast<int64_t>(raw[b]) * static_cast<int64_t>(scale)) >> 16);
     }
 }
 // ── Xorshift PRNG ──

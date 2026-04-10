@@ -32,6 +32,16 @@ namespace ProtectedEngine {
                 }
             }
         };
+
+        [[nodiscard]] constexpr bool Modbus_GW_Slave_Valid(uint8_t a) noexcept
+        {
+            return (a >= 1u) && (a <= 247u);
+        }
+
+        [[nodiscard]] constexpr bool Modbus_GW_Func_Allowed(uint8_t fc) noexcept
+        {
+            return fc == 0x03u || fc == 0x04u || fc == 0x06u || fc == 0x10u;
+        }
     } // namespace
 
     // ============================================================
@@ -101,8 +111,8 @@ namespace ProtectedEngine {
         // ============================================================
         bool Transition_State(Modbus_State target) noexcept
         {
-            if (!Modbus_Is_Legal_Transition(state, target)) {
-                if (Modbus_Is_Legal_Transition(state, Modbus_State::ERROR)) {
+            if (Modbus_Is_Legal_Transition(state, target) != MODBUS_SECURE_TRUE) {
+                if (Modbus_Is_Legal_Transition(state, Modbus_State::ERROR) == MODBUS_SECURE_TRUE) {
                     state = Modbus_State::ERROR;
                 }
                 else {
@@ -374,6 +384,8 @@ namespace ProtectedEngine {
 
             switch (cmd) {
             case GW_Command::MODBUS_REQUEST: {
+                if (!Modbus_GW_Slave_Valid(slave_addr)) { return; }
+                if (!Modbus_GW_Func_Allowed(func_code)) { return; }
                 // CFI: IDLE -> REQUESTING
                 if (!Transition_State(Modbus_State::REQUESTING)) { return; }
 
@@ -420,6 +432,8 @@ namespace ProtectedEngine {
                     Modbus_PollItem item;
                     item.slave_addr = req_data[0];
                     item.func_code = req_data[1];
+                    if (!Modbus_GW_Slave_Valid(item.slave_addr)) { break; }
+                    if (!Modbus_GW_Func_Allowed(item.func_code)) { break; }
                     item.start_reg = MB_Read_U16(&req_data[2]);
                     item.reg_count = MB_Read_U16(&req_data[4]);
                     item.interval_sec = MB_Read_U16(&req_data[6]);
@@ -597,7 +611,7 @@ namespace ProtectedEngine {
                 return;
             }
 
-            Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+            Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
             // 파괴 시작 전에 공개 API 차단 — ~Impl/소거 중 Get_State 등 UAF 방지
             initialized_.store(false, std::memory_order_release);
             impl->state = Modbus_State::OFFLINE;
@@ -619,7 +633,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->phy_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->phy_cb = cb;
     }
 
     void HTS_Modbus_Gateway::Configure_UART(Modbus_PHY phy,
@@ -628,7 +642,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->phy_cb.uart_configure != nullptr) {
             impl->phy_cb.uart_configure(phy, &cfg);
         }
@@ -642,7 +656,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->Handle_GW_Command(payload, len);
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->Handle_GW_Command(payload, len);
     }
 
     uint8_t HTS_Modbus_Gateway::Add_Poll_Item(const Modbus_PollItem& item) noexcept
@@ -650,7 +664,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0xFFu; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0xFFu; }
-        return reinterpret_cast<Impl*>(impl_buf_)->Add_Poll_Item_Internal(item);
+        return std::launder(reinterpret_cast<Impl*>(impl_buf_))->Add_Poll_Item_Internal(item);
     }
 
     void HTS_Modbus_Gateway::Remove_Poll_Item(uint8_t slot_idx) noexcept
@@ -659,7 +673,7 @@ namespace ProtectedEngine {
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
         if (slot_idx >= MODBUS_MAX_POLL_ITEMS) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->poll_items[static_cast<size_t>(slot_idx)]
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->poll_items[static_cast<size_t>(slot_idx)]
             .active = 0u;
     }
 
@@ -668,7 +682,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->current_tick = systick_ms;
 
         if (static_cast<uint8_t>(impl->state) == 0u) { return; }  // OFFLINE
@@ -684,7 +698,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0u; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         if (!impl->Transition_State(Modbus_State::REQUESTING)) { return 0u; }
 
@@ -700,7 +714,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return Modbus_State::OFFLINE; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return Modbus_State::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_Modbus_Gateway::Get_Request_Count() const noexcept
@@ -708,7 +722,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->request_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->request_count;
     }
 
     uint32_t HTS_Modbus_Gateway::Get_Error_Count() const noexcept
@@ -716,7 +730,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->error_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->error_count;
     }
 
 } // namespace ProtectedEngine

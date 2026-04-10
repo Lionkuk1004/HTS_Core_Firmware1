@@ -564,7 +564,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Restore normal BPS if disaster mode was active
         if (impl->disaster_mode_active && impl->ch_cb.restore_normal != nullptr) {
@@ -587,7 +587,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->rx_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->rx_cb = cb;
     }
 
     void HTS_KT_DSN_Adapter::Register_Channel_Callbacks(
@@ -596,7 +596,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->ch_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->ch_cb = cb;
     }
 
     void HTS_KT_DSN_Adapter::Feed_DSN_Message(const uint8_t* data,
@@ -607,7 +607,7 @@ namespace ProtectedEngine {
         if (data == nullptr) { return; }
         if (len == 0u) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->Process_Message(data, len);
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->Process_Message(data, len);
     }
 
     void HTS_KT_DSN_Adapter::Tick(uint32_t systick_ms) noexcept
@@ -615,7 +615,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->current_tick = systick_ms;
 
         // Lazy-init timing
@@ -655,7 +655,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return DSN_State::OFFLINE; }
         if (!initialized_.load(std::memory_order_acquire)) { return DSN_State::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_KT_DSN_Adapter::Get_Active_Alert_Count() const noexcept
@@ -663,7 +663,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->Count_Active_Alerts();
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->Count_Active_Alerts();
     }
 
     uint32_t HTS_KT_DSN_Adapter::Get_Total_Alerts_Received() const noexcept
@@ -671,7 +671,7 @@ namespace ProtectedEngine {
         DSN_Busy_Guard guard(op_busy_);
         if (guard.locked != SECURE_TRUE) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->total_alerts_received;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->total_alerts_received;
     }
 
 } // namespace ProtectedEngine

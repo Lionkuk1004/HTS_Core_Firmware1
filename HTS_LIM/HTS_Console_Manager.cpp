@@ -651,7 +651,7 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->ipc = nullptr;
         impl->state = ConsoleState::OFFLINE;
 
@@ -670,7 +670,7 @@ namespace ProtectedEngine {
     void HTS_Console_Manager::Register_Callbacks(const DiagCallbacks& cb) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->diag_cb = cb;
     }
 
@@ -678,7 +678,7 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->init_tick == 0u) { impl->init_tick = systick_ms; }
         impl->last_tick = systick_ms;
 
@@ -691,7 +691,7 @@ namespace ProtectedEngine {
             out_config = k_default_channel_config;
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         //  Apply_Param(IPC 경로)과 동시 실행 시 부분 읽기 방지
         Armv7m_Irq_Mask_Guard irq;
         std::memcpy(&out_config, &impl->channel_config, sizeof(ChannelConfig));
@@ -702,7 +702,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Validate critical fields
         if (static_cast<uint8_t>(config.bps_mode) >=
@@ -726,7 +726,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return ConsoleState::OFFLINE;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->state;
     }
 
@@ -736,14 +736,14 @@ namespace ProtectedEngine {
             out_report = DiagReport{};
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         impl->Build_Report(out_report);
     }
 
     void HTS_Console_Manager::Notify_BPS_Change(uint16_t new_bps) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->ipc == nullptr) { return; }
 
         uint8_t payload[2];
@@ -758,7 +758,7 @@ namespace ProtectedEngine {
     void HTS_Console_Manager::Alert_Jamming(uint16_t level) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->ipc == nullptr) { return; }
 
         uint8_t payload[2];

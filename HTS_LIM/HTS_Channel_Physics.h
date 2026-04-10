@@ -10,8 +10,10 @@
 // =========================================================================
 
 #include <cstdint>
+#if !defined(__arm__)
 #include <random>
 #include <vector>
+#endif
 
 namespace HTS_Core::Physics {
 

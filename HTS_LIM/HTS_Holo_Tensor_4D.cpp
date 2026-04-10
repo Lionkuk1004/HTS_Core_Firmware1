@@ -8,6 +8,7 @@
 
 #include "HTS_Holo_Tensor_4D.h"
 #include "HTS_Arm_Irq_Mask_Guard.h"
+#include "HTS_Hardware_Init.h"
 #include "HTS_Secure_Memory.h"
 #include <new>
 #include <atomic>
@@ -512,9 +513,16 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return;
         }
-        // 진행 중 Encode/Decode가 impl_buf_를 사용하는 동안 파쇄 금지 → 락 확보까지 스핀
-        while (op_busy_.test_and_set(std::memory_order_acq_rel)) {
+        bool got_busy = false;
+        for (uint32_t i = 0u; i < 100000u; ++i) {
+            if (!op_busy_.test_and_set(std::memory_order_acq_rel)) {
+                got_busy = true;
+                break;
+            }
             holo4d_busy_spin_yield();
+        }
+        if (!got_busy) {
+            Hardware_Init_Manager::Terminal_Fault_Action();
         }
 
         // Cortex-M: 동일 코어 ISR이 락을 쓰지 않는 경로까지 차단(단일코어 전제)
@@ -522,7 +530,7 @@ namespace ProtectedEngine {
         Armv7m_Irq_Mask_Guard irq_primask;
 #endif
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->~Impl();
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
 #if defined(__GNUC__) || defined(__clang__)
@@ -602,8 +610,16 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return;
         }
-        while (op_busy_.test_and_set(std::memory_order_acq_rel)) {
+        bool got_busy = false;
+        for (uint32_t i = 0u; i < 100000u; ++i) {
+            if (!op_busy_.test_and_set(std::memory_order_acq_rel)) {
+                got_busy = true;
+                break;
+            }
             holo4d_busy_spin_yield();
+        }
+        if (!got_busy) {
+            Hardware_Init_Manager::Terminal_Fault_Action();
         }
 #if defined(__arm__) && !defined(__aarch64__)
         Armv7m_Irq_Mask_Guard irq_primask;
@@ -612,7 +628,7 @@ namespace ProtectedEngine {
             op_busy_.clear(std::memory_order_release);
             return;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->~Impl();
 
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
@@ -631,7 +647,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         SecureMemory::secureWipe(static_cast<void*>(impl->master_seed), sizeof(impl->master_seed));
 
@@ -648,7 +664,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return SECURE_FALSE; }
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         impl->profile = *profile;
         // Validate
@@ -676,7 +692,7 @@ namespace ProtectedEngine {
         if (!guard.locked) { return SECURE_FALSE; }
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         if (impl->Transition_State(HoloState::ENCODING) != SECURE_TRUE) {
             return SECURE_FALSE;
@@ -700,7 +716,7 @@ namespace ProtectedEngine {
         if (!guard.locked) { return SECURE_FALSE; }
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         if (impl->Transition_State(HoloState::DECODING) != SECURE_TRUE) {
             return SECURE_FALSE;
@@ -719,7 +735,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return SECURE_FALSE; }
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
-        reinterpret_cast<Impl*>(impl_buf_)->time_slot++;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->time_slot++;
         return SECURE_TRUE;
     }
 
@@ -728,7 +744,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return SECURE_FALSE; }
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
-        reinterpret_cast<Impl*>(impl_buf_)->time_slot = frame_no;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->time_slot = frame_no;
         return SECURE_TRUE;
     }
 
@@ -737,7 +753,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return HoloState::OFFLINE; }
         if (!initialized_.load(std::memory_order_acquire)) { return HoloState::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_Holo_Tensor_4D::Get_Encode_Count() const noexcept
@@ -745,7 +761,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->encode_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->encode_count;
     }
 
     uint32_t HTS_Holo_Tensor_4D::Get_Decode_Count() const noexcept
@@ -753,7 +769,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->decode_count;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->decode_count;
     }
 
     uint32_t HTS_Holo_Tensor_4D::Get_Time_Slot() const noexcept
@@ -761,7 +777,7 @@ namespace ProtectedEngine {
         Holo4D_Busy_Guard guard(op_busy_);
         if (!guard.locked) { return 0u; }
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->time_slot;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->time_slot;
     }
 
 } // namespace ProtectedEngine

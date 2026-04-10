@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_Key_Provisioning.cpp
 // 공장 출하 키 프로비저닝 엔진 구현부 (Pimpl 은닉)
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -6,6 +6,7 @@
 #include "HTS_Key_Provisioning.h"
 #include "HTS_AES_Bridge.h"
 #include "HTS_ConstantTimeUtil.h"
+#include "HTS_Secure_Memory.h"
 
 #include <atomic>
 #include <cstddef>
@@ -432,15 +433,15 @@ namespace ProtectedEngine {
             "Impl이 IMPL_BUF_SIZE를 초과합니다");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas를 초과합니다");
-        return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Key_Provisioning::Impl*
         HTS_Key_Provisioning::get_impl() const noexcept
     {
-        return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================
@@ -451,17 +452,20 @@ namespace ProtectedEngine {
     {
         Key_Prov_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl();
-        impl_valid_ = true;
+        impl_valid_.store(true, std::memory_order_release);
     }
 
     // =====================================================================
     //  소멸자 — p->~Impl() + 3중 보안 소거
     // =====================================================================
     HTS_Key_Provisioning::~HTS_Key_Provisioning() noexcept {
-        Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
-        Key_Prov_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        impl_valid_ = false;
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+            Key_Prov_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
     }
 
     // =====================================================================
@@ -660,18 +664,20 @@ namespace ProtectedEngine {
         }
 
         // 1단계: 마스터 키 물리 소각
-        //  OTP 특성: 1→0 쓰기만 가능 (비가역)
-        //  0x00 덮어쓰기 → 모든 비트를 0으로 태움
-        const uint8_t zero_block[MASTER_KEY_SIZE] = {};
-        const bool wiped_key = otp_write_block(OTP_KEY_ADDR, zero_block, MASTER_KEY_SIZE);
+        //  OTP 특성: 0→1 쓰기만 가능 (비가역)
+        //  0xFF 덮어쓰기 → 모든 비트를 1로 소각 → 원본 키 복구 불가
+        uint8_t burn_block[MASTER_KEY_SIZE];
+        std::memset(burn_block, 0xFF, sizeof(burn_block));
+        const bool wiped_key = otp_write_block(OTP_KEY_ADDR, burn_block, MASTER_KEY_SIZE);
+        SecureMemory::secureWipe(burn_block, sizeof(burn_block));
 
         // 2단계: 프로비저닝 매직도 함께 물리 소각
-        //  sizeof(PROV_MAGIC) = 4B → 4바이트 영역 소각
-        //  재부팅 후 Is_Provisioned() = false 보장
-        //  (매직 불일치 → provisioned=false → Read_Master_Key 반환 차단)
-        const uint8_t zero_magic[sizeof(PROV_MAGIC)] = {};
+        //  0xFF 덮어쓰기 → 매직 불일치 → 재부팅 후 provisioned=false
+        uint8_t burn_magic[sizeof(PROV_MAGIC)];
+        std::memset(burn_magic, 0xFF, sizeof(burn_magic));
         const bool wiped_magic = otp_write_block(OTP_MAGIC_ADDR,
-            zero_magic, static_cast<uint32_t>(sizeof(PROV_MAGIC)));
+            burn_magic, static_cast<uint32_t>(sizeof(PROV_MAGIC)));
+        SecureMemory::secureWipe(burn_magic, sizeof(burn_magic));
 
         if (!wiped_key || !wiped_magic) {
             return;

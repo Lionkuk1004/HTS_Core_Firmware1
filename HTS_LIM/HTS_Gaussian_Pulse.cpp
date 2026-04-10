@@ -87,10 +87,12 @@ namespace ProtectedEngine {
         // center는 taps 홀수에 의해 정수.
         const int32_t center_i =
             static_cast<int32_t>((num_taps - 1u) >> 1u);
-        // alpha in Q16: alpha = SQRT_LN2_OVER_2 / bt
-        const int32_t alpha_q16 = static_cast<int32_t>(
-            (static_cast<int64_t>(SQRT_LN2_OVER_2_Q16) << 16) /
-            static_cast<int64_t>(bt));
+        // alpha in Q16: alpha = SQRT_LN2_OVER_2 / bt — 32비트 UDIV만 사용
+        // 38582*65536 < 2^32 이므로 곱은 uint32_t에 수용됨.
+        const uint32_t alpha_num_u =
+            static_cast<uint32_t>(SQRT_LN2_OVER_2_Q16) * 65536u;
+        const int32_t alpha_q16 =
+            static_cast<int32_t>(alpha_num_u / bt);
 
         for (size_t i = 0; i < num_taps; ++i) {
             const int32_t t = static_cast<int32_t>(
@@ -205,21 +207,35 @@ namespace ProtectedEngine {
         const uint32_t* tensor, size_t t_len,
         int32_t* output, size_t out_cap) noexcept {
 
-        if (!tensor || !output || t_len == 0 || num_taps == 0) return 0;
+        uint32_t ok = 1u; // TPE:
+        ok &= static_cast<uint32_t>(tensor != nullptr);
+        ok &= static_cast<uint32_t>(output != nullptr);
+        ok &= static_cast<uint32_t>(t_len > 0u);
+        ok &= static_cast<uint32_t>(num_taps > 0u);
         // ASIC/ARM 포팅 안전성: 32비트 워드 접근 정렬 강제
         const uintptr_t tensor_addr = reinterpret_cast<uintptr_t>(tensor);
         const uintptr_t output_addr = reinterpret_cast<uintptr_t>(output);
-        if ((tensor_addr & (alignof(uint32_t) - 1u)) != 0u) return 0;
-        if ((output_addr & (alignof(int32_t) - 1u)) != 0u) return 0;
+        ok &= static_cast<uint32_t>(
+            (tensor_addr & (alignof(uint32_t) - 1u)) == 0u);
+        ok &= static_cast<uint32_t>(
+            (output_addr & (alignof(int32_t) - 1u)) == 0u);
 
-        if (t_len > std::numeric_limits<size_t>::max() / 8u) return 0;
-        const size_t total_chips = t_len * 8u;
+        ok &= static_cast<uint32_t>(
+            t_len <= std::numeric_limits<size_t>::max() / 8u);
+        const uint32_t m_pre_mul = 0u - ok; // TPE: safe t_len for ×8
+        const size_t t_for_chips = t_len & static_cast<size_t>(m_pre_mul);
+        size_t total_chips = t_for_chips * 8u;
 
-        if (total_chips > std::numeric_limits<size_t>::max() - num_taps) return 0;
-        const size_t out_len = total_chips + num_taps - 1;
+        ok &= static_cast<uint32_t>(
+            total_chips <= std::numeric_limits<size_t>::max() - num_taps);
+        size_t out_len = total_chips + num_taps - 1u;
 
-        if (out_len > out_cap) return 0;
-        if (total_chips > k_max_total_chips) return 0;
+        ok &= static_cast<uint32_t>(out_len <= out_cap);
+        ok &= static_cast<uint32_t>(total_chips <= k_max_total_chips);
+
+        const uint32_t m_ok = 0u - ok; // TPE:
+        total_chips &= static_cast<size_t>(m_ok);
+        out_len &= static_cast<size_t>(m_ok);
 
         // [OPT-2] memset 제거 — gather 루프가 output[n]을 = 로 덮어씀
 

@@ -111,29 +111,32 @@ namespace ProtectedEngine {
             constexpr size_t kHwSeedBytes = 32u;
             static_assert(kHwSeedBytes <= MAX_SEED_SIZE, "master seed capacity");
             static_assert((kHwSeedBytes % 4u) == 0u, "word fill");
-
-            auto* const wseed = reinterpret_cast<uint32_t*>(master_seed);
-            for (size_t wi = 0u; wi < (kHwSeedBytes / 4u); ++wi) {
-                wseed[wi] = Physical_Entropy_Engine::Extract_Quantum_Seed();
+            constexpr size_t kHwSeedWords = kHwSeedBytes / 4u;
+            uint32_t seed_words[kHwSeedWords];
+            for (size_t wi = 0u; wi < kHwSeedWords; ++wi) {
+                seed_words[wi] = Physical_Entropy_Engine::Extract_Quantum_Seed();
             }
 
             uint32_t orv = 0u;
             uint32_t andv = 0xFFFFFFFFu;
-            for (size_t wi = 0u; wi < (kHwSeedBytes / 4u); ++wi) {
-                orv |= wseed[wi];
-                andv &= wseed[wi];
+            for (size_t wi = 0u; wi < kHwSeedWords; ++wi) {
+                orv |= seed_words[wi];
+                andv &= seed_words[wi];
             }
             const uint32_t bad_or =
                 static_cast<uint32_t>(orv == 0u);
             const uint32_t bad_and =
                 static_cast<uint32_t>(andv == 0xFFFFFFFFu);
             if ((bad_or | bad_and) != 0u) {
+                SecureMemory::secureWipe(seed_words, sizeof(seed_words));
                 SecureMemory::secureWipe(master_seed, sizeof(master_seed));
                 seed_len = 0u;
                 is_valid = false;
                 return;
             }
 
+            std::memcpy(master_seed, seed_words, kHwSeedBytes);
+            SecureMemory::secureWipe(seed_words, sizeof(seed_words));
             seed_len = kHwSeedBytes;
 
             SecureMemory::lockMemory(master_seed, seed_len);

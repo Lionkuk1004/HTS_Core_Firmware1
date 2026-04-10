@@ -11,8 +11,10 @@
 #include "HTS_Secure_Memory.h"
 #include <atomic>
 #include <climits>
-#include <cstdio>
 #include <cstring>
+#if !defined(__arm__)
+#include <cstdio>
+#endif
 #include <cstdint>
 #include <cstddef>
 // [진단] Barrage30 등 PC 하네스 — ir_chip_I_[0]·harq_round_ 스냅샷 (기본
@@ -20,8 +22,12 @@
 extern "C" volatile int g_hts_ir_diag_chip0 = 0;
 extern "C" volatile int g_hts_ir_diag_feed_idx = -1;
 extern "C" void Mock_RF_Synth_Set_Channel(uint8_t channel) noexcept {
+#if !defined(__arm__)
     const unsigned ch = static_cast<unsigned>(channel) & 0x7Fu;
     std::printf("[Mock_RF_Synth] ch=%u\n", ch);
+#else
+    (void)channel;
+#endif
 }
 namespace ProtectedEngine {
 // 파일 범위 스크래치: 단일 디스패처 실행 컨텍스트(반이중)·해당 경로 재진입 없음
@@ -1143,6 +1149,7 @@ void HTS_V400_Dispatcher::try_decode_() noexcept {
         if (ir_mode_) {
             harq_round_++;
             const int rv = ir_rv_;
+#if !defined(__arm__)
             if (g_hts_ir_diag_chip0 != 0 && ir_chip_I_ != nullptr &&
                 ir_state_ != nullptr) {
                 std::printf("[IR-DIAG] pre-Decode16_IR feed=%d harq_round_=%d "
@@ -1151,6 +1158,7 @@ void HTS_V400_Dispatcher::try_decode_() noexcept {
                             harq_round_, static_cast<int>(ir_chip_I_[0]),
                             ir_state_->rounds_done);
             }
+#endif
             pkt.success_mask = static_cast<uint32_t>(
                 0u - static_cast<uint32_t>(
                          (ir_state_ != nullptr && ir_chip_I_ != nullptr &&
@@ -1205,6 +1213,7 @@ void HTS_V400_Dispatcher::try_decode_() noexcept {
                     ir_chip_I_ != nullptr && ir_chip_Q_ != nullptr) {
                     const int nsym_ir = FEC_HARQ::nsym_for_bps(bps);
                     const int rv = ir_rv_;
+#if !defined(__arm__)
                     if (g_hts_ir_diag_chip0 != 0) {
                         std::printf(
                             "[IR-DIAG] pre-Decode64_IR feed=%d harq_round_=%d "
@@ -1218,6 +1227,7 @@ void HTS_V400_Dispatcher::try_decode_() noexcept {
                             bps, nsym_ir, static_cast<unsigned>(il), rv,
                             ir_state_->rounds_done);
                     }
+#endif
                     pkt.success_mask = static_cast<uint32_t>(
                         0u -
                         static_cast<uint32_t>(FEC_HARQ::Decode64_IR(

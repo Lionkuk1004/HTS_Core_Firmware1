@@ -217,8 +217,8 @@ namespace ProtectedEngine {
     // =====================================================================
     void AntiJamEngine::adaptive_punch_(int16_t* I, int16_t* Q, int nc) noexcept {
         if (nc > MAX_NC) return;
-        uint32_t mags[MAX_NC] = {};
-        uint32_t work[kSortN] = {};
+        uint32_t* const mags = sort_nc_scratch_;
+        uint32_t* const work = sort_u64_work_;
         for (int i = 0; i < nc; ++i) {
             mags[i] = fast_abs_(static_cast<int32_t>(I[i])) +
                 fast_abs_(static_cast<int32_t>(Q[i]));
@@ -268,8 +268,11 @@ namespace ProtectedEngine {
         for (int k = 0; k < K; ++k)
             for (int i = 0; i < SUB_NC; ++i)
                 for (int j = i; j < SUB_NC; ++j) {
-                    const int32_t vv_ij = int32_t(s.signs_I[k][i]) * int32_t(s.signs_I[k][j])
-                        + int32_t(s.signs_Q[k][i]) * int32_t(s.signs_Q[k][j]);
+                    const int32_t vv_ij =
+                        static_cast<int32_t>(s.signs_I[k][i]) *
+                            static_cast<int32_t>(s.signs_I[k][j]) +
+                        static_cast<int32_t>(s.signs_Q[k][i]) *
+                            static_cast<int32_t>(s.signs_Q[k][j]);
                     null_cov_[i][j] += vv_ij;
                     if (i != j) null_cov_[j][i] += vv_ij;
                 }
@@ -315,10 +318,11 @@ namespace ProtectedEngine {
             for (int j = 0; j < SUB_NC; ++j) {
                 Cv += null_cov_[i][j] * null_v_[j];
             }
-            vCv += int64_t(null_v_[i]) * int64_t(Cv);
-            vv += int64_t(null_v_[i]) * int64_t(null_v_[i]);
+            vCv += static_cast<int64_t>(null_v_[i]) * static_cast<int64_t>(Cv);
+            vv += static_cast<int64_t>(null_v_[i]) * static_cast<int64_t>(null_v_[i]);
         }
-        s.active = (vv > 0) && (vCv > int64_t(K) * 4 * vv);
+        s.active = (vv > 0) &&
+            (vCv > static_cast<int64_t>(K) * 4 * vv);
         for (int i = 0; i < SUB_NC; ++i) {
             s.eigvec[i] = null_v_[i];
         }
@@ -336,10 +340,12 @@ namespace ProtectedEngine {
             int16_t* d = (ch == 0) ? I : Q;
             int64_t proj = 0;
             for (int i = 0; i < SUB_NC; ++i)
-                proj += int64_t(s.eigvec[i]) * int64_t(d[i]);
+                proj += static_cast<int64_t>(s.eigvec[i]) *
+                    static_cast<int64_t>(d[i]);
             for (int i = 0; i < SUB_NC; ++i) {
-                const int32_t c = int32_t(d[i]) -
-                    int32_t((proj * int64_t(s.eigvec[i])) >> bits);
+                const int32_t c = static_cast<int32_t>(d[i]) -
+                    static_cast<int32_t>(
+                        (proj * static_cast<int64_t>(s.eigvec[i])) >> bits);
                 d[i] = ssat_i16_(c);
             }
         }
@@ -369,8 +375,8 @@ namespace ProtectedEngine {
     {
         if (!I || !Q || nc <= 0 || nc > MAX_NC) return false;
 
-        uint32_t wq[MAX_NC];
-        uint32_t wmed[kSortN] = {};
+        uint32_t* const wq = sort_nc_scratch_;
+        uint32_t* const wmed = sort_u64_work_;
         uint32_t maxv = 0u;
         uint64_t sum_m = 0u;
         unsigned hot_chips = 0u;

@@ -124,10 +124,11 @@ namespace ProtectedEngine {
 
         /// Impl에 이벤트 타입별 O(1) 카운터(256×uint16 + 256×uint32) 포함
         static constexpr uint32_t IMPL_BUF_SIZE = 2560u;
+        static constexpr unsigned IMPL_BUF_ALIGN = 8u;
 
     private:
         struct Impl;
-        alignas(4) uint8_t impl_buf_[IMPL_BUF_SIZE];
+        alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<uint32_t> init_state_{ 0u };  ///< 0=NONE, 1=BUSY, 2=READY
     };
 

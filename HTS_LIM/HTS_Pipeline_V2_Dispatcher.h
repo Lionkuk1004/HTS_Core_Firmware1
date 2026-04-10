@@ -34,6 +34,8 @@
 
 namespace ProtectedEngine {
 
+// Pimpl impl_buf_ 없음 — 멤버(Dynamic_Fractal_Mapper 등)가 직접 내장됨.
+
 class HTS_Pipeline_V2_Dispatcher {
 public:
     static constexpr uint32_t kMapperDomain =

@@ -572,7 +572,7 @@ namespace ProtectedEngine {
     void HTS_BLE_NFC_Gateway::Shutdown() noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         for (uint32_t i = 0u; i < BLE_MAX_SESSIONS; ++i) {
             impl->sessions[i].active = 0u;
@@ -595,19 +595,19 @@ namespace ProtectedEngine {
     void HTS_BLE_NFC_Gateway::Register_UART_TX(BLE_UART_TX_Callback cb) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->uart_tx_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->uart_tx_cb = cb;
     }
 
     void HTS_BLE_NFC_Gateway::Register_RX_Callback(BLE_RX_Data_Callback cb) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->rx_data_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->rx_data_cb = cb;
     }
 
     void HTS_BLE_NFC_Gateway::Tick(uint32_t systick_ms) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Store current tick for use by internal methods (Handle_Connection_Event etc.)
         impl->current_tick = systick_ms;
@@ -629,7 +629,7 @@ namespace ProtectedEngine {
     void HTS_BLE_NFC_Gateway::Feed_UART_Byte(uint8_t byte) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         //
         //  SPSC Lock-free → 단일 ISR에서는 안전
@@ -655,7 +655,7 @@ namespace ProtectedEngine {
         if (payload == nullptr) { return; }
         if (len == 0u) { return; }
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Parse incoming gateway frame
         BLE_MsgType msg_type = BLE_MsgType::TEXT_MESSAGE;
@@ -749,7 +749,7 @@ namespace ProtectedEngine {
         if (text == nullptr && text_len > 0u) { return IPC_Error::BUFFER_OVERFLOW; }
         if (text_len > BLE_MAX_PAYLOAD) { return IPC_Error::INVALID_LEN; }
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return IPC_Error::NOT_INITIALIZED; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
         //  전송 완료 후 마지막에 Find_Session → 유령 세션도 망으로 송신
@@ -789,7 +789,7 @@ namespace ProtectedEngine {
         uint16_t session_id) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return IPC_Error::NOT_INITIALIZED; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
         BLE_Session* sv_check = impl->Find_Session(session_id);
@@ -827,7 +827,7 @@ namespace ProtectedEngine {
     IPC_Error HTS_BLE_NFC_Gateway::Send_Emergency(uint16_t session_id) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return IPC_Error::NOT_INITIALIZED; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->ipc == nullptr) { return IPC_Error::NOT_INITIALIZED; }
 
         BLE_Session* se_check = impl->Find_Session(session_id);
@@ -862,13 +862,13 @@ namespace ProtectedEngine {
     BLE_GW_State HTS_BLE_NFC_Gateway::Get_State() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return BLE_GW_State::OFFLINE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     uint32_t HTS_BLE_NFC_Gateway::Get_Active_Session_Count() const noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != BLE_INIT_READY) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->Count_Active_Sessions();
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->Count_Active_Sessions();
     }
 
 } // namespace ProtectedEngine

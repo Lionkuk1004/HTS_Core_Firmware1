@@ -84,7 +84,7 @@ namespace ProtectedEngine {
         int32_t Detect_Sync_Peak(
             const int32_t* correlation_buffer,
             size_t          buffer_size,
-            HTS_RF_Metrics* p_metrics = NULL) noexcept;
+            HTS_RF_Metrics* p_metrics = nullptr) noexcept;
 
     private:
         // ── Pimpl In-Place Storage (zero-heap) ─────────────────────

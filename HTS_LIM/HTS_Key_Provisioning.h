@@ -100,7 +100,7 @@ namespace ProtectedEngine {
             const uint8_t* factory_kek, size_t kek_len) noexcept;
 
         /// @brief OTP에서 마스터 키를 읽어 외부 버퍼에 복사
-        /// @param out_buf  출력 버퍼 (16바이트 이상)
+        /// @param out_buf  출력 버퍼 (32바이트 (MASTER_KEY_SIZE) 이상)
         /// @param out_len  출력 버퍼 크기
         /// @return 성공 시 SECURE_TRUE
         /// @note 양산 후에는 호출 차단 (Lock_Debug_Port 이후 OTP 읽기만 허용)

@@ -9,6 +9,7 @@
 #include "HTS_Dynamic_Config.h"
 #include "HTS_RF_Metrics.h"
 #include "HTS_Secure_Memory.h"
+#include "HTS_Hardware_Init.h"
 
 // ── Self-Contained 표준 헤더 (<atomic>, <cstdint> 등) ────────────────
 #include <atomic>
@@ -19,8 +20,8 @@
 #include <new>
 
 namespace {
-/// 소멸자 op_busy_ 스핀 상한 — 무한 대기(WDT/프리징) 방지. 초과 시 강제 파쇄(타 스레드·ISR 동시 접근 시 UAF 위험).
-constexpr uint32_t kDestructorSpinLimit = 10000000u;
+/// 소멸자 op_busy_ 스핀 상한 — 초과 시 Terminal_Fault_Action (UAF 방지).
+constexpr uint32_t kDestructorSpinLimit = 100000u;
 } // namespace
 
 // ── 플랫폼 검증 (int32_t/size_t) ───────────────────────────────────
@@ -76,13 +77,13 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas(8)을 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Rx_Sync_Detector::Impl*
         HTS_Rx_Sync_Detector::get_impl() const noexcept {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_))
             : nullptr;
     }
 
@@ -100,15 +101,22 @@ namespace ProtectedEngine {
     // =====================================================================
     // =====================================================================
     HTS_Rx_Sync_Detector::~HTS_Rx_Sync_Detector() noexcept {
-        uint32_t spins = 0;
-        while (op_busy_.test_and_set(std::memory_order_acquire)) {
-            if (++spins >= kDestructorSpinLimit) {
+        bool got_busy = false;
+        for (uint32_t i = 0u; i < kDestructorSpinLimit; ++i) {
+            if (!op_busy_.test_and_set(std::memory_order_acquire)) {
+                got_busy = true;
                 break;
             }
         }
-        Impl* const p = reinterpret_cast<Impl*>(impl_buf_);
-        const bool was_valid = impl_valid_.exchange(false, std::memory_order_acq_rel);
-        if (was_valid) { p->~Impl(); }
+        if (!got_busy) {
+            Hardware_Init_Manager::Terminal_Fault_Action();
+        }
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+        }
         SecureMemory::secureWipe(static_cast<void*>(impl_buf_), sizeof(impl_buf_));
         op_busy_.clear(std::memory_order_release);
     }
@@ -210,8 +218,23 @@ namespace ProtectedEngine {
             const int32_t max_val_32 = static_cast<int32_t>(max_value);
             int32_t noise_floor_32 = 0;
             if (positive_count > 0u) {
-                noise_floor_32 = static_cast<int32_t>(
-                    energy_sum / static_cast<int64_t>(positive_count));
+                // 평균: 64비트 나눗셈 회피 — es/pc 비율 유지하며 uint32 범위로 스케일다운
+                uint64_t es = static_cast<uint64_t>(
+                    energy_sum > 0 ? energy_sum : 0);
+                uint64_t pc = static_cast<uint64_t>(positive_count);
+                while (es > UINT32_MAX && pc > 1u) {
+                    es >>= 1u;
+                    pc = (pc + 1u) >> 1u;
+                }
+                if (pc > 0u) {
+                    const uint32_t es32 = static_cast<uint32_t>(es);
+                    const uint32_t pc32 = static_cast<uint32_t>(pc);
+                    uint32_t mean_u = es32 / pc32;
+                    if (mean_u > static_cast<uint32_t>(INT32_MAX)) {
+                        mean_u = static_cast<uint32_t>(INT32_MAX);
+                    }
+                    noise_floor_32 = static_cast<int32_t>(mean_u);
+                }
             }
             if (noise_floor_32 <= 0) {
                 p_metrics->snr_proxy.store(0, std::memory_order_release);

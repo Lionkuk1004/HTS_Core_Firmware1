@@ -7,8 +7,10 @@
 
 #include "HTS_OTA_Manager.h"
 #include "HTS_IPC_Protocol.h"
+#include "HTS_Hardware_Init.h"
 #include <new>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -32,9 +34,12 @@ namespace ProtectedEngine {
         explicit OTA_Busy_Guard(std::atomic_flag& flag) noexcept
             : f(flag)
         {
-            while (f.test_and_set(std::memory_order_acquire)) {
-                // spin — Shutdown과 교차 시 완료까지 대기
+            for (uint32_t i = 0u; i < 100000u; ++i) {
+                if (!f.test_and_set(std::memory_order_acquire)) {
+                    return;
+                }
             }
+            Hardware_Init_Manager::Terminal_Fault_Action();
         }
         ~OTA_Busy_Guard() noexcept
         {
@@ -351,6 +356,29 @@ namespace ProtectedEngine {
                     Transition_State(OTA_State::ERROR);
                     return;
                 }
+                // ⑯ Read-back 검증: Flash 쓰기 무결성 확인
+                if (flash_cb.read_flash != nullptr) {
+                    uint8_t rb[256];  // chunk_len ≤ OTA_CHUNK_MAX_SIZE
+                    const uint32_t rb_len =
+                        (static_cast<uint32_t>(chunk_len) <= sizeof(rb))
+                        ? static_cast<uint32_t>(chunk_len) : sizeof(rb);
+                    if (!flash_cb.read_flash(addr, rb, rb_len)) {
+                        last_result = OTA_Result::FLASH_FAIL;
+                        Transition_State(OTA_State::ERROR);
+                        return;
+                    }
+                    bool rb_ok = true;
+                    for (uint32_t vi = 0u; vi < rb_len; ++vi) {
+                        if (rb[vi] != payload[static_cast<size_t>(5u + vi)]) {
+                            rb_ok = false;
+                        }
+                    }
+                    if (!rb_ok) {
+                        last_result = OTA_Result::FLASH_FAIL;
+                        Transition_State(OTA_State::ERROR);
+                        return;
+                    }
+                }
             }
 
             write_offset += static_cast<uint32_t>(chunk_len);
@@ -598,7 +626,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         // 파괴·소거 전 공개 API 차단 — ~Impl/버퍼 소거 중 Get_* UAF 방지
         initialized_.store(false, std::memory_order_release);
         impl->ipc = nullptr;
@@ -614,7 +642,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->flash_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->flash_cb = cb;
     }
 
     void HTS_OTA_Manager::Process_OTA_Command(const uint8_t* payload,
@@ -626,7 +654,7 @@ namespace ProtectedEngine {
         if (len < 1u) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         const OTA_Command cmd =
             static_cast<OTA_Command>(payload[static_cast<size_t>(0u)]);
 
@@ -661,7 +689,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return OTA_State::IDLE; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
     // [OTA-1] Get_Progress_Percent — 나눗셈 완전 제거
@@ -679,7 +707,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         if (impl->image_header.total_chunks == 0u) { return 0u; }
 
         // 완료 시 정확히 100% 반환 (Q16 절삭 보정)
@@ -704,7 +732,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return OTA_Result::NOT_READY; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->last_result;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->last_result;
     }
 
     uint16_t HTS_OTA_Manager::Get_Received_Chunks() const noexcept
@@ -712,7 +740,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        return reinterpret_cast<const Impl*>(impl_buf_)->received_chunks;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->received_chunks;
     }
 
 } // namespace ProtectedEngine

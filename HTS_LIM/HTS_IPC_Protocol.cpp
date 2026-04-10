@@ -1145,7 +1145,7 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Disable SPI
         if (impl->config.spi_base_addr != 0u) {
@@ -1184,7 +1184,7 @@ namespace ProtectedEngine {
             return IPC_Error::NOT_INITIALIZED;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Disable DMA temporarily
         HW_REG(impl->dma_stream_rx_base + DMA_SxCR_OFF) &= ~DMA_SxCR_EN;
@@ -1226,7 +1226,7 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->state_entry_tick = systick_ms;  // Update current tick for handlers
 
         // --- Handle SPI Error ---
@@ -1300,7 +1300,7 @@ namespace ProtectedEngine {
             return IPC_Error::BUFFER_OVERFLOW;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         uint8_t s_frame_buf[IPC_MAX_FRAME_SIZE];
         const Scoped_IPC_Frame_Wipe wipe_frame(
@@ -1333,7 +1333,7 @@ namespace ProtectedEngine {
             return IPC_Error::NOT_INITIALIZED;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         uint8_t s_raw_buf[IPC_MAX_FRAME_SIZE];
         const Scoped_IPC_Frame_Wipe wipe_raw(
@@ -1362,7 +1362,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_State::UNINITIALIZED;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->state;
     }
 
@@ -1372,14 +1372,14 @@ namespace ProtectedEngine {
             IPC_Statistics_Reset(out_stats);
             return;
         }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         IPC_Statistics_Copy(impl->stats, out_stats);
     }
 
     uint32_t HTS_IPC_Protocol::Is_Link_Alive() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return SECURE_FALSE; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->Is_Heartbeat_Alive(impl->state_entry_tick)
             ? SECURE_TRUE : SECURE_FALSE;
     }
@@ -1387,14 +1387,14 @@ namespace ProtectedEngine {
     uint32_t HTS_IPC_Protocol::Get_TX_Pending() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->Ring_TX_Count();
     }
 
     uint32_t HTS_IPC_Protocol::Get_RX_Pending() const noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
-        const Impl* impl = reinterpret_cast<const Impl*>(impl_buf_);
+        const Impl* impl = std::launder(reinterpret_cast<const Impl*>(impl_buf_));
         return impl->Ring_RX_Count();
     }
 
@@ -1405,21 +1405,21 @@ namespace ProtectedEngine {
     void HTS_IPC_Protocol::ISR_SPI_RX_Complete() noexcept
     {
         if (!initialized_.load(std::memory_order_relaxed)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->rx_dma_complete.store(true, std::memory_order_release);
     }
 
     void HTS_IPC_Protocol::ISR_SPI_TX_Complete() noexcept
     {
         if (!initialized_.load(std::memory_order_relaxed)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->tx_dma_complete.store(true, std::memory_order_release);
     }
 
     void HTS_IPC_Protocol::ISR_SPI_Error() noexcept
     {
         if (!initialized_.load(std::memory_order_relaxed)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->spi_error_flag.store(true, std::memory_order_release);
     }
 

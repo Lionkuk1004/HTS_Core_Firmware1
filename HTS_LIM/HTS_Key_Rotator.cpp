@@ -197,13 +197,13 @@ namespace {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas(8)을 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const DynamicKeyRotator::Impl*
         DynamicKeyRotator::get_impl() const noexcept {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_))
             : nullptr;
     }
 

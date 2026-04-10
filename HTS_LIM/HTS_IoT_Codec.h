@@ -188,7 +188,7 @@ namespace ProtectedEngine {
         }
     };
 
-    // sizeof: 256(buf) + 2 + 1 + 1 + padding ~ 264B
+    // sizeof: 256(buf) + 2 + 1 + 1 + atomic_flag + padding ~ 268B
     static_assert(sizeof(HTS_IoT_Codec) <= 512u,
         "HTS_IoT_Codec exceeds 512B SRAM budget");
 

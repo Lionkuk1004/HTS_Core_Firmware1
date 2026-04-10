@@ -21,7 +21,7 @@ inline void PipelineV2_ScatterGather_Fence() noexcept
      defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH))
     __asm volatile("dmb sy" ::: "memory");
 #endif
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    std::atomic_thread_fence(std::memory_order_release);
 #if defined(__GNUC__) || defined(__clang__)
     __asm volatile("" ::: "memory");
 #elif defined(_MSC_VER)
@@ -119,9 +119,7 @@ void HTS_Pipeline_V2_Dispatcher::Fractal_Gather_Rx(
         dst_fec[i] = src_wire[j];
     }
 
-    if (run != 0u) {
-        PipelineV2_ScatterGather_Fence();
-    }
+    PipelineV2_ScatterGather_Fence();
 }
 
 } // namespace ProtectedEngine

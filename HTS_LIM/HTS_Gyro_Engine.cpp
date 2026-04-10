@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cstddef>      // size_t
 #include <cstdint>      // uint32_t
-#include <cstring>
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
 #include <bit>

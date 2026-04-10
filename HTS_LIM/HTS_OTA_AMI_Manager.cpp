@@ -1,4 +1,4 @@
-// =========================================================================
+﻿// =========================================================================
 // HTS_OTA_AMI_Manager.cpp
 // AMI 보안 일제 무선 펌웨어 갱신 (Secure FUOTA) 구현부
 // Target: STM32F407 (Cortex-M4, 168MHz, SRAM 192KB)
@@ -164,12 +164,12 @@ namespace ProtectedEngine {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Impl 초과");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN, "정렬 초과");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
     HTS_OTA_AMI_Manager::ImplCPtr HTS_OTA_AMI_Manager::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // 점진 검증 종료: CRC 불일치 등으로 return 전 HMAC 컨텍스트 소비(플러시)
@@ -420,6 +420,26 @@ namespace ProtectedEngine {
         if (!flash_write(offset, data, data_len)) {
             p->reject = AMI_OtaReject::FLASH_FAIL;
             return false;
+        }
+        // ⑯ Read-back 검증: Flash 쓰기 무결성 확인
+        {
+            uint8_t rb[256];
+            const size_t rb_len =
+                (data_len <= sizeof(rb)) ? data_len : sizeof(rb);
+            if (!flash_read(offset, rb, rb_len)) {
+                p->reject = AMI_OtaReject::FLASH_FAIL;
+                return false;
+            }
+            bool rb_ok = true;
+            for (size_t vi = 0u; vi < rb_len; ++vi) {
+                if (rb[vi] != data[vi]) {
+                    rb_ok = false;
+                }
+            }
+            if (!rb_ok) {
+                p->reject = AMI_OtaReject::FLASH_FAIL;
+                return false;
+            }
         }
 
         bmap_set(p->recv_bitmap, chunk_idx);

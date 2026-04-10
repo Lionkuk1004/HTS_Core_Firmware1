@@ -138,10 +138,11 @@ namespace ProtectedEngine {
         HTS_BLE_NFC_Gateway& operator=(HTS_BLE_NFC_Gateway&&) = delete;
 
         static constexpr uint32_t IMPL_BUF_SIZE = 1024u;
+        static constexpr unsigned IMPL_BUF_ALIGN = 8u;
 
     private:
         struct Impl;
-        alignas(4) uint8_t impl_buf_[IMPL_BUF_SIZE];
+        alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         std::atomic<uint32_t> init_state_{ 0u };  ///< 0=NONE, 1=BUSY, 2=READY
     };
 

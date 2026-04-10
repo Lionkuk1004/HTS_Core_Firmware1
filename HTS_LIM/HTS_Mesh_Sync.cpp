@@ -64,14 +64,20 @@ namespace ProtectedEngine {
     // ToA 거리(cm) — PRIMASK 밖에서도 동일 수식 사용 (Get_All_Ranging 스냅샷 후 호출)
     static uint32_t mesh_distance_cm_from_offset_q16(int32_t ofs_q16) noexcept {
         const uint32_t abs_ofs = static_cast<uint32_t>(fast_abs(ofs_q16));
+        // den = 65536 * 10000 = 655,360,000
+        // 분해: >>16 으로 65536 제거 → /10000 (64/64 ÷den 대신 >>16 + ÷10000)
         const uint64_t num =
             static_cast<uint64_t>(abs_ofs) * LIGHT_CM_PER_US_NUM;
-        const uint64_t den = (65536ULL * LIGHT_CM_PER_US_DEN);
-        const uint64_t q = (num + (den / 2ULL)) / den;
-        if (q > static_cast<uint64_t>(UINT32_MAX)) {
+        static constexpr uint64_t den = 65536ULL * LIGHT_CM_PER_US_DEN;
+        static constexpr uint32_t DEN_HI =
+            static_cast<uint32_t>(LIGHT_CM_PER_US_DEN);  // 10000
+        const uint64_t num_rounded = num + (den / 2ULL);
+        const uint64_t num_hi = num_rounded >> 16u;
+        const uint64_t q64 = num_hi / static_cast<uint64_t>(DEN_HI);
+        if (q64 > static_cast<uint64_t>(UINT32_MAX)) {
             return UINT32_MAX;
         }
-        return static_cast<uint32_t>(q);
+        return static_cast<uint32_t>(q64);
     }
 
     // =====================================================================
@@ -194,19 +200,21 @@ namespace ProtectedEngine {
     HTS_Mesh_Sync::Impl*
         HTS_Mesh_Sync::get_impl() noexcept
     {
-        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
-            "Impl이 IMPL_BUF_SIZE(512B)를 초과합니다");
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Size mismatch");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 alignas를 초과합니다");
-        return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Mesh_Sync::Impl*
         HTS_Mesh_Sync::get_impl() const noexcept
     {
-        return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Size mismatch");
+        static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
+            "Impl alignment exceeds impl buffer");
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================
@@ -217,14 +225,17 @@ namespace ProtectedEngine {
     {
         Sync_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl(my_id);
-        impl_valid_ = true;
+        impl_valid_.store(true, std::memory_order_release);
     }
 
     HTS_Mesh_Sync::~HTS_Mesh_Sync() noexcept {
-        Impl* p = get_impl();
-        if (p != nullptr) { p->~Impl(); }
-        Sync_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        impl_valid_ = false;
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+            Sync_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
     }
 
     // =====================================================================
@@ -253,7 +264,42 @@ namespace ProtectedEngine {
 
         const int64_t numer = p - n;
         const int64_t sp = static_cast<int64_t>(SAMPLE_PERIOD_Q16);
-        const int64_t correction = (numer * sp) / denom;
+        // ⑨ 64비트 나눗셈 제거: CLZ 기반 시프트 근사
+        //  |denom| 범위: int32 입력 3개 조합 → max ~2^33
+        //  CLZ로 2^k 근사 → (numer*sp) >> k (부호 보존)
+        const int64_t abs_den = (denom < 0LL) ? -denom : denom;
+        const int64_t den_sign = (denom < 0LL) ? -1LL : 1LL;
+        // CLZ on upper 32 bits: find leading bit position
+        const uint32_t abs_den_hi = static_cast<uint32_t>(abs_den >> 32u);
+        const uint32_t abs_den_lo = static_cast<uint32_t>(abs_den);
+        int shift;
+        if (abs_den_hi != 0u) {
+#if defined(__GNUC__) || defined(__clang__)
+            shift = 63 - __builtin_clz(abs_den_hi);
+#elif defined(_MSC_VER)
+            unsigned long idx;
+            (void)_BitScanReverse(&idx, abs_den_hi);
+            shift = 32 + static_cast<int>(idx);
+#else
+            shift = 32;
+            uint32_t tmp = abs_den_hi;
+            while (tmp > 1u) { tmp >>= 1u; ++shift; }
+#endif
+        } else {
+            if (abs_den_lo == 0u) { return 0; }
+#if defined(__GNUC__) || defined(__clang__)
+            shift = 31 - __builtin_clz(abs_den_lo);
+#elif defined(_MSC_VER)
+            unsigned long idx;
+            (void)_BitScanReverse(&idx, abs_den_lo);
+            shift = static_cast<int>(idx);
+#else
+            shift = 0;
+            uint32_t tmp = abs_den_lo;
+            while (tmp > 1u) { tmp >>= 1u; ++shift; }
+#endif
+        }
+        const int64_t correction = ((numer * sp) >> shift) * den_sign;
         if (correction > static_cast<int64_t>(INT32_MAX)) {
             return INT32_MAX;
         }

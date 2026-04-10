@@ -241,7 +241,7 @@ namespace ProtectedEngine {
         /// @brief IR-HARQ 1라운드 RTT (ms) — HTS 독자 링크; 양산 시 실측·스케줄로 확정.
         /// @note Chase/소프트 텐서 벤치의 `LTE_HARQ_Controller::HARQ_RTT_MS`(8ms)와 별도.
         ///       PC 벤치 `HTS_Fractal_Channel_Compare` 가 IR 경로 지연 proxy에 동기화.
-        static constexpr double IR_HARQ_RTT_MS = 4.0;
+        static constexpr uint32_t IR_HARQ_RTT_MS = 4u;
 
         // ── CW 소거기 ON/OFF (벤치마크 비교용, 양산 기본값 true) ──
         void Set_CW_Cancel(bool enable) noexcept { cw_cancel_enabled_ = enable; }

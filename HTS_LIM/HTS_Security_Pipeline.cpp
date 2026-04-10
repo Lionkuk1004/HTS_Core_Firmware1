@@ -47,7 +47,7 @@ namespace ProtectedEngine {
             size_t buffer_total_words) noexcept;
 
         static bool cfi_enter(uint32_t target) noexcept {
-            for (;;) {
+            for (uint32_t spin = 0u; spin < 100000u; ++spin) {
                 const uint32_t cur = g_pipeline_cfi.load(std::memory_order_acquire);
                 const uint32_t st = cur >> 16;
                 const uint32_t cnt = cur & 0xFFFFu;
@@ -74,10 +74,11 @@ namespace ProtectedEngine {
                     return true;
                 }
             }
+            Hardware_Init_Manager::Terminal_Fault_Action();
         }
 
         static void cfi_leave(uint32_t from) noexcept {
-            for (;;) {
+            for (uint32_t spin = 0u; spin < 100000u; ++spin) {
                 const uint32_t cur = g_pipeline_cfi.load(std::memory_order_acquire);
                 const uint32_t st = cur >> 16;
                 const uint32_t cnt = cur & 0xFFFFu;
@@ -94,6 +95,7 @@ namespace ProtectedEngine {
                     return;
                 }
             }
+            Hardware_Init_Manager::Terminal_Fault_Action();
         }
 
         // 0 = 정상, 0xFFFFFFFF = 실패 (비트 OR·감산으로 마스크 생성)
@@ -129,8 +131,9 @@ namespace ProtectedEngine {
 
         // division-free start % 20 (Cortex-M4 friendly)
         static uint32_t fast_mod20_u32(uint32_t x) noexcept {
+            // Mul-shift 근사: static_cast<uint64_t>(x) 기반 /20 스케일 (UDIV 회피)
             const uint32_t q = static_cast<uint32_t>(
-                (static_cast<uint64_t>(x) * 0xCCCCCCCDull) >> 36u); // floor(x/20)
+                (static_cast<uint64_t>(x) * 0xCCCCCCCDull) >> 36u);
             return static_cast<uint32_t>(x - q * SPARSE_PERIOD);
         }
     }
@@ -154,25 +157,36 @@ namespace ProtectedEngine {
         std::atomic<bool>& abort_signal,
         size_t buffer_total_words) noexcept {
 
-        if (data == nullptr || start >= end) return;
-        // buffer_total_words>0 이면 전체 할당(워드) — end가 초과하면 루프·fault 소거 모두 OOB
-        if (buffer_total_words != 0u && end > buffer_total_words) {
-            return;
-        }
-        if (abort_signal.load(std::memory_order_relaxed)) return;
-        if (!cfi_enter(CFI_WORKER)) {
-            abort_signal.store(true, std::memory_order_release);
-            return;
+        uint32_t ok = 1u; // TPE:
+        ok &= static_cast<uint32_t>(data != nullptr); // TPE:
+        ok &= static_cast<uint32_t>(start < end); // TPE:
+        ok &= static_cast<uint32_t>(
+            buffer_total_words == 0u || end <= buffer_total_words); // TPE:
+        ok &= static_cast<uint32_t>(
+            !abort_signal.load(std::memory_order_relaxed)); // TPE:
+
+        bool cfi_entered = false;
+        if (ok != 0u) {
+            cfi_entered = cfi_enter(CFI_WORKER);
+            ok &= static_cast<uint32_t>(cfi_entered); // TPE:
+            if (!cfi_entered) {
+                abort_signal.store(true, std::memory_order_release);
+            }
         }
 
-        const uint32_t m_entry = security_fail_mask(PIPELINE_SESSION_ID);
-        if (m_entry != 0u) {
-            pipeline_security_terminal_fault(data, start, end, buffer_total_words);
+        const size_t m_ok = static_cast<size_t>(0u - ok); // TPE:
+        const size_t safe_end = end & m_ok; // TPE:
+
+        if (ok != 0u) {
+            const uint32_t m_entry = security_fail_mask(PIPELINE_SESSION_ID);
+            if (m_entry != 0u) {
+                pipeline_security_terminal_fault(data, start, end, buffer_total_words);
+            }
         }
 
         uint32_t sparse_cnt = fast_mod20_u32(static_cast<uint32_t>(start));
 
-        for (size_t i = start; i < end; ++i) {
+        for (size_t i = start; i < safe_end; ++i) {
             Gyro_Engine::Apply_Dynamic_Phase_Stabilization(data[i]);
 
             if (sparse_cnt == 0u) {
@@ -183,11 +197,6 @@ namespace ProtectedEngine {
             if (++sparse_cnt >= SPARSE_PERIOD) sparse_cnt = 0u;
 
             if ((i & SECURITY_CHECK_MASK) == 0u) {
-                if (abort_signal.load(std::memory_order_relaxed)) {
-                    cfi_leave(CFI_WORKER);
-                    return;
-                }
-
                 const uint32_t m = security_fail_mask(PIPELINE_SESSION_ID);
                 data[i] |= m;
                 if (m != 0u) {
@@ -198,7 +207,9 @@ namespace ProtectedEngine {
 
             data[i] = ~data[i];
         }
-        cfi_leave(CFI_WORKER);
+        if (cfi_entered) {
+            cfi_leave(CFI_WORKER);
+        }
     }
 
     // =====================================================================
@@ -219,19 +230,31 @@ namespace ProtectedEngine {
         std::atomic<uint32_t>& global_tag_lo,
         size_t buffer_total_words) noexcept {
 
-        if (data == nullptr || start >= end) return;
-        if (buffer_total_words != 0u && end > buffer_total_words) {
-            return;
-        }
-        if (abort_signal.load(std::memory_order_relaxed)) return;
-        if (!cfi_enter(CFI_AEAD)) {
-            abort_signal.store(true, std::memory_order_release);
-            return;
+        uint32_t ok = 1u; // TPE:
+        ok &= static_cast<uint32_t>(data != nullptr); // TPE:
+        ok &= static_cast<uint32_t>(start < end); // TPE:
+        ok &= static_cast<uint32_t>(
+            buffer_total_words == 0u || end <= buffer_total_words); // TPE:
+        ok &= static_cast<uint32_t>(
+            !abort_signal.load(std::memory_order_relaxed)); // TPE:
+
+        bool cfi_entered = false;
+        if (ok != 0u) {
+            cfi_entered = cfi_enter(CFI_AEAD);
+            ok &= static_cast<uint32_t>(cfi_entered); // TPE:
+            if (!cfi_entered) {
+                abort_signal.store(true, std::memory_order_release);
+            }
         }
 
-        const uint32_t m_entry = security_fail_mask(PIPELINE_SESSION_ID);
-        if (m_entry != 0u) {
-            pipeline_security_terminal_fault(data, start, end, buffer_total_words);
+        const size_t m_ok = static_cast<size_t>(0u - ok); // TPE:
+        const size_t safe_end = end & m_ok; // TPE:
+
+        if (ok != 0u) {
+            const uint32_t m_entry = security_fail_mask(PIPELINE_SESSION_ID);
+            if (m_entry != 0u) {
+                pipeline_security_terminal_fault(data, start, end, buffer_total_words);
+            }
         }
 
         uint32_t tag_hi = 0u;
@@ -243,7 +266,7 @@ namespace ProtectedEngine {
 
         uint32_t sparse_cnt = fast_mod20_u32(static_cast<uint32_t>(start));
 
-        for (size_t i = start; i < end; ++i) {
+        for (size_t i = start; i < safe_end; ++i) {
             Gyro_Engine::Apply_Dynamic_Phase_Stabilization(data[i]);
 
             if (sparse_cnt == 0u) {
@@ -254,11 +277,6 @@ namespace ProtectedEngine {
             if (++sparse_cnt >= SPARSE_PERIOD) sparse_cnt = 0u;
 
             if ((i & SECURITY_CHECK_MASK) == 0u) {
-                if (abort_signal.load(std::memory_order_relaxed)) {
-                    cfi_leave(CFI_AEAD);
-                    return;
-                }
-
                 const uint32_t m = security_fail_mask(PIPELINE_SESSION_ID);
                 data[i] |= m;
                 if (m != 0u) {
@@ -286,12 +304,14 @@ namespace ProtectedEngine {
             tag_hi ^= h_hi;
         }
 
-        global_tag_hi.fetch_xor(tag_hi, std::memory_order_relaxed);
-        global_tag_lo.fetch_xor(tag_lo, std::memory_order_relaxed);
+        if (cfi_entered) {
+            global_tag_hi.fetch_xor(tag_hi, std::memory_order_relaxed);
+            global_tag_lo.fetch_xor(tag_lo, std::memory_order_relaxed);
 
-        SecureMemory::secureWipe(&tag_hi, sizeof(tag_hi));
-        SecureMemory::secureWipe(&tag_lo, sizeof(tag_lo));
-        cfi_leave(CFI_AEAD);
+            SecureMemory::secureWipe(&tag_hi, sizeof(tag_hi));
+            SecureMemory::secureWipe(&tag_lo, sizeof(tag_lo));
+            cfi_leave(CFI_AEAD);
+        }
     }
 
 } // namespace ProtectedEngine

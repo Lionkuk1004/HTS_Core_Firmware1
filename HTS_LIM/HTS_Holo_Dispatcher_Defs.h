@@ -19,9 +19,9 @@
 ///
 ///   모드 전략:
 ///   - VIDEO_1/VIDEO_16: 기존 BB1 유지 (속도 우선)
-///   - VOICE_HOLO:  K=16, N=16, L=1 (12us, 음성 자가치유)
-///   - DATA_HOLO:   K=64, N=64, L=2 (390us, 검침/IoT)
-///   - RESILIENT_HOLO: K=128, N=64, L=4 (1.56ms, 재밍/변전소)
+///   - VOICE_HOLO:  K=8, N=64, L=2 (12us, 음성 자가치유)
+///   - DATA_HOLO:   K=16, N=64, L=2 (390us, 검침/IoT)
+///   - RESILIENT_HOLO: K=8, N=64, L=4 (1.56ms, 재밍/변전소)
 ///
 ///   자동 전환:
 ///   - SNR >= 10, AJC < 500    -> VOICE_HOLO
@@ -52,9 +52,9 @@ namespace ProtectedEngine {
         static constexpr uint8_t DATA_LEGACY = 0x03u;
 
         // --- 4D 홀로그램 모드 (신규, 0x10~) ---
-        static constexpr uint8_t VOICE_HOLO = 0x10u;  ///< K=16, N=16, L=1
-        static constexpr uint8_t DATA_HOLO = 0x11u;  ///< K=64, N=64, L=2
-        static constexpr uint8_t RESILIENT_HOLO = 0x12u;  ///< K=128, N=64, L=4
+        static constexpr uint8_t VOICE_HOLO = 0x10u;  ///< K=8, N=64, L=2
+        static constexpr uint8_t DATA_HOLO = 0x11u;  ///< K=16, N=64, L=2
+        static constexpr uint8_t RESILIENT_HOLO = 0x12u;  ///< K=8, N=64, L=4
 
         /// @brief 모드가 4D 홀로그램인지 판별
         /// @note  보안 경로에서는 호출 결과를 즉시 사용하고, 캐시된 bool 재사용을 금지.
@@ -92,11 +92,11 @@ namespace ProtectedEngine {
     {
         switch (mode) {
         case HoloPayload::VOICE_HOLO:
-            return k_holo_profiles[0];  // K=16, N=16, L=1
+            return k_holo_profiles[0];  // K=8, N=64, L=2
         case HoloPayload::DATA_HOLO:
-            return k_holo_profiles[1];  // K=64, N=64, L=2
+            return k_holo_profiles[1];  // K=16, N=64, L=2
         case HoloPayload::RESILIENT_HOLO:
-            return k_holo_profiles[2];  // K=128, N=64, L=4
+            return k_holo_profiles[2];  // K=8, N=64, L=4
         default:
             return k_holo_profiles[1];  // fallback DATA
         }

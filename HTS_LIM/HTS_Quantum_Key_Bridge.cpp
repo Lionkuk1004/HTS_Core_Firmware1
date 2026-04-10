@@ -6,6 +6,8 @@
 #include "HTS_Quantum_Key_Bridge.h"
 #include "HTS_Secure_Memory.h"
 
+#include <atomic>
+
 namespace ProtectedEngine {
 
 Quantum_Key_Bridge::~Quantum_Key_Bridge() noexcept
@@ -56,6 +58,14 @@ void Quantum_Key_Bridge::Inject_Quantum_Entropy(
     quantum_master_seed[2] ^= folded[2];
     quantum_master_seed[3] ^= folded[3];
 
+    // D-2: 키 파생 데이터 스택 잔류 방지 (물리 RAM 덤프 대응)
+    SecureMemory::secureWipe(static_cast<void*>(acc), sizeof(acc));
+    SecureMemory::secureWipe(static_cast<void*>(folded), sizeof(folded));
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" ::: "memory");
+#endif
+    std::atomic_thread_fence(std::memory_order_release);
+
     if (length >= 32u) {
         is_pqc_established = true;
     }
@@ -84,5 +94,7 @@ void Quantum_Key_Bridge::Synchronize_CTR_State(uint64_t& out_session_id) noexcep
     out_session_id = quantum_master_seed[0] ^ quantum_master_seed[1]
         ^ quantum_master_seed[2] ^ quantum_master_seed[3];
 }
+
+static_assert(sizeof(Quantum_Key_Bridge) <= 128u, "Size mismatch");
 
 } // namespace ProtectedEngine

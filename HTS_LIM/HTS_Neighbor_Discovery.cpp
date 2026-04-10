@@ -212,19 +212,21 @@ namespace ProtectedEngine {
     HTS_Neighbor_Discovery::Impl*
         HTS_Neighbor_Discovery::get_impl() noexcept
     {
-        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
-            "Impl이 IMPL_BUF_SIZE(1024B)를 초과합니다");
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Size mismatch");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 alignas를 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Neighbor_Discovery::Impl*
         HTS_Neighbor_Discovery::get_impl() const noexcept
     {
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Size mismatch");
+        static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
+            "Impl alignment exceeds impl buffer");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================

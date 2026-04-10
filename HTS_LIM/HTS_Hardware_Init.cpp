@@ -8,8 +8,9 @@
 #include "HTS_BitOps.h"
 #include <cstdio>
 #include <cstdlib>
-#if defined(HTS_ALLOW_HOST_BUILD)
 #include <atomic>
+#if defined(_MSC_VER)
+#include <intrin.h>  // _ReadWriteBarrier (UART spin, non-GCC ARM)
 #endif
 
 // =========================================================================
@@ -43,7 +44,7 @@ extern uint32_t __stack_bottom__ __attribute__((weak));
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("wfi");
 #else
-        __asm__ __volatile__("nop");
+        std::atomic_thread_fence(std::memory_order_seq_cst);
 #endif
     }
 }
@@ -455,7 +456,13 @@ extern "C" int fputc(int ch, FILE* f) {
     uint32_t timeout = UART_TX_TIMEOUT;
     while (((*uart_fr) & ProtectedEngine::UART_TXFF) != 0u) {
         if (--timeout == 0u) return ch;
+#if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("nop");
+#elif defined(_MSC_VER)
+        _ReadWriteBarrier();
+#else
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
     }
 
     *uart_tx = static_cast<uint32_t>(ch);

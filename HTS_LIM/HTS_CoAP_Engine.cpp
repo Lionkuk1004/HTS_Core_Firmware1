@@ -214,34 +214,36 @@ namespace ProtectedEngine {
     HTS_CoAP_Engine::Impl*
         HTS_CoAP_Engine::get_impl() noexcept
     {
-        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE,
-            "Impl이 IMPL_BUF_SIZE(768B)를 초과합니다");
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Size mismatch");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
-            "Impl 정렬 초과");
-        return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            "Impl alignment exceeds impl buffer");
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_CoAP_Engine::Impl*
         HTS_CoAP_Engine::get_impl() const noexcept
     {
-        return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+        static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Size mismatch");
+        static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
+            "Impl alignment exceeds impl buffer");
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     HTS_CoAP_Engine::HTS_CoAP_Engine(uint16_t my_id) noexcept
-        : impl_valid_(false)
     {
+        impl_valid_.store(false, std::memory_order_relaxed);
         Coap_Secure_Wipe(impl_buf_, sizeof(impl_buf_));
         ::new (static_cast<void*>(impl_buf_)) Impl(my_id);
-        impl_valid_ = true;
+        impl_valid_.store(true, std::memory_order_release);
     }
 
     HTS_CoAP_Engine::~HTS_CoAP_Engine() noexcept {
         Impl* p = get_impl();
         if (p != nullptr) { p->~Impl(); }
         Coap_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
-        impl_valid_ = false;
+        impl_valid_.store(false, std::memory_order_release);
     }
 
     // =====================================================================

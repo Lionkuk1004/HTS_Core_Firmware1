@@ -21,13 +21,14 @@
 //
 // =========================================================================
 #include "HTS_3D_Tensor_FEC.h"
-#include "HTS_Channel_Physics.h"
 
 // [양산 방어] LTE HARQ 시뮬레이션 — PC 전용, ARM 빌드 제외
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM) || \
     defined(__TARGET_ARCH_THUMB) || defined(__ARM_ARCH)
 #error "[HTS_FATAL] HTS_3D_Tensor_FEC.cpp는 PC 시뮬레이션 전용입니다. ARM 빌드에서 제외하십시오."
 #endif
+
+#include "HTS_Channel_Physics.h"
 
 // ── Self-Contained 표준 헤더 [BUG-07] ───────────────────────────────
 #include <atomic>

@@ -16,6 +16,7 @@
 #include "HTS_ConstantTimeUtil.h"
 #include "HTS_LSH256_Bridge.h"
 #include "HTS_Secure_Memory.h"
+#include "HTS_Hardware_Init.h"
 
 #include <atomic>
 #include <cstddef>
@@ -33,8 +34,12 @@ constexpr uint32_t kSbDestructorSpinTries = 8u;
 struct SbOpBusyGuard final {
     std::atomic_flag* f_;
     explicit SbOpBusyGuard(std::atomic_flag& fl) noexcept : f_(&fl) {
-        while (f_->test_and_set(std::memory_order_acquire)) {
+        for (uint32_t i = 0u; i < 100000u; ++i) {
+            if (!f_->test_and_set(std::memory_order_acquire)) {
+                return;
+            }
         }
+        ProtectedEngine::Hardware_Init_Manager::Terminal_Fault_Action();
     }
     ~SbOpBusyGuard() noexcept { f_->clear(std::memory_order_release); }
     SbOpBusyGuard(const SbOpBusyGuard&) = delete;
@@ -397,14 +402,14 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas를 초과합니다");
         return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Secure_Boot_Verify::Impl*
         HTS_Secure_Boot_Verify::get_impl() const noexcept
     {
         return impl_valid_
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================

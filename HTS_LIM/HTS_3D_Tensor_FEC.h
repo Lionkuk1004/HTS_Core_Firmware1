@@ -29,7 +29,7 @@
 //   4. TX/RX 간 PRNG 동기: 동일 seed + 동일 호출 순서 필수
 //
 //  [메모리 요구량]
-//   sizeof(HTS16_DIOC_Core) ≈ 264B (impl_buf_[256] + impl_valid_ + padding)
+//   sizeof(HTS16_DIOC_Core) ≈ 268B (impl_buf_[256] + impl_valid_ + padding)
 //   Impl(SRAM In-Place): arx_state[4] = 16B — placement new, 힙 할당 0회
 //       
 //  [보안 설계]

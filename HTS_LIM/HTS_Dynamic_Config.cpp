@@ -206,8 +206,8 @@ namespace ProtectedEngine {
 
         //  (ram * ratio / 100) << 3
         //  (ram * ratio * 655) >> 16 << 3
-        //  Q16 역수: floor(65536 / 100) = 655
-        //  오차 -0.06% — Floor_Power_Of_Two가 2^N 정렬하므로 무영향
+        //  Q16 역수: k_RECIP_100_Q16 = ceiling(65536/100) = 656 (상단 주석 정합)
+        //  Floor_Power_Of_Two 정렬과 조합 시 양의 오차 경로 유지
         const uint64_t calc_nodes_64 =
             ((system_ram * static_cast<uint64_t>(active_ratio)
                 * k_RECIP_100_Q16) >> 16u) << 3u;

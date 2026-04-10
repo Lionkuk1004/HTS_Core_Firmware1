@@ -210,16 +210,15 @@ namespace ProtectedEngine {
             "Impl이 IMPL_BUF_SIZE(512B)를 초과합니다");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas를 초과합니다");
-        return impl_valid_
-            .load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+        return impl_valid_.load(std::memory_order_acquire)
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Priority_Scheduler::Impl*
         HTS_Priority_Scheduler::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================
@@ -234,12 +233,13 @@ namespace ProtectedEngine {
     }
 
     HTS_Priority_Scheduler::~HTS_Priority_Scheduler() noexcept {
-        Impl* const p = get_impl();
-        if (p == nullptr) { return; }
-        // ISR/TX 콜백의 UAF 방지: 유효 플래그를 먼저 내린 뒤 파괴·소거
-        impl_valid_.store(false, std::memory_order_release);
-        p->~Impl();
-        SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+            SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
+        }
     }
 
     // =====================================================================

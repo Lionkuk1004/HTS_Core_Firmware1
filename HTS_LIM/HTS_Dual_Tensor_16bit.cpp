@@ -215,13 +215,13 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 impl_buf_ alignas(8)을 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const Dual_Tensor_Pipeline::Impl*
         Dual_Tensor_Pipeline::get_impl() const noexcept {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_)
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_))
             : nullptr;
     }
 
@@ -261,17 +261,21 @@ namespace ProtectedEngine {
         uint32_t packet_nonce,
         std::atomic<bool>& abort_signal) noexcept
     {
-        Impl* p = get_impl();
-        if (p == nullptr || data_len == 0u || raw_sensor_data == nullptr) {
-            return false;
-        }
+        uint32_t ok = 1u; // TPE: cumulative validity (0/1)
+        Impl* p_chk = get_impl();
+        ok &= static_cast<uint32_t>(p_chk != nullptr);
+        ok &= static_cast<uint32_t>(raw_sensor_data != nullptr);
+        ok &= static_cast<uint32_t>(data_len > 0u);
 
-        auto& impl = *p;
+        Impl& impl = *reinterpret_cast<Impl*>(impl_buf_);
+
         // active_tensor_count는 "uint32(듀얼 텐서) 개수" 단위.
         // Stage①에서 16비트 센서 2개 → 32비트 1개 패킹하므로,
         // 입력 process_len(=uint16 원소 수) 캡은 active_tensor_count×2여야 한다.
-        const size_t process_len =
+        size_t process_len =
             std::min(data_len, impl.active_tensor_count * 2u);
+        const uint32_t m_ok0 = 0u - ok; // TPE: mask lengths when invalid
+        process_len &= static_cast<size_t>(m_ok0);
 
         // ── ❶ 민감 데이터 선언 + RAII 바인딩 ──
         uint64_t crypto_state_A = 0u;
@@ -301,9 +305,7 @@ namespace ProtectedEngine {
         // ── ② 16비트 → 32비트 패킹 (정적 temp_sec) ──
         // ⑨ /2u → >>1u
         size_t packed_len = (process_len + 1u) >> 1u;
-        if (packed_len > Impl::MAX_SEC_WORDS) {
-            packed_len = Impl::MAX_SEC_WORDS;
-        }
+        packed_len = Min_Size_U(packed_len, Impl::MAX_SEC_WORDS);
 
         for (size_t i = 0u; i < packed_len; ++i) {
             const uint32_t high = raw_sensor_data[i * 2u];
@@ -315,23 +317,24 @@ namespace ProtectedEngine {
         // ── ③ Security_Pipeline 보안 변환 ──
         impl.sec_pipeline.Secure_Master_Worker(
             impl.temp_sec, 0, packed_len, abort_signal, packed_len);
-        if (abort_signal.load(std::memory_order_acquire)) {
-            return false;
-        }
 
         // ── ④ 3D FEC + 인터리빙 (int8_t Raw API) ──
         fec_mseed_len = Session_Gateway::Derive_Session_Material(
             Session_Gateway::DOMAIN_DUAL_FEC,
             fec_master_seed_buf, sizeof(fec_master_seed_buf));
 
+        uint32_t fec_mix = 0u;
+        std::memcpy(&fec_mix, fec_master_seed_buf, 4u);
+        const uint32_t m_fec4 = 0u - static_cast<uint32_t>(fec_mseed_len >= 4u); // TPE:
         fec_seed = packet_nonce;
-        if (fec_mseed_len >= 4u) {
-            std::memcpy(&fec_seed, fec_master_seed_buf, 4u);
-        }
+        fec_seed = (fec_mix & m_fec4) | (fec_seed & ~m_fec4);
         fec_seed ^= (packet_nonce << 16u) | (packet_nonce >> 16u);
 
-        const size_t n_raw_bits = packed_len * 32u;
-        if (n_raw_bits > Impl::MAX_WORK_BITS) { return false; }
+        size_t n_raw_bits = packed_len * 32u;
+        ok &= static_cast<uint32_t>(n_raw_bits <= Impl::MAX_WORK_BITS);
+        const uint32_t m_ok_bits = 0u - ok; // TPE:
+        packed_len &= static_cast<size_t>(m_ok_bits);
+        n_raw_bits = packed_len * 32u;
 
         for (size_t i = 0u; i < packed_len; ++i) {
             const uint32_t word = impl.temp_sec[i];
@@ -348,26 +351,30 @@ namespace ProtectedEngine {
             impl.work_A, n_raw_bits,
             impl.fec_bits, fec_out_max,
             fec_seed);
-        if (fec_len == 0u) { return false; }
+        ok &= static_cast<uint32_t>(fec_len > 0u);
+        const size_t fec_len_use = fec_len & static_cast<size_t>(0u - ok); // TPE:
 
         uint64_t fractal_sid =
             static_cast<uint64_t>(fec_seed)
             ^ (static_cast<uint64_t>(packet_nonce) << 32u);
-        if (fec_mseed_len >= 8u) {
-            std::memcpy(&fractal_sid, fec_master_seed_buf, 8u);
-        }
+        uint64_t fractal_from_buf = fractal_sid;
+        std::memcpy(&fractal_from_buf, fec_master_seed_buf, 8u);
+        const uint64_t m_fec8 = static_cast<uint64_t>(0ull)
+            - static_cast<uint64_t>(fec_mseed_len >= 8u); // TPE:
+        fractal_sid = (fractal_from_buf & m_fec8) | (fractal_sid & ~m_fec8);
         impl.tensor_interleaver.Sync_Fractal_Key(
             fractal_sid, fec_seed ^ packet_nonce);
 
         const size_t intlv_len = impl.tensor_interleaver.Interleave_Raw(
-            impl.fec_bits, fec_len,
+            impl.fec_bits, fec_len_use,
             impl.work_A, Impl::MAX_WORK_BITS);
 
         // intlv(int8_t) → uint32 패킹 (temp_sec 재사용)
         const size_t interleaved_bits = intlv_len;
         // ⑨ /32u → >>5u
-        const size_t fec_words = (interleaved_bits + 31u) >> 5u;
-        if (fec_words > Impl::MAX_SEC_WORDS) { return false; }
+        size_t fec_words = (interleaved_bits + 31u) >> 5u;
+        ok &= static_cast<uint32_t>(fec_words <= Impl::MAX_SEC_WORDS);
+        fec_words &= static_cast<size_t>(0u - ok); // TPE:
 
         for (size_t i = 0u; i < fec_words; ++i) {
             uint32_t word = 0u;
@@ -393,15 +400,14 @@ namespace ProtectedEngine {
             impl.tx_signal, ps_max);
 
         const size_t tx_len = actual_ps;
-        if (tx_len == 0u) { return false; }
+        ok &= static_cast<uint32_t>(tx_len > 0u);
 
-        const size_t dl_len = (tx_len < Impl::MAX_DL_FRAME)
+        size_t dl_len = (tx_len < Impl::MAX_DL_FRAME)
             ? tx_len : Impl::MAX_DL_FRAME;
-        impl.dl_len_ = dl_len;
 
         // ── ⑥ 듀얼 레인 패킹 (Xoroshiro128++) ──
         const size_t total_16bit_words = packed_len * 2u;
-        if (total_16bit_words == 0u) { return false; }
+        ok &= static_cast<uint32_t>(total_16bit_words > 0u);
 
         // [HT-6] runtime modulo(%) 제거:
         //  logical_step은 [0, total_16bit_words-1] 범위만 만족하면
@@ -425,13 +431,15 @@ namespace ProtectedEngine {
         //
         //  Xoroshiro128++는 128비트 상태 — 마스터 시드 16바이트 미만이면 암호화 거부
         // ─────────────────────────────────────────────────────────────
-        if (mseed_len < 16u) {
-            return false;  // Fail-Closed: 엔트로피 불충분 → 패킷 전송 거부
-        }
+        ok &= static_cast<uint32_t>(mseed_len >= 16u);
         std::memcpy(&crypto_state_A, master_seed_buf, 8u);
         std::memcpy(&crypto_state_B, master_seed_buf + 8u, 8u);
         crypto_state_A ^=
             (static_cast<uint64_t>(packet_nonce) << 32u) | packet_nonce;
+
+        const uint32_t m_ok_final = 0u - ok; // TPE: dl_len / dual-lane iteration bound
+        dl_len &= static_cast<size_t>(m_ok_final);
+        impl.dl_len_ = dl_len;
 
         // ─────────────────────────────────────────────────────────────
         //
@@ -508,31 +516,19 @@ namespace ProtectedEngine {
         };
 
         size_t i = 0u;
-        bool dual_abort = false;
         for (; i + 4u <= dl_len; i += 4u) {
-            if ((i & 0x3FFu) == 0u &&
-                abort_signal.load(std::memory_order_relaxed)) {
-                dual_abort = true;
-                break;
-            }
-
             dual_lane_one(i + 0u, 0u);
             dual_lane_one(i + 1u, 1u);
             dual_lane_one(i + 2u, 2u);
             dual_lane_one(i + 3u, 3u);
         }
-        if (!dual_abort) {
-            for (; i < dl_len; ++i) {
-                if ((i & 0x3FFu) == 0u &&
-                    abort_signal.load(std::memory_order_relaxed)) {
-                    break;
-                }
-                dual_lane_one(i, stream_phase);
-                stream_phase = (stream_phase + 1u) & 3u;
-            }
+        for (; i < dl_len; ++i) {
+            dual_lane_one(i, stream_phase);
+            stream_phase = (stream_phase + 1u) & 3u;
         }
 
-        return !abort_signal.load(std::memory_order_acquire);
+        return (ok != 0u)
+            && !abort_signal.load(std::memory_order_acquire);
         // RAII_Secure_Wiper가 로컬 민감값 + Impl 워킹 버퍼(work_A/B, temp_sec)
         // 를 스코프 종료 시 자동 소거 — 평문 잔류 0바이트
     }

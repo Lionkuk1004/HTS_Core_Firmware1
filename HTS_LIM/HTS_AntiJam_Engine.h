@@ -117,6 +117,10 @@ namespace ProtectedEngine {
         int32_t null_v_[SUB_NC];
         int32_t null_nv_[SUB_NC];
 
+        /// Adaptive punch / impulsive 스캔 — 대형 스택 배열 제거 (MAX_NC·64 정렬 워크)
+        uint32_t sort_nc_scratch_[MAX_NC];
+        uint32_t sort_u64_work_[64];
+
         void ajc_apply_(int16_t* I, int16_t* Q, int nc) noexcept;
         void adaptive_punch_(int16_t* I, int16_t* Q, int nc) noexcept;
         void null_accumulate_sub_(SubNull& s,

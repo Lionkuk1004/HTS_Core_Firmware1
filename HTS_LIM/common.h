@@ -41,6 +41,22 @@ typedef struct _blk {
 } blk;
 
 /* 시프트 폭 0·32(64)에서의 UB 방지: (c)&31 / (0-rot)&31 패턴 (항⑨, MISRA 시프트) */
+#if defined(__cplusplus)
+#define LROT(x,c) \
+	((static_cast<u32>(x) << (((unsigned)(c)) & 31u)) | \
+	 (static_cast<u32>(x) >> ((0u - (((unsigned)(c)) & 31u)) & 31u)))
+#define ROTR(x,c) \
+	((static_cast<u32>(x) >> (((unsigned)(c)) & 31u)) | \
+	 (static_cast<u32>(x) << ((0u - (((unsigned)(c)) & 31u)) & 31u)))
+#define SHR(x,c) \
+	((((unsigned)(c)) >= 32u) ? 0u : (static_cast<u32>(x) >> ((unsigned)(c))))
+#define LROT64(x, c) \
+	((static_cast<u64>(x) << (((unsigned)(c)) & 63u)) | \
+	 (static_cast<u64>(x) >> ((0u - (((unsigned)(c)) & 63u)) & 63u)))
+#define RROT64(x, c) \
+	((static_cast<u64>(x) >> (((unsigned)(c)) & 63u)) | \
+	 (static_cast<u64>(x) << ((0u - (((unsigned)(c)) & 63u)) & 63u)))
+#else
 #define LROT(x,c) \
 	((((u32)(x)) << (((unsigned)(c)) & 31u)) | \
 	 (((u32)(x)) >> ((0u - (((unsigned)(c)) & 31u)) & 31u)))
@@ -55,5 +71,6 @@ typedef struct _blk {
 #define RROT64(x, c) \
 	((((u64)(x)) >> (((unsigned)(c)) & 63u)) | \
 	 (((u64)(x)) << ((0u - (((unsigned)(c)) & 63u)) & 63u)))
+#endif
 
 #endif /* _COMMON_H_ */

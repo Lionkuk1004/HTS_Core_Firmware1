@@ -334,14 +334,14 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 alignas를 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Location_Engine::Impl*
         HTS_Location_Engine::get_impl() const noexcept
     {
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<const Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<const Impl*>(impl_buf_)) : nullptr;
     }
 
     // =====================================================================
@@ -357,10 +357,13 @@ namespace ProtectedEngine {
     }
 
     HTS_Location_Engine::~HTS_Location_Engine() noexcept {
-        impl_valid_.store(false, std::memory_order_release);
-        Impl* p = reinterpret_cast<Impl*>(impl_buf_);
-        if (p != nullptr) { p->~Impl(); }
-        Loc_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        const bool was_valid =
+            impl_valid_.exchange(false, std::memory_order_acq_rel);
+        if (was_valid) {
+            Impl* const p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
+            p->~Impl();
+            Loc_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
+        }
     }
 
     // =====================================================================
@@ -648,10 +651,35 @@ namespace ProtectedEngine {
     //  양산: LSH256_Bridge::Hash_256(token_data, len, expected)
     // =====================================================================
     static bool verify_token_signature(const AuthToken& token) noexcept {
-        // 서명 대상: agency_id~zone_radius_m (signature 제외)
-        const size_t data_len = sizeof(AuthToken) - sizeof(token.signature)
-            - sizeof(token.pad);
-        const uint8_t* data = reinterpret_cast<const uint8_t*>(&token);
+        // 서명 대상: agency_id~zone_radius_m (pad·signature 제외) — 구조체 패딩 미포함
+        static constexpr size_t kSignedPayloadBytes =
+            sizeof(token.agency_id) + sizeof(token.target_device_id) +
+            sizeof(token.issue_time) + sizeof(token.last_heartbeat) +
+            sizeof(token.zone_lat_1e4) + sizeof(token.zone_lon_1e4) +
+            sizeof(token.zone_radius_m);
+        static_assert(kSignedPayloadBytes == 22u, "AuthToken signed span");
+        uint8_t data[kSignedPayloadBytes];
+        size_t o = 0u;
+        std::memcpy(data + o, &token.agency_id, sizeof(token.agency_id));
+        o += sizeof(token.agency_id);
+        std::memcpy(data + o, &token.target_device_id,
+            sizeof(token.target_device_id));
+        o += sizeof(token.target_device_id);
+        std::memcpy(data + o, &token.issue_time, sizeof(token.issue_time));
+        o += sizeof(token.issue_time);
+        std::memcpy(data + o, &token.last_heartbeat,
+            sizeof(token.last_heartbeat));
+        o += sizeof(token.last_heartbeat);
+        std::memcpy(data + o, &token.zone_lat_1e4,
+            sizeof(token.zone_lat_1e4));
+        o += sizeof(token.zone_lat_1e4);
+        std::memcpy(data + o, &token.zone_lon_1e4,
+            sizeof(token.zone_lon_1e4));
+        o += sizeof(token.zone_lon_1e4);
+        std::memcpy(data + o, &token.zone_radius_m,
+            sizeof(token.zone_radius_m));
+        o += sizeof(token.zone_radius_m);
+        const size_t data_len = o;
 
         // 간이 해시: XOR 폴드 (양산 시 LSH256_Bridge 교체)
         // 토큰 필드 전체를 4바이트씩 XOR → 서명 첫 4바이트와 비교

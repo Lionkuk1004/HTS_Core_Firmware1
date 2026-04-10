@@ -236,7 +236,7 @@ namespace ProtectedEngine {
 
         // ============================================================
         //  [A1] 딕셔너리 기반 주기 보고 APDU 빌드
-        //  6개 객체 하드코딩
+        //  딕셔너리 기반 동적 직렬화 (고정 6개 하드코딩 아님)
         //  딕셔너리 전체 순회 → 공간 허용하는 만큼 자동 직렬화
         // ============================================================
         uint16_t Build_Report_APDU() noexcept {
@@ -489,7 +489,7 @@ namespace ProtectedEngine {
             return;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->state = AMI_State::OFFLINE;
         impl->ipc = nullptr;
         impl->obis_dict = nullptr;
@@ -506,7 +506,7 @@ namespace ProtectedEngine {
         const OBIS_Dictionary* dict) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->obis_dict = dict;
     }
 
@@ -515,7 +515,7 @@ namespace ProtectedEngine {
         const AMI_SecuritySuite* suite) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->security = suite;
     }
 
@@ -523,12 +523,12 @@ namespace ProtectedEngine {
         const MeterCallbacks& cb) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->meter_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->meter_cb = cb;
     }
 
     void HTS_AMI_Protocol::Set_Report_Interval(uint32_t interval_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->report_interval_ms = interval_ms;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->report_interval_ms = interval_ms;
     }
 
     // [AMI-2] Tick: unsigned 뺄셈은 49.7일 래핑 시에도 정확한 경과 시간 반환
@@ -536,7 +536,7 @@ namespace ProtectedEngine {
     //  추가 방어 불필요 — MISRA C++ Rule 5-0-4 unsigned wrap 허용
     void HTS_AMI_Protocol::Tick(uint32_t systick_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         if (impl->report_interval_ms > 0u) {
             // unsigned 뺄셈: 49.7일 래핑 시에도 정확 (의도적)
@@ -552,7 +552,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         return HTS_AMI_Protocol::ami_send_periodic_report_impl(impl);
     }
 
@@ -562,7 +562,7 @@ namespace ProtectedEngine {
         if (apdu == nullptr) { return; }
         if (apdu_len < AMI_APDU_HEADER_SIZE + AMI_APDU_CRC_SIZE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // 이전 주기에서 ERROR(송신 실패 등)에 머물면 PROCESSING 전이 불가 → 요청 처리 영구 차단.
         // ERROR→IDLE은 합법 전이 — 한 번 복귀 후 본 요청 처리(동일 호출 내 CFI 실패 경로는 기존 유지).
@@ -670,7 +670,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return AMI_State::OFFLINE;
         }
-        return reinterpret_cast<const Impl*>(impl_buf_)->state;
+        return std::launder(reinterpret_cast<const Impl*>(impl_buf_))->state;
     }
 
 } // namespace ProtectedEngine

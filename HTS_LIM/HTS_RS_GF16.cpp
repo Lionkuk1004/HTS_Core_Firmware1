@@ -9,6 +9,7 @@
 // =========================================================================
 #include "HTS_RS_GF16.h"
 
+#include "HTS_Arm_Irq_Mask_Guard.h"
 #include "HTS_Secure_Memory.h"
 
 #include <atomic>
@@ -82,7 +83,7 @@ constexpr uint8_t GF_POLY = 0x13u;
 
 alignas(16) static uint8_t g_exp[32];
 alignas(16) static uint8_t g_log[16];
-static bool g_ok = false;
+static std::atomic<bool> g_ok{ false };
 
 // 브루트포스·가우스·인코드 스크래치 (스택 피크 완화)
 alignas(64) static uint8_t g_rs_bf_trial[15];
@@ -116,7 +117,11 @@ static inline void rs_wipe_stack(void* p, std::size_t n) noexcept
 
 void gf_init() noexcept
 {
-    if (g_ok) {
+    if (g_ok.load(std::memory_order_acquire)) {
+        return;
+    }
+    Armv7m_Irq_Mask_Guard irq_guard;
+    if (g_ok.load(std::memory_order_relaxed)) {
         return;
     }
     uint8_t x = 1u;
@@ -132,7 +137,7 @@ void gf_init() noexcept
             g_exp[static_cast<std::size_t>(i - 15)];
     }
     g_log[0] = 0u;
-    g_ok = true;
+    g_ok.store(true, std::memory_order_release);
 }
 
 // m∈[1,7], idx∈[0,14] → (m*idx)%15 — UDIV 없음(컴파일 타임 테이블)
@@ -564,6 +569,7 @@ void HTS_RS_GF16_Encode15_8(const uint8_t data8[8], uint8_t out15[15]) noexcept
     if (!data8 || !out15) {
         return;
     }
+    Armv7m_Irq_Mask_Guard irq_guard;
     if (!rs_encode_systematic_low(data8, out15)) {
         for (int i = 0; i < RS_N; ++i) {
             out15[static_cast<std::size_t>(i)] = 0u;
@@ -577,6 +583,7 @@ bool HTS_RS_GF16_Decode15_8(uint8_t inout15[15]) noexcept
     if (!inout15) {
         return false;
     }
+    Armv7m_Irq_Mask_Guard irq_guard;
     uint8_t* const r = g_rs_dec_r;
     for (int i = 0; i < RS_N; ++i) {
         r[static_cast<std::size_t>(i)] =

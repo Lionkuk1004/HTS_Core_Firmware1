@@ -1,4 +1,4 @@
-#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
+﻿#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
 #define HTS_LIKELY   [[likely]]
 #define HTS_UNLIKELY [[unlikely]]
 #else
@@ -28,6 +28,7 @@
 #include "HTS_Unified_Scheduler.hpp"
 
 #include <atomic>
+#include <cstring>
 
 #if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
 #define HTS_API_LIKELY   HTS_LIKELY
@@ -336,8 +337,13 @@ namespace HTS_API {
             return HTS_Status::OK;
         }
 
-        const auto* as_i32 = reinterpret_cast<const int32_t*>(lane);
-        if (!g_tx_sched.Push_Waveform_Chunk(as_i32, push_words)) {
+        // strict aliasing 준수: uint32_t* → int32_t* 직접 캐스팅 금지
+        // Push_Waveform_Chunk가 const int32_t*를 받으므로 memcpy로 type-pun
+        // push_words ≤ lane_words ≤ kUnifiedTxScratchUint16 (1024) → 4KB 이하
+        static int32_t g_tx_lane_i32[1024];
+        const size_t copy_bytes = push_words * sizeof(int32_t);
+        std::memcpy(g_tx_lane_i32, lane, copy_bytes);
+        if (!g_tx_sched.Push_Waveform_Chunk(g_tx_lane_i32, push_words)) {
             return HTS_Status::ERR_TX_PIPELINE_FAILED;
         }
 

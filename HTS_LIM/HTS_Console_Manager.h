@@ -172,14 +172,15 @@ namespace ProtectedEngine {
         ///   - ChannelConfig: 28 바이트
         ///   - DiagCallbacks: 32 바이트 (8 포인터 x 4B on ARM32)
         ///   - DiagReport 캐시: 40 바이트
-        ///   - IPC 포인터 + 상태 + tick + 응답 버퍼(264B) + 여유
+        ///   - IPC 포인터 + 상태 + tick + 응답 버퍼(~268B) + 여유
         ///   - 합계: ~512 바이트, 여유 포함 1024
         static constexpr uint32_t IMPL_BUF_SIZE = 1024u;
+        static constexpr unsigned IMPL_BUF_ALIGN = 8u;
 
     private:
         struct Impl;
 
-        alignas(4) uint8_t impl_buf_[IMPL_BUF_SIZE];
+        alignas(IMPL_BUF_ALIGN) uint8_t impl_buf_[IMPL_BUF_SIZE];
         //  initializing_: CAS로 이중 진입 차단 (true = 초기화 진행 중)
         //  initialized_:  placement new + 전체 멤버 설정 완료 후 release store
         //  → Tick() 등 소비자는 initialized_=true 를 보는 시점에
