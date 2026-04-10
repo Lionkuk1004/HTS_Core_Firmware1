@@ -219,7 +219,7 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 초과");
         return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_CoAP_Engine::Impl*

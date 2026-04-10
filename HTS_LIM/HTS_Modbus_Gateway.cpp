@@ -101,8 +101,8 @@ namespace ProtectedEngine {
         // ============================================================
         bool Transition_State(Modbus_State target) noexcept
         {
-            if (!Modbus_Is_Legal_Transition(state, target)) {
-                if (Modbus_Is_Legal_Transition(state, Modbus_State::ERROR)) {
+            if (Modbus_Is_Legal_Transition(state, target) != MODBUS_SECURE_TRUE) {
+                if (Modbus_Is_Legal_Transition(state, Modbus_State::ERROR) == MODBUS_SECURE_TRUE) {
                     state = Modbus_State::ERROR;
                 }
                 else {
@@ -597,7 +597,7 @@ namespace ProtectedEngine {
                 return;
             }
 
-            Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+            Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
             // 파괴 시작 전에 공개 API 차단 — ~Impl/소거 중 Get_State 등 UAF 방지
             initialized_.store(false, std::memory_order_release);
             impl->state = Modbus_State::OFFLINE;
@@ -619,7 +619,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->phy_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->phy_cb = cb;
     }
 
     void HTS_Modbus_Gateway::Configure_UART(Modbus_PHY phy,
@@ -628,7 +628,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->phy_cb.uart_configure != nullptr) {
             impl->phy_cb.uart_configure(phy, &cfg);
         }
@@ -642,7 +642,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->Handle_GW_Command(payload, len);
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->Handle_GW_Command(payload, len);
     }
 
     uint8_t HTS_Modbus_Gateway::Add_Poll_Item(const Modbus_PollItem& item) noexcept
@@ -650,7 +650,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0xFFu; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0xFFu; }
-        return reinterpret_cast<Impl*>(impl_buf_)->Add_Poll_Item_Internal(item);
+        return std::launder(reinterpret_cast<Impl*>(impl_buf_))->Add_Poll_Item_Internal(item);
     }
 
     void HTS_Modbus_Gateway::Remove_Poll_Item(uint8_t slot_idx) noexcept
@@ -659,7 +659,7 @@ namespace ProtectedEngine {
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
         if (slot_idx >= MODBUS_MAX_POLL_ITEMS) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->poll_items[static_cast<size_t>(slot_idx)]
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->poll_items[static_cast<size_t>(slot_idx)]
             .active = 0u;
     }
 
@@ -668,7 +668,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->current_tick = systick_ms;
 
         if (static_cast<uint8_t>(impl->state) == 0u) { return; }  // OFFLINE
@@ -684,7 +684,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) { return 0u; }
         Modbus_Busy_Guard g(op_busy_);
         if (!g.locked) { return 0u; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         if (!impl->Transition_State(Modbus_State::REQUESTING)) { return 0u; }
 

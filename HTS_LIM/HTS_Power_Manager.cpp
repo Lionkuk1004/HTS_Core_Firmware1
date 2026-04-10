@@ -368,7 +368,7 @@ namespace ProtectedEngine {
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->state = PowerState::UNINITIALIZED;
         impl->~Impl();
 
@@ -381,21 +381,21 @@ namespace ProtectedEngine {
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->hal_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->hal_cb = cb;
     }
 
     void HTS_Power_Manager::Register_Notify_Callbacks(const Power_Notify_Callbacks& cb) noexcept
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->notify_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->notify_cb = cb;
     }
 
     bool HTS_Power_Manager::Request_Sleep(PowerMode mode, uint32_t wakeup_sec) noexcept
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return false; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Must be ACTIVE to enter sleep
         if ((static_cast<uint8_t>(impl->state) &
@@ -411,7 +411,7 @@ namespace ProtectedEngine {
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return false; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Must be ACTIVE
         if ((static_cast<uint8_t>(impl->state) &
@@ -440,7 +440,7 @@ namespace ProtectedEngine {
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->pvd_level = level;
         if (impl->hal_cb.configure_pvd != nullptr) {
             impl->hal_cb.configure_pvd(static_cast<uint8_t>(level));
@@ -462,7 +462,7 @@ namespace ProtectedEngine {
             }
         } unlock{op_busy_};
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (impl->hal_cb.get_battery_mv != nullptr) {
             impl->last_battery_mv = impl->hal_cb.get_battery_mv();
         }
@@ -475,7 +475,7 @@ namespace ProtectedEngine {
     {
         Power_Busy_Guard guard(op_busy_);
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Mask to valid bits only
         const uint32_t safe_mask = enable_mask & ClockGate::ALL;

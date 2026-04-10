@@ -59,6 +59,10 @@ void Quantum_Key_Bridge::Inject_Quantum_Entropy(
     if (length >= 32u) {
         is_pqc_established = true;
     }
+
+    // 키 파생 스택 소재 즉시 소거 (포렌식 방어)
+    SecureMemory::secureWipe(acc, sizeof(acc));
+    SecureMemory::secureWipe(folded, sizeof(folded));
 }
 
 uint64_t Quantum_Key_Bridge::Derive_Quantum_Session_ID() noexcept

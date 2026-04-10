@@ -165,7 +165,7 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 alignas를 초과합니다");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Mesh_Router::Impl*
@@ -188,7 +188,7 @@ namespace ProtectedEngine {
 
     HTS_Mesh_Router::~HTS_Mesh_Router() noexcept {
         impl_valid_.store(false, std::memory_order_release);
-        Impl* p = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* p = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (p != nullptr) { p->~Impl(); }
         Rtr_Secure_Wipe(impl_buf_, IMPL_BUF_SIZE);
     }

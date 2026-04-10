@@ -242,19 +242,20 @@ int MAKE_FUNC(gcm_final)(LEA_GCM_CTX *ctx, unsigned char *tag, int tag_len)
 		lea_memcpy(tag, ctx->tbl, tag_len);
 	else
 	{
-		for(tag_len--; tag_len >= 0; tag_len--)
+		/* [D-1] 상수 시간 태그 비교 — 타이밍 부채널 차단 */
 		{
-			if (ctx->tbl[tag_len] != tag[tag_len]){
+			int tl;
+			unsigned char diff = 0;
+			for(tl = tag_len - 1; tl >= 0; tl--)
+				diff |= ctx->tbl[tl] ^ tag[tl];
+			if(diff != 0) {
 				lea_memset(ctx->ctr, 0, 16);
 				lea_memset(ctx->ek0, 0, 16);
 				lea_memset(ctx->tbl, 0, 16);
 				lea_memset(ctx->yn, 0, 16);
-				ctx->yn_used = 0;			
-				
+				ctx->yn_used = 0;
 				return -1;
-
 			}
-				
 		}
 	}
 	ctx->ct_len = 0;

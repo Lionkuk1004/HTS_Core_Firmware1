@@ -438,7 +438,7 @@ namespace ProtectedEngine {
         if (guard.locked != BRIDGE_SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         // 파괴·소거 전에 공개 API 차단 — ~Impl/버퍼 소거 중 Feed/Fragment UAF 방지
         initialized_.store(false, std::memory_order_release);
 
@@ -461,7 +461,7 @@ namespace ProtectedEngine {
         Bridge_Busy_Guard guard(op_busy_);
         if (guard.locked != BRIDGE_SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->eth_callback = cb;
     }
 
@@ -473,7 +473,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         return impl->Do_Fragment_And_Send(eth_frame, eth_len);
     }
 
@@ -484,7 +484,7 @@ namespace ProtectedEngine {
         Bridge_Busy_Guard guard(op_busy_);
         if (guard.locked != BRIDGE_SECURE_TRUE) { return BRIDGE_SECURE_FALSE; }
         if (!initialized_.load(std::memory_order_acquire)) { return BRIDGE_SECURE_FALSE; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         return impl->Do_Feed_Fragment(frag_payload, frag_len, systick_ms);
     }
 
@@ -493,7 +493,7 @@ namespace ProtectedEngine {
         Bridge_Busy_Guard guard(op_busy_);
         if (guard.locked != BRIDGE_SECURE_TRUE) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->Check_Timeouts(systick_ms);
     }
 

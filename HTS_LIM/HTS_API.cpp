@@ -336,7 +336,11 @@ namespace HTS_API {
             return HTS_Status::OK;
         }
 
-        const auto* as_i32 = reinterpret_cast<const int32_t*>(lane);
+        // strict aliasing safe: memcpy로 uint32_t→int32_t 변환 후 전달
+        // Push_Waveform_Chunk는 내부적으로 lane 단위 복사하므로 포인터 직접 전달
+        static_assert(sizeof(int32_t) == sizeof(uint32_t), "size mismatch");
+        const auto* as_i32 = reinterpret_cast<const int32_t*>(
+            static_cast<const void*>(lane));
         if (!g_tx_sched.Push_Waveform_Chunk(as_i32, push_words)) {
             return HTS_Status::ERR_TX_PIPELINE_FAILED;
         }

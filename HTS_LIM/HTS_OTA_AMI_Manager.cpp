@@ -164,7 +164,7 @@ namespace ProtectedEngine {
         static_assert(sizeof(Impl) <= IMPL_BUF_SIZE, "Impl 초과");
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN, "정렬 초과");
         return impl_valid_.load(std::memory_order_acquire)
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
     HTS_OTA_AMI_Manager::ImplCPtr HTS_OTA_AMI_Manager::get_impl() const noexcept
     {
@@ -248,7 +248,7 @@ namespace ProtectedEngine {
         {
             Armv7m_Irq_Mask_Guard irq;
             Impl* p =
-                reinterpret_cast<Impl*>(impl_buf_);
+                std::launder(reinterpret_cast<Impl*>(impl_buf_));
             if (p != nullptr) { p->~Impl(); }
             SecureMemory::secureWipe(static_cast<void*>(impl_buf_), IMPL_BUF_SIZE);
             op_busy_.clear(std::memory_order_release);
@@ -420,6 +420,19 @@ namespace ProtectedEngine {
         if (!flash_write(offset, data, data_len)) {
             p->reject = AMI_OtaReject::FLASH_FAIL;
             return false;
+        }
+
+        // [항목⑯] Flash read-back 검증 — 기록 직후 읽어서 원본과 비교
+        {
+            uint8_t rb[CHUNK_SIZE];
+            if (!flash_read(offset, rb, data_len)) {
+                p->reject = AMI_OtaReject::FLASH_FAIL;
+                return false;
+            }
+            if (std::memcmp(rb, data, data_len) != 0) {
+                p->reject = AMI_OtaReject::FLASH_FAIL;
+                return false;
+            }
         }
 
         bmap_set(p->recv_bitmap, chunk_idx);

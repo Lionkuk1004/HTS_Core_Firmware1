@@ -284,7 +284,7 @@ namespace ProtectedEngine {
         VoicePacketTxSinkFn fn, void* user_data) noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->packet_tx_fn = fn;
         impl->packet_tx_user = user_data;
     }
@@ -292,7 +292,7 @@ namespace ProtectedEngine {
     void HTS_Voice_Codec_Bridge::Clear_Packet_Tx_Sink() noexcept
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->packet_tx_fn = nullptr;
         impl->packet_tx_user = nullptr;
     }
@@ -300,7 +300,7 @@ namespace ProtectedEngine {
     // [VCB-3] Shutdown: impl_buf_ 전체 보안 소거
     void HTS_Voice_Codec_Bridge::Shutdown() noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->state = VoiceState::OFFLINE;
         impl->packet_tx_fn = nullptr;
         impl->packet_tx_user = nullptr;
@@ -313,7 +313,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if ((static_cast<uint8_t>(impl->state)
             & static_cast<uint8_t>(VoiceState::IDLE)) == 0u) {
             return IPC_Error::BUSY;
@@ -332,7 +332,7 @@ namespace ProtectedEngine {
 
     void HTS_Voice_Codec_Bridge::Tick(uint32_t systick_ms) noexcept {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->current_tick = systick_ms;
         impl->Pack_And_Send();
     }
@@ -342,7 +342,7 @@ namespace ProtectedEngine {
     {
         if (frame == nullptr) { return false; }
         if (!initialized_.load(std::memory_order_relaxed)) { return false; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         if (frame_len == 0u || frame_len > impl->profile.frame_bytes) {
             return false;
         }
@@ -367,7 +367,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         const uint8_t sv = static_cast<uint8_t>(impl->state);
         if ((sv & static_cast<uint8_t>(VoiceState::TX_ACTIVE)) != 0u ||
             (sv & static_cast<uint8_t>(VoiceState::DUPLEX)) != 0u) {
@@ -386,7 +386,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         const uint8_t sv = static_cast<uint8_t>(impl->state);
         if ((sv & (static_cast<uint8_t>(VoiceState::TX_ACTIVE)
             | static_cast<uint8_t>(VoiceState::DUPLEX))) == 0u) {
@@ -422,7 +422,7 @@ namespace ProtectedEngine {
         if (out_frame == nullptr) { return false; }
         if (out_buf_size == 0u) { return false; }
         if (!initialized_.load(std::memory_order_relaxed)) { return false; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // ── 정상 프레임 수신 경로 ────────────────────────────
         if (impl->rx_frame_ready.load(std::memory_order_acquire)) {
@@ -487,7 +487,7 @@ namespace ProtectedEngine {
         if (payload == nullptr) { return; }
         if (len == 0u) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->Unpack_RX(payload, len);
     }
 
@@ -495,7 +495,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         const uint8_t sv = static_cast<uint8_t>(impl->state);
         if ((sv & static_cast<uint8_t>(VoiceState::RX_ACTIVE)) != 0u ||
             (sv & static_cast<uint8_t>(VoiceState::DUPLEX)) != 0u) {
@@ -514,7 +514,7 @@ namespace ProtectedEngine {
         if (!initialized_.load(std::memory_order_acquire)) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         const uint8_t sv = static_cast<uint8_t>(impl->state);
         if ((sv & (static_cast<uint8_t>(VoiceState::RX_ACTIVE)
             | static_cast<uint8_t>(VoiceState::DUPLEX))) == 0u) {

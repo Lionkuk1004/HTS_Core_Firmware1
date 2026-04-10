@@ -240,7 +240,7 @@ namespace ProtectedEngine {
     {
         if (init_state_.load(std::memory_order_acquire) != PROFILE_INIT_READY) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Disable all peripherals
         impl->Apply_Periph_Mask(0u);
@@ -257,7 +257,7 @@ namespace ProtectedEngine {
     void HTS_Device_Profile::Register_Periph_Callbacks(const PeriphCallbacks& cb) noexcept
     {
         if (init_state_.load(std::memory_order_acquire) != PROFILE_INIT_READY) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->periph_cb = cb;
     }
 
@@ -266,7 +266,7 @@ namespace ProtectedEngine {
         if (init_state_.load(std::memory_order_acquire) != PROFILE_INIT_READY) {
             return IPC_Error::NOT_INITIALIZED;
         }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         return impl->Execute_Switch(mode);
     }
 

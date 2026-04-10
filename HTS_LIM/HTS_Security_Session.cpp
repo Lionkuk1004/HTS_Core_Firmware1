@@ -276,6 +276,7 @@ namespace ProtectedEngine {
                     }
                     ctr_store_be64(counter, ctr_hi);
                     ctr_store_be64(counter + 8u, ctr_lo);
+                    SecureMemory::secureWipe(ctr_blk, sizeof(ctr_blk));
                 }
 #if defined(HTS_CRYPTO_FIPS) || defined(HTS_CRYPTO_DUAL)
                 else if (cipher_alg == CipherAlgorithm::AES_256_CTR) {
@@ -295,6 +296,7 @@ namespace ProtectedEngine {
                     }
                     ctr_store_be64(counter, ctr_hi);
                     ctr_store_be64(counter + 8u, ctr_lo);
+                    SecureMemory::secureWipe(ctr_blk, sizeof(ctr_blk));
                 }
 #endif
                 else {

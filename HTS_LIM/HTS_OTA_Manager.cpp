@@ -351,6 +351,26 @@ namespace ProtectedEngine {
                     Transition_State(OTA_State::ERROR);
                     return;
                 }
+
+                // [항목⑯] Flash read-back 검증 — 기록 직후 읽어서 원본과 비교
+                if (flash_cb.read_flash != nullptr) {
+                    uint8_t rb[OTA_CHUNK_MAX_SIZE];
+                    if (!flash_cb.read_flash(addr, rb,
+                        static_cast<uint32_t>(chunk_len)))
+                    {
+                        last_result = OTA_Result::FLASH_FAIL;
+                        Transition_State(OTA_State::ERROR);
+                        return;
+                    }
+                    if (std::memcmp(rb,
+                        &payload[static_cast<size_t>(5u)],
+                        static_cast<size_t>(chunk_len)) != 0)
+                    {
+                        last_result = OTA_Result::FLASH_FAIL;
+                        Transition_State(OTA_State::ERROR);
+                        return;
+                    }
+                }
             }
 
             write_offset += static_cast<uint32_t>(chunk_len);
@@ -598,7 +618,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         // 파괴·소거 전 공개 API 차단 — ~Impl/버퍼 소거 중 Get_* UAF 방지
         initialized_.store(false, std::memory_order_release);
         impl->ipc = nullptr;
@@ -614,7 +634,7 @@ namespace ProtectedEngine {
         OTA_Busy_Guard guard(op_busy_);
 
         if (!initialized_.load(std::memory_order_acquire)) { return; }
-        reinterpret_cast<Impl*>(impl_buf_)->flash_cb = cb;
+        std::launder(reinterpret_cast<Impl*>(impl_buf_))->flash_cb = cb;
     }
 
     void HTS_OTA_Manager::Process_OTA_Command(const uint8_t* payload,
@@ -626,7 +646,7 @@ namespace ProtectedEngine {
         if (len < 1u) { return; }
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         const OTA_Command cmd =
             static_cast<OTA_Command>(payload[static_cast<size_t>(0u)]);
 

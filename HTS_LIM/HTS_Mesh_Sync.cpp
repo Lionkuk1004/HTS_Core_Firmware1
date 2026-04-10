@@ -61,13 +61,21 @@ namespace ProtectedEngine {
         return (x ^ mask) - mask;
     }
 
+    // [항목⑨] 64비트 나눗셈 제거 — Q16 역수 곱셈으로 대체
+    // LIGHT_RECIP_Q16 = round(LIGHT_CM_PER_US_NUM * 2^16 / LIGHT_CM_PER_US_DEN)
+    //                  = round(299792458 * 65536 / 10000) = 1964719853
+    static constexpr uint32_t LIGHT_RECIP_Q16 =
+        static_cast<uint32_t>((LIGHT_CM_PER_US_NUM * 65536ULL
+                               + LIGHT_CM_PER_US_DEN / 2ULL)
+                              / LIGHT_CM_PER_US_DEN);
+
     // ToA 거리(cm) — PRIMASK 밖에서도 동일 수식 사용 (Get_All_Ranging 스냅샷 후 호출)
     static uint32_t mesh_distance_cm_from_offset_q16(int32_t ofs_q16) noexcept {
         const uint32_t abs_ofs = static_cast<uint32_t>(fast_abs(ofs_q16));
-        const uint64_t num =
-            static_cast<uint64_t>(abs_ofs) * LIGHT_CM_PER_US_NUM;
-        const uint64_t den = (65536ULL * LIGHT_CM_PER_US_DEN);
-        const uint64_t q = (num + (den / 2ULL)) / den;
+        // abs_ofs * LIGHT_RECIP_Q16 는 Q32 결과 → >>32 로 정수 cm 획득
+        const uint64_t product =
+            static_cast<uint64_t>(abs_ofs) * LIGHT_RECIP_Q16;
+        const uint64_t q = (product + (1ULL << 31)) >> 32;
         if (q > static_cast<uint64_t>(UINT32_MAX)) {
             return UINT32_MAX;
         }
@@ -199,7 +207,7 @@ namespace ProtectedEngine {
         static_assert(alignof(Impl) <= IMPL_BUF_ALIGN,
             "Impl 정렬 요구가 alignas를 초과합니다");
         return impl_valid_
-            ? reinterpret_cast<Impl*>(impl_buf_) : nullptr;
+            ? std::launder(reinterpret_cast<Impl*>(impl_buf_)) : nullptr;
     }
 
     const HTS_Mesh_Sync::Impl*
@@ -253,6 +261,8 @@ namespace ProtectedEngine {
 
         const int64_t numer = p - n;
         const int64_t sp = static_cast<int64_t>(SAMPLE_PERIOD_Q16);
+        // [항목⑨] 불가피: denom은 런타임 가변값이므로 역수 상수화 불가.
+        //  콜드 경로(비컨 수신 시 1회)이며 기준서 예외 조건 충족.
         const int64_t correction = (numer * sp) / denom;
         if (correction > static_cast<int64_t>(INT32_MAX)) {
             return INT32_MAX;

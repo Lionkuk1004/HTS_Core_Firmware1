@@ -717,7 +717,7 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Signal RX thread to exit
         impl->rx_thread_exit_request.store(true, std::memory_order_release);
@@ -752,7 +752,7 @@ namespace ProtectedEngine {
             return IPC_Error::NOT_INITIALIZED;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Clear ring buffers
         impl->rx_head.store(0u, std::memory_order_relaxed);
@@ -775,7 +775,7 @@ namespace ProtectedEngine {
     {
         if (!initialized_.load(std::memory_order_acquire)) { return; }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
         impl->state_entry_tick = monotonic_ms;
 
         // Heartbeat management
@@ -800,7 +800,7 @@ namespace ProtectedEngine {
             return IPC_Error::BUFFER_OVERFLOW;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Serialize frame
         uint8_t frame_buf[IPC_MAX_FRAME_SIZE];
@@ -833,7 +833,7 @@ namespace ProtectedEngine {
             return IPC_Error::NOT_INITIALIZED;
         }
 
-        Impl* impl = reinterpret_cast<Impl*>(impl_buf_);
+        Impl* impl = std::launder(reinterpret_cast<Impl*>(impl_buf_));
 
         // Pop from RX ring
         uint8_t raw_buf[IPC_MAX_FRAME_SIZE];

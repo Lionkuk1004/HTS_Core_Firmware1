@@ -196,9 +196,12 @@ int MAKE_FUNC(ccm_dec)(unsigned char *pt, const unsigned char *ct, unsigned int 
 	for(i = 0; i < Tlen; i++)
 		tag[i] = tag[i] ^ S0[i];
 
-	for(i = 0; i < Tlen; i++)
+	/* [D-1] 상수 시간 태그 비교 — 타이밍 부채널 차단 */
 	{
-		if(T[i] != tag[i])
+		unsigned char diff = 0;
+		for(i = 0; i < Tlen; i++)
+			diff |= T[i] ^ tag[i];
+		if(diff != 0)
 			return -1;
 	}
 
