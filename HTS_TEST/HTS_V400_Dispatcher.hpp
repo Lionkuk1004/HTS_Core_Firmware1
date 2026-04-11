@@ -180,6 +180,13 @@ class HTS_V400_Dispatcher {
                    int16_t *oI, int16_t *oQ, int max_c) noexcept;
     void Feed_Retx_Chip(int16_t rx_I, int16_t rx_Q) noexcept;
     bool Is_Retx_Ready() const noexcept { return retx_ready_; }
+
+    /// @brief [테스트 전용] 동기/헤더를 건너뛰고 READ_PAYLOAD 상태로 직접 진입
+    /// @param mode 페이로드 모드 (VIDEO_16, VOICE, DATA)
+    /// @param bps  DATA 모드 BPS (VOICE/VIDEO_16에서는 무시)
+    /// @note 양산 코드에서 호출 금지 — PC 테스트 하네스 전용
+    void Inject_Payload_Phase(PayloadMode mode, int bps) noexcept;
+
     /// @brief RX 칩 1개 주입 (ISR 또는 메인 루프에서 연속 호출)
     void Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept;
     /// @brief 상태 머신 + AJC + HARQ 전체 초기화

@@ -617,6 +617,116 @@ static LayerResult test_full_stack_v3(PayloadMode mode, double js_db,
         res.avg_rounds /= res.crc_ok;
     return res;
 }
+// ============================================================
+//  V4: 동기 우회 — 페이로드만 디스패처 경유 HARQ 테스트
+//
+//  프리앰블/헤더를 건너뛰고 페이로드 칩만 Feed.
+//  FEC 직접과 동일한 조건이지만 디스패처의 on_sym_→try_decode_ 경로 사용.
+//  → FEC 직접과 동일 결과가 나오면 디스패처 FEC 경로 정상 확인.
+//  → 차이가 있으면 on_sym_ 또는 try_decode_에 버그 존재.
+// ============================================================
+static LayerResult test_full_stack_v4(PayloadMode mode, double js_db,
+                                      int max_feeds, int trials, int target_bps,
+                                      uint32_t seed_base) noexcept {
+    FEC_HARQ::Set_IR_Erasure_Enabled(false);
+    FEC_HARQ::Set_IR_Rs_Post_Enabled(true);
+
+    const int nc = (mode == PayloadMode::DATA) ? 64 : 16;
+    const int bps = (nc == 64) ? target_bps : FEC_HARQ::BPS16;
+    const int nsym = (nc == 64) ? FEC_HARQ::nsym_for_bps(bps) : FEC_HARQ::NSYM16;
+    const int total_chips = nsym * nc;
+
+    std::vector<int16_t> txI(static_cast<size_t>(total_chips));
+    std::vector<int16_t> txQ(static_cast<size_t>(total_chips));
+    std::vector<int16_t> rxI(static_cast<size_t>(total_chips));
+    std::vector<int16_t> rxQ(static_cast<size_t>(total_chips));
+    std::vector<double>  dbl(static_cast<size_t>(total_chips));
+
+    LayerResult res{};
+    res.js_db = js_db;
+    res.trials = trials;
+
+    for (int t = 0; t < trials; ++t) {
+        g_last = DecodedPacket{};
+        const uint32_t ds = seed_base ^ static_cast<uint32_t>(t * 0x9E3779B9u);
+        const uint32_t ns =
+            (seed_base << 1) ^ static_cast<uint32_t>(t * 0x85EBCA6Bu);
+        const uint32_t il = ds ^ (0u * 0xA5A5A5A5u); // tx_seq=0 → il=ds
+
+        uint8_t info[8]{};
+        for (int b = 0; b < 8; ++b)
+            info[b] = static_cast<uint8_t>(
+                static_cast<unsigned>(ds >> static_cast<unsigned>(b * 4)) ^
+                static_cast<unsigned>(t + b));
+
+        // RX 디스패처 — 동기 우회
+        HTS_V400_Dispatcher rx_disp;
+        rx_disp.Set_IR_Mode(true);
+        rx_disp.Set_Seed(ds);
+        rx_disp.Set_CW_Cancel(false);
+        rx_disp.Set_AJC_Enabled(false);
+        rx_disp.Set_SoftClip_Policy(SoftClipPolicy::NEVER);
+        rx_disp.Set_Packet_Callback(on_pkt);
+        rx_disp.Inject_Payload_Phase(mode, target_bps);
+
+        int success = 0;
+        int rounds_used = 0;
+        std::mt19937 rng(ns);
+        FEC_HARQ::WorkBuf wb{};
+
+        for (int rv = 0; rv < max_feeds && success == 0; ++rv) {
+            // TX: 매 라운드 새 RV로 인코딩
+            uint8_t syms[FEC_HARQ::NSYM64]{};
+            std::memset(&wb, 0, sizeof(wb));
+            int enc_n = (nc == 64)
+                ? FEC_HARQ::Encode64_IR(info, 8, syms, il, bps, rv & 3, wb)
+                : FEC_HARQ::Encode16_IR(info, 8, syms, il, rv & 3, wb);
+            if (enc_n <= 0) break;
+
+            for (int sym = 0; sym < nsym; ++sym)
+                walsh_enc_iq(syms[sym], nc, kAmp,
+                             &txI[static_cast<size_t>(sym * nc)],
+                             &txQ[static_cast<size_t>(sym * nc)]);
+
+            // 채널: 잡음 가산
+            if (js_db >= 0.0) {
+                add_barrage(txI.data(), dbl.data(), total_chips, js_db, rng);
+                agc_quantize(dbl.data(), rxI.data(), rxQ.data(), total_chips);
+            } else {
+                std::memcpy(rxI.data(), txI.data(),
+                            static_cast<size_t>(total_chips) * sizeof(int16_t));
+                std::memcpy(rxQ.data(), txQ.data(),
+                            static_cast<size_t>(total_chips) * sizeof(int16_t));
+            }
+
+            // Feed: 페이로드 칩만 (프리앰블/헤더 없음)
+            if (rv == 0) {
+                for (int i = 0; i < total_chips; ++i)
+                    rx_disp.Feed_Chip(rxI[static_cast<size_t>(i)],
+                                      rxQ[static_cast<size_t>(i)]);
+            } else {
+                for (int i = 0; i < total_chips; ++i)
+                    rx_disp.Feed_Retx_Chip(rxI[static_cast<size_t>(i)],
+                                           rxQ[static_cast<size_t>(i)]);
+            }
+
+            rounds_used = rv + 1;
+            if (g_last.success_mask == DecodedPacket::DECODE_MASK_OK)
+                success = 1;
+        }
+
+        if (success) {
+            res.crc_ok++;
+            res.avg_rounds += rounds_used;
+            if (rounds_used > res.max_rounds)
+                res.max_rounds = rounds_used;
+        }
+    }
+
+    if (res.crc_ok > 0)
+        res.avg_rounds /= res.crc_ok;
+    return res;
+}
 } // namespace
 int main() {
     static constexpr int kTrials = 24;
@@ -754,6 +864,30 @@ int main() {
                       true,
                       kSeed ^ static_cast<uint32_t>(static_cast<int>(js * 100)),
                       16));
+        std::fflush(stdout);
+    }
+    // ── V4: 동기 우회 — 디스패처 FEC 경로만 테스트 ──
+    std::printf(
+        "\n================================================================\n");
+    std::printf("  V4: 동기 우회 (Inject_Payload_Phase)\n");
+    std::printf(
+        "================================================================\n");
+
+    std::printf("\n── V4 64chip DATA BPS=4 ──\n");
+    for (double js : js_sweep) {
+        print_row("V4-64",
+                  test_full_stack_v4(
+                      PayloadMode::DATA, js, kMaxRounds, kTrials, 4,
+                      kSeed ^ static_cast<uint32_t>(static_cast<int>(js * 100))));
+        std::fflush(stdout);
+    }
+
+    std::printf("\n── V4 16chip VOICE ──\n");
+    for (double js : js_sweep) {
+        print_row("V4-16",
+                  test_full_stack_v4(
+                      PayloadMode::VOICE, js, kMaxRounds, kTrials, 4,
+                      kSeed ^ static_cast<uint32_t>(static_cast<int>(js * 100))));
         std::fflush(stdout);
     }
     // ── FHSS (기존 유지) ──

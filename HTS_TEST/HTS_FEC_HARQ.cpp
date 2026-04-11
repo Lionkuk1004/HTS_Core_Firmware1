@@ -329,10 +329,10 @@ void FEC_HARQ::Viterbi_Decode(const int32_t *soft, int nc, uint8_t *out, int no,
     for (int i = 0; i < no && i < steps; ++i)
         out[i] = wb.tb[i];
 }
-// ── [BUG-FIX-LLR4] 부호 상관 LLR + 동적 Q16 스케일링 ──────
+// ── [BUG-FIX-LLR4] 부호 상관 LLR + 고정 >>12 스케일 ──────
 //  부호 상관: corr[m] = fI[m] + fQ[m] (부호 보존)
 //  비트별 LLR = Σ corr[bit=0] - Σ corr[bit=1]
-//  max|LLR|→1024 Q16 스케일 (저진폭 양자화 붕괴 방지)
+//  정규화: per-symbol peak/Q16 스케일 대신 고정 >>12 → 심볼 간 신뢰도 비율 보존
 void FEC_HARQ::Bin_To_LLR(const int32_t *fI, const int32_t *fQ, int nc, int bps,
                           int32_t *llr) noexcept {
     const int nsym = 1 << bps;
@@ -354,20 +354,13 @@ void FEC_HARQ::Bin_To_LLR(const int32_t *fI, const int32_t *fQ, int nc, int bps,
         }
         raw[b] = pos_sum - neg_sum;
     }
-    int32_t peak = 1;
+    // 고정 시프트 정규화: >>12
+    // max|raw| = valid × max|corr| = 16 × (2 × 64 × 32767) = 67,108,864
+    // >>12 = 16,384 → tpe_clamp_llr(±500,000) 이내, Viterbi 안전
+    // 심볼 간 신뢰도 비율 보존 (per-symbol peak 정규화 제거)
+    // UDIV 제거 → ARM 사이클 절감
     for (int b = 0; b < bps; ++b) {
-        const int32_t v = raw[b];
-        const int32_t s = v >> 31;
-        const int32_t a = (v ^ s) - s;
-        const uint32_t gt = 0u - static_cast<uint32_t>(a > peak);
-        peak = (a & static_cast<int32_t>(gt)) |
-               (peak & static_cast<int32_t>(~gt));
-    }
-    static constexpr int64_t LLR_TARGET = 1024LL;
-    const int64_t scale = (LLR_TARGET * 65536LL) / static_cast<int64_t>(peak);
-    for (int b = 0; b < bps; ++b) {
-        llr[b] = static_cast<int32_t>(
-            (static_cast<int64_t>(raw[b]) * scale) >> 16);
+        llr[b] = raw[b] >> 12;
     }
 }
 // ── Xorshift PRNG ──

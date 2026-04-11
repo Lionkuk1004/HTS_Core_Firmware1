@@ -1745,10 +1745,31 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
             soft_clip_iq(orig_I_, orig_Q_, 64, scratch_mag_, scratch_sort_);
         }
         if (pre_phase_ == 0) {
-            // ── Phase 0: 슬라이딩 탐색 (1심볼 FWHT, 누적 없음) ──
+            // ── Phase 0: 누적 기반 프리앰블 검출 ──
+            //  매 64칩 윈도우를 g_pre_acc_I/Q에 누적
+            //  누적 후 FWHT → PRE_SYM0 검출 시도
+            //  신호: coherent ×N, 잡음: √N → SNR ∝ √N
+            //  pre_reps_=8 → +9dB 동기 이득
+            if (g_pre_acc_n == 0) {
+                // 첫 윈도우: 누적 버퍼 초기화
+                for (int j = 0; j < 64; ++j) {
+                    g_pre_acc_I[j] = static_cast<int32_t>(orig_I_[j]);
+                    g_pre_acc_Q[j] = static_cast<int32_t>(orig_Q_[j]);
+                }
+                g_pre_acc_n = 1;
+            } else {
+                // 후속 윈도우: coherent 누적
+                for (int j = 0; j < 64; ++j) {
+                    g_pre_acc_I[j] += static_cast<int32_t>(orig_I_[j]);
+                    g_pre_acc_Q[j] += static_cast<int32_t>(orig_Q_[j]);
+                }
+                g_pre_acc_n++;
+            }
+
+            // 누적 버퍼로 FWHT → 검출 시도
             for (int j = 0; j < 64; ++j) {
-                dec_wI_[j] = static_cast<int32_t>(orig_I_[j]);
-                dec_wQ_[j] = static_cast<int32_t>(orig_Q_[j]);
+                dec_wI_[j] = g_pre_acc_I[j];
+                dec_wQ_[j] = g_pre_acc_Q[j];
             }
             fwht_raw(dec_wI_, 64);
             fwht_raw(dec_wQ_, 64);
@@ -1764,22 +1785,25 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
                     static_cast<uint8_t>((static_cast<uint32_t>(m) & gt) |
                                          (static_cast<uint32_t>(best_m) & ~gt));
             }
+
             if (best_m == PRE_SYM0) {
                 // ── 타이밍 락: Phase 1 진입 ──
-                //  이 윈도우를 누적 버퍼 첫 번째로 적재
-                for (int j = 0; j < 64; ++j) {
-                    g_pre_acc_I[j] = static_cast<int32_t>(orig_I_[j]);
-                    g_pre_acc_Q[j] = static_cast<int32_t>(orig_Q_[j]);
-                }
-                g_pre_acc_n = 1;
+                // 누적 버퍼는 이미 채워져 있음 — Phase 1에서 계속 누적
                 pre_phase_ = 1;
                 wait_sync_head_ = 0;
                 wait_sync_count_ = 0;
                 buf_idx_ = 0;
-            } else {
-                // 미검출 → 1칩 슬라이드
+            } else if (g_pre_acc_n >= pre_reps_) {
+                // 최대 누적 횟수 도달해도 미검출 → 리셋 후 1칩 슬라이드
+                std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
+                std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
+                g_pre_acc_n = 0;
                 wait_sync_head_ = (wait_sync_head_ + 1) & 63;
                 wait_sync_count_ = 63;
+            } else {
+                // 아직 누적 중 → 다음 64칩 수집 (정렬 유지)
+                wait_sync_head_ = 0;
+                wait_sync_count_ = 0;
             }
         } else {
             // ── Phase 1: 제자리 누적 (타이밍 락 상태) ──
@@ -1924,5 +1948,44 @@ void HTS_V400_Dispatcher::Feed_Retx_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
     buf_idx_++;
     if (buf_idx_ >= pay_cps_)
         on_sym_();
+}
+void HTS_V400_Dispatcher::Inject_Payload_Phase(PayloadMode mode,
+                                               int bps) noexcept {
+    // 동기/헤더 단계를 건너뛰고 READ_PAYLOAD로 직접 진입
+    // IR 상태 초기화 포함
+    full_reset_();
+
+    cur_mode_ = mode;
+    if (mode == PayloadMode::DATA) {
+        cur_bps64_ = FEC_HARQ::bps_clamp_runtime(bps);
+        pay_cps_ = 64;
+        pay_total_ = FEC_HARQ::nsym_for_bps(cur_bps64_);
+    } else if (mode == PayloadMode::VOICE || mode == PayloadMode::VIDEO_16) {
+        pay_cps_ = 16;
+        pay_total_ = FEC_HARQ::NSYM16;
+    } else {
+        return; // VIDEO_1은 미지원
+    }
+
+    pay_recv_ = 0;
+    sym_idx_ = 0;
+    max_harq_ = FEC_HARQ::DATA_K;
+    phase_ = RxPhase::READ_PAYLOAD;
+    buf_idx_ = 0;
+
+    // HARQ/IR 초기화
+    SecureMemory::secureWipe(static_cast<void *>(&g_harq_ccm_union),
+                             sizeof(g_harq_ccm_union));
+    if (ir_mode_ && ir_state_ != nullptr) {
+        FEC_HARQ::IR_Init(*ir_state_);
+    }
+    ir_rv_ = 0;
+    harq_inited_ = true;
+    retx_ready_ = false;
+
+    if (pay_cps_ != ajc_last_nc_) {
+        ajc_.Reset(pay_cps_);
+        ajc_last_nc_ = pay_cps_;
+    }
 }
 } // namespace ProtectedEngine

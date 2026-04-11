@@ -1467,8 +1467,10 @@ int HTS_V400_Dispatcher::Build_Packet(PayloadMode mode, const uint8_t *info,
                    (static_cast<uint16_t>(psyms) & 0x01FFu);
 
     uint8_t syms_v1[80] = {};
-    uint8_t syms16[FEC_HARQ::NSYM16] = {};
-    uint8_t syms64[FEC_HARQ::NSYM64] = {};
+    uint8_t syms16_ir[FEC_HARQ::NSYM16] = {};
+    uint8_t syms16_pl[FEC_HARQ::NSYM16] = {};
+    uint8_t syms64_ir[FEC_HARQ::NSYM64] = {};
+    uint8_t syms64_pl[FEC_HARQ::NSYM64] = {};
     const int irb = static_cast<int>(ir_mode_);
 
     const int il_v1 = ilen * static_cast<int>(u0);
@@ -1477,14 +1479,30 @@ int HTS_V400_Dispatcher::Build_Packet(PayloadMode mode, const uint8_t *info,
 
     const int n_v1 = FEC_HARQ::Encode1(info, il_v1, syms_v1);
     const int enc16_ir =
-        FEC_HARQ::Encode16_IR(info, il_16, syms16, il, ir_rv_, wb_);
-    const int enc16_pl = FEC_HARQ::Encode16(info, il_16, syms16, il, wb_);
+        FEC_HARQ::Encode16_IR(info, il_16, syms16_ir, il, ir_rv_, wb_);
+    const int enc16_pl = FEC_HARQ::Encode16(info, il_16, syms16_pl, il, wb_);
     const int enc16 = enc16_ir * irb + enc16_pl * (1 - irb);
-    const int enc64_ir = FEC_HARQ::Encode64_IR(info, il_64, syms64, il,
+    const int enc64_ir = FEC_HARQ::Encode64_IR(info, il_64, syms64_ir, il,
                                                cur_bps64_, ir_rv_, wb_);
     const int enc64_pl =
-        FEC_HARQ::Encode64_A(info, il_64, syms64, il, cur_bps64_, wb_);
+        FEC_HARQ::Encode64_A(info, il_64, syms64_pl, il, cur_bps64_, wb_);
     const int enc64 = enc64_ir * irb + enc64_pl * (1 - irb);
+
+    // IR/plain 선택 (TPE 비트마스크 — 분기 없음)
+    uint8_t syms16[FEC_HARQ::NSYM16] = {};
+    uint8_t syms64[FEC_HARQ::NSYM64] = {};
+    const uint32_t ir_mask = 0u - static_cast<uint32_t>(irb);
+    const uint32_t pl_mask = ~ir_mask;
+    for (int i = 0; i < FEC_HARQ::NSYM16; ++i) {
+        syms16[i] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(syms16_ir[i]) & ir_mask) |
+            (static_cast<uint32_t>(syms16_pl[i]) & pl_mask));
+    }
+    for (int i = 0; i < FEC_HARQ::NSYM64; ++i) {
+        syms64[i] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(syms64_ir[i]) & ir_mask) |
+            (static_cast<uint32_t>(syms64_pl[i]) & pl_mask));
+    }
 
     // TPE: per-mode encode validity — inactive mode is always “ok”
     const uint32_t ok_v1 =
@@ -1549,6 +1567,8 @@ int HTS_V400_Dispatcher::Build_Packet(PayloadMode mode, const uint8_t *info,
         pos += 16 * inc;
     }
     SecureMemory::secureWipe(static_cast<void *>(syms16), sizeof(syms16));
+    SecureMemory::secureWipe(static_cast<void *>(syms16_ir), sizeof(syms16_ir));
+    SecureMemory::secureWipe(static_cast<void *>(syms16_pl), sizeof(syms16_pl));
 
     // TPE: DATA split path gated by u3 — non-DATA ⇒ 0 Walsh iterations
     const uint32_t split_u =
@@ -1578,6 +1598,8 @@ int HTS_V400_Dispatcher::Build_Packet(PayloadMode mode, const uint8_t *info,
         pos += 64 * inc;
     }
     SecureMemory::secureWipe(static_cast<void *>(syms64), sizeof(syms64));
+    SecureMemory::secureWipe(static_cast<void *>(syms64_ir), sizeof(syms64_ir));
+    SecureMemory::secureWipe(static_cast<void *>(syms64_pl), sizeof(syms64_pl));
 
     tx_seq_ += static_cast<uint32_t>(go & 1u);
     return pos;
@@ -1609,30 +1631,52 @@ int HTS_V400_Dispatcher::Build_Retx(PayloadMode mode, const uint8_t *info,
     const uint32_t iq_ind_u =
         static_cast<uint32_t>(iq_mode_ == IQ_Mode::IQ_INDEPENDENT);
 
-    uint8_t syms16[FEC_HARQ::NSYM16] = {};
-    uint8_t syms64[FEC_HARQ::NSYM64] = {};
+    uint8_t syms16_ir[FEC_HARQ::NSYM16] = {};
+    uint8_t syms16_pl[FEC_HARQ::NSYM16] = {};
+    uint8_t syms64_ir[FEC_HARQ::NSYM64] = {};
+    uint8_t syms64_pl[FEC_HARQ::NSYM64] = {};
     const int irb = static_cast<int>(ir_mode_);
 
     const int il_16 = ilen * static_cast<int>(u16);
     const int il_64 = ilen * static_cast<int>(u3);
 
     const int enc16_ir =
-        FEC_HARQ::Encode16_IR(info, il_16, syms16, il, ir_rv_, wb_);
-    const int enc16_pl = FEC_HARQ::Encode16(info, il_16, syms16, il, wb_);
+        FEC_HARQ::Encode16_IR(info, il_16, syms16_ir, il, ir_rv_, wb_);
+    const int enc16_pl = FEC_HARQ::Encode16(info, il_16, syms16_pl, il, wb_);
     const int enc16 = enc16_ir * irb + enc16_pl * (1 - irb);
 
-    const int enc64_ir = FEC_HARQ::Encode64_IR(info, il_64, syms64, il,
+    const int enc64_ir = FEC_HARQ::Encode64_IR(info, il_64, syms64_ir, il,
                                                cur_bps64_, ir_rv_, wb_);
     const int enc64_pl =
-        FEC_HARQ::Encode64_A(info, il_64, syms64, il, cur_bps64_, wb_);
+        FEC_HARQ::Encode64_A(info, il_64, syms64_pl, il, cur_bps64_, wb_);
     const int enc64 = enc64_ir * irb + enc64_pl * (1 - irb);
+
+    // IR/plain 선택 (TPE 비트마스크)
+    uint8_t syms16[FEC_HARQ::NSYM16] = {};
+    uint8_t syms64[FEC_HARQ::NSYM64] = {};
+    const uint32_t ir_mask = 0u - static_cast<uint32_t>(irb);
+    const uint32_t pl_mask = ~ir_mask;
+    for (int i = 0; i < FEC_HARQ::NSYM16; ++i) {
+        syms16[i] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(syms16_ir[i]) & ir_mask) |
+            (static_cast<uint32_t>(syms16_pl[i]) & pl_mask));
+    }
+    for (int i = 0; i < FEC_HARQ::NSYM64; ++i) {
+        syms64[i] = static_cast<uint8_t>(
+            (static_cast<uint32_t>(syms64_ir[i]) & ir_mask) |
+            (static_cast<uint32_t>(syms64_pl[i]) & pl_mask));
+    }
 
     const uint32_t bad_enc =
         (u16 & (0u - static_cast<uint32_t>(enc16 <= 0))) |
         (u3 & (0u - static_cast<uint32_t>(enc64 <= 0)));
     if (bad_enc != 0u) {
         SecureMemory::secureWipe(static_cast<void *>(syms16), sizeof(syms16));
+        SecureMemory::secureWipe(static_cast<void *>(syms16_ir), sizeof(syms16_ir));
+        SecureMemory::secureWipe(static_cast<void *>(syms16_pl), sizeof(syms16_pl));
         SecureMemory::secureWipe(static_cast<void *>(syms64), sizeof(syms64));
+        SecureMemory::secureWipe(static_cast<void *>(syms64_ir), sizeof(syms64_ir));
+        SecureMemory::secureWipe(static_cast<void *>(syms64_pl), sizeof(syms64_pl));
         return 0;
     }
 
@@ -1642,8 +1686,16 @@ int HTS_V400_Dispatcher::Build_Retx(PayloadMode mode, const uint8_t *info,
         if (space < 16) {
             SecureMemory::secureWipe(static_cast<void *>(syms16),
                                      sizeof(syms16));
+            SecureMemory::secureWipe(static_cast<void *>(syms16_ir),
+                                     sizeof(syms16_ir));
+            SecureMemory::secureWipe(static_cast<void *>(syms16_pl),
+                                     sizeof(syms16_pl));
             SecureMemory::secureWipe(static_cast<void *>(syms64),
                                      sizeof(syms64));
+            SecureMemory::secureWipe(static_cast<void *>(syms64_ir),
+                                     sizeof(syms64_ir));
+            SecureMemory::secureWipe(static_cast<void *>(syms64_pl),
+                                     sizeof(syms64_pl));
             return 0;
         }
         walsh_enc(syms16[static_cast<std::size_t>(s)], 16, amp, &oI[pos],
@@ -1666,8 +1718,16 @@ int HTS_V400_Dispatcher::Build_Retx(PayloadMode mode, const uint8_t *info,
         if (space < 64) {
             SecureMemory::secureWipe(static_cast<void *>(syms16),
                                      sizeof(syms16));
+            SecureMemory::secureWipe(static_cast<void *>(syms16_ir),
+                                     sizeof(syms16_ir));
+            SecureMemory::secureWipe(static_cast<void *>(syms16_pl),
+                                     sizeof(syms16_pl));
             SecureMemory::secureWipe(static_cast<void *>(syms64),
                                      sizeof(syms64));
+            SecureMemory::secureWipe(static_cast<void *>(syms64_ir),
+                                     sizeof(syms64_ir));
+            SecureMemory::secureWipe(static_cast<void *>(syms64_pl),
+                                     sizeof(syms64_pl));
             return 0;
         }
         const uint8_t sI = syms64[static_cast<std::size_t>(s)];
@@ -1686,8 +1746,16 @@ int HTS_V400_Dispatcher::Build_Retx(PayloadMode mode, const uint8_t *info,
         if (space < 64) {
             SecureMemory::secureWipe(static_cast<void *>(syms16),
                                      sizeof(syms16));
+            SecureMemory::secureWipe(static_cast<void *>(syms16_ir),
+                                     sizeof(syms16_ir));
+            SecureMemory::secureWipe(static_cast<void *>(syms16_pl),
+                                     sizeof(syms16_pl));
             SecureMemory::secureWipe(static_cast<void *>(syms64),
                                      sizeof(syms64));
+            SecureMemory::secureWipe(static_cast<void *>(syms64_ir),
+                                     sizeof(syms64_ir));
+            SecureMemory::secureWipe(static_cast<void *>(syms64_pl),
+                                     sizeof(syms64_pl));
             return 0;
         }
         walsh_enc(syms64[static_cast<std::size_t>(s)], 64, amp, &oI[pos],
@@ -1696,7 +1764,11 @@ int HTS_V400_Dispatcher::Build_Retx(PayloadMode mode, const uint8_t *info,
     }
 
     SecureMemory::secureWipe(static_cast<void *>(syms16), sizeof(syms16));
+    SecureMemory::secureWipe(static_cast<void *>(syms16_ir), sizeof(syms16_ir));
+    SecureMemory::secureWipe(static_cast<void *>(syms16_pl), sizeof(syms16_pl));
     SecureMemory::secureWipe(static_cast<void *>(syms64), sizeof(syms64));
+    SecureMemory::secureWipe(static_cast<void *>(syms64_ir), sizeof(syms64_ir));
+    SecureMemory::secureWipe(static_cast<void *>(syms64_pl), sizeof(syms64_pl));
     return pos;
 }
 void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
@@ -1745,10 +1817,31 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
             soft_clip_iq(orig_I_, orig_Q_, 64, scratch_mag_, scratch_sort_);
         }
         if (pre_phase_ == 0) {
-            // ── Phase 0: 슬라이딩 탐색 (1심볼 FWHT, 누적 없음) ──
+            // ── Phase 0: 누적 기반 프리앰블 검출 ──
+            //  매 64칩 윈도우를 g_pre_acc_I/Q에 누적
+            //  누적 후 FWHT → PRE_SYM0 검출 시도
+            //  신호: coherent ×N, 잡음: √N → SNR ∝ √N
+            //  pre_reps_=8 → +9dB 동기 이득
+            if (g_pre_acc_n == 0) {
+                // 첫 윈도우: 누적 버퍼 초기화
+                for (int j = 0; j < 64; ++j) {
+                    g_pre_acc_I[j] = static_cast<int32_t>(orig_I_[j]);
+                    g_pre_acc_Q[j] = static_cast<int32_t>(orig_Q_[j]);
+                }
+                g_pre_acc_n = 1;
+            } else {
+                // 후속 윈도우: coherent 누적
+                for (int j = 0; j < 64; ++j) {
+                    g_pre_acc_I[j] += static_cast<int32_t>(orig_I_[j]);
+                    g_pre_acc_Q[j] += static_cast<int32_t>(orig_Q_[j]);
+                }
+                g_pre_acc_n++;
+            }
+
+            // 누적 버퍼로 FWHT → 검출 시도
             for (int j = 0; j < 64; ++j) {
-                dec_wI_[j] = static_cast<int32_t>(orig_I_[j]);
-                dec_wQ_[j] = static_cast<int32_t>(orig_Q_[j]);
+                dec_wI_[j] = g_pre_acc_I[j];
+                dec_wQ_[j] = g_pre_acc_Q[j];
             }
             fwht_raw(dec_wI_, 64);
             fwht_raw(dec_wQ_, 64);
@@ -1764,22 +1857,25 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
                     static_cast<uint8_t>((static_cast<uint32_t>(m) & gt) |
                                          (static_cast<uint32_t>(best_m) & ~gt));
             }
+
             if (best_m == PRE_SYM0) {
                 // ── 타이밍 락: Phase 1 진입 ──
-                //  이 윈도우를 누적 버퍼 첫 번째로 적재
-                for (int j = 0; j < 64; ++j) {
-                    g_pre_acc_I[j] = static_cast<int32_t>(orig_I_[j]);
-                    g_pre_acc_Q[j] = static_cast<int32_t>(orig_Q_[j]);
-                }
-                g_pre_acc_n = 1;
+                // 누적 버퍼는 이미 채워져 있음 — Phase 1에서 계속 누적
                 pre_phase_ = 1;
                 wait_sync_head_ = 0;
                 wait_sync_count_ = 0;
                 buf_idx_ = 0;
-            } else {
-                // 미검출 → 1칩 슬라이드
+            } else if (g_pre_acc_n >= pre_reps_) {
+                // 최대 누적 횟수 도달해도 미검출 → 리셋 후 1칩 슬라이드
+                std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
+                std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
+                g_pre_acc_n = 0;
                 wait_sync_head_ = (wait_sync_head_ + 1) & 63;
                 wait_sync_count_ = 63;
+            } else {
+                // 아직 누적 중 → 다음 64칩 수집 (정렬 유지)
+                wait_sync_head_ = 0;
+                wait_sync_count_ = 0;
             }
         } else {
             // ── Phase 1: 제자리 누적 (타이밍 락 상태) ──
@@ -1924,5 +2020,44 @@ void HTS_V400_Dispatcher::Feed_Retx_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
     buf_idx_++;
     if (buf_idx_ >= pay_cps_)
         on_sym_();
+}
+void HTS_V400_Dispatcher::Inject_Payload_Phase(PayloadMode mode,
+                                               int bps) noexcept {
+    // 동기/헤더 단계를 건너뛰고 READ_PAYLOAD로 직접 진입
+    // IR 상태 초기화 포함
+    full_reset_();
+
+    cur_mode_ = mode;
+    if (mode == PayloadMode::DATA) {
+        cur_bps64_ = FEC_HARQ::bps_clamp_runtime(bps);
+        pay_cps_ = 64;
+        pay_total_ = FEC_HARQ::nsym_for_bps(cur_bps64_);
+    } else if (mode == PayloadMode::VOICE || mode == PayloadMode::VIDEO_16) {
+        pay_cps_ = 16;
+        pay_total_ = FEC_HARQ::NSYM16;
+    } else {
+        return; // VIDEO_1은 미지원
+    }
+
+    pay_recv_ = 0;
+    sym_idx_ = 0;
+    max_harq_ = FEC_HARQ::DATA_K;
+    phase_ = RxPhase::READ_PAYLOAD;
+    buf_idx_ = 0;
+
+    // HARQ/IR 초기화
+    SecureMemory::secureWipe(static_cast<void *>(&g_harq_ccm_union),
+                             sizeof(g_harq_ccm_union));
+    if (ir_mode_ && ir_state_ != nullptr) {
+        FEC_HARQ::IR_Init(*ir_state_);
+    }
+    ir_rv_ = 0;
+    harq_inited_ = true;
+    retx_ready_ = false;
+
+    if (pay_cps_ != ajc_last_nc_) {
+        ajc_.Reset(pay_cps_);
+        ajc_last_nc_ = pay_cps_;
+    }
 }
 } // namespace ProtectedEngine
