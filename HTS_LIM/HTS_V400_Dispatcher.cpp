@@ -770,6 +770,8 @@ void HTS_V400_Dispatcher::full_reset_() noexcept {
     cur_mode_ = PayloadMode::UNKNOWN;
     buf_idx_ = 0;
     pre_phase_ = 0;
+    first_c63_ = 0;
+    m63_gap_ = 0;
     wait_sync_head_ = 0;
     wait_sync_count_ = 0;
     hdr_count_ = 0;
@@ -828,6 +830,8 @@ void HTS_V400_Dispatcher::fhss_abort_rx_for_hop_() noexcept {
     wait_sync_head_ = 0;
     wait_sync_count_ = 0;
     pre_phase_ = 0;
+    first_c63_ = 0;
+    m63_gap_ = 0;
     hdr_count_ = 0;
     hdr_fail_ = 0;
     pay_recv_ = 0;
@@ -1858,22 +1862,36 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
                                          (static_cast<uint32_t>(best_m) & ~gt));
             }
 
-            if (best_m == PRE_SYM0) {
-                // ── 타이밍 락: Phase 1 진입 ──
-                // 누적 버퍼는 이미 채워져 있음 — Phase 1에서 계속 누적
-                pre_phase_ = 1;
-                wait_sync_head_ = 0;
-                wait_sync_count_ = 0;
-                buf_idx_ = 0;
-            } else if (g_pre_acc_n >= pre_reps_) {
-                // 최대 누적 횟수 도달해도 미검출 → 리셋 후 1칩 슬라이드
+            // ── First Partial Reference: 신호 레벨 독립 검출 ──
+            static constexpr int32_t k_NOISE_FLOOR = 100;
+
+            if (best_m == PRE_SYM0 && best_c > k_NOISE_FLOOR) {
+                m63_gap_ = 0;
+                if (first_c63_ == 0) {
+                    first_c63_ = best_c;
+                } else if (static_cast<int64_t>(best_c) >
+                           static_cast<int64_t>(first_c63_) * 3) {
+                    pre_phase_ = 1;
+                    wait_sync_head_ = 0;
+                    wait_sync_count_ = 0;
+                    buf_idx_ = 0;
+                    first_c63_ = 0;
+                    m63_gap_ = 0;
+                }
+            } else {
+                m63_gap_++;
+                if (m63_gap_ > 128) {
+                    first_c63_ = 0;
+                }
+            }
+
+            if (g_pre_acc_n >= pre_reps_ && pre_phase_ == 0) {
                 std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
                 std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
                 g_pre_acc_n = 0;
                 wait_sync_head_ = (wait_sync_head_ + 1) & 63;
                 wait_sync_count_ = 63;
-            } else {
-                // 아직 누적 중 → 다음 64칩 수집 (정렬 유지)
+            } else if (pre_phase_ == 0 && g_pre_acc_n < pre_reps_) {
                 wait_sync_head_ = 0;
                 wait_sync_count_ = 0;
             }
@@ -1902,6 +1920,8 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
             } else {
                 // 예상 외 심볼 → Phase 0 리셋
                 pre_phase_ = 0;
+                first_c63_ = 0;
+                m63_gap_ = 0;
                 std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
                 std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
                 g_pre_acc_n = 0;
