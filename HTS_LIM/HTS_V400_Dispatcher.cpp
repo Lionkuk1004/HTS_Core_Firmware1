@@ -537,23 +537,24 @@ void HTS_V400_Dispatcher::cw_cancel_64_(int16_t *I, int16_t *Q) noexcept {
     // Step 4: AJC 프로파일 시딩 (active 시에만 유효 값 전달)
     if (ajc_enabled_) {
         ajc_.Seed_CW_Profile(m_ja_I, m_ja_Q);
-    }
-    // Step 5: CW 제거 — branchless 포화 클램프
-    for (int i = 0; i < 64; ++i) {
-        const int32_t lut = static_cast<int32_t>(k_cw_lut8[i & 7u]);
-        int32_t new_I = static_cast<int32_t>(I[i]) - ((m_ja_I * lut) >> 8);
-        // branchless clamp to [-32767, 32767]
-        const int32_t hiI = (new_I - INT16_MAX) >> 31;
-        const int32_t loI = (new_I + INT16_MAX) >> 31;
-        new_I = (new_I & hiI) | (INT16_MAX & ~hiI);
-        new_I = (new_I & ~loI) | (static_cast<int32_t>(-INT16_MAX) & loI);
-        I[i] = static_cast<int16_t>(new_I);
-        int32_t new_Q = static_cast<int32_t>(Q[i]) - ((m_ja_Q * lut) >> 8);
-        const int32_t hiQ = (new_Q - INT16_MAX) >> 31;
-        const int32_t loQ = (new_Q + INT16_MAX) >> 31;
-        new_Q = (new_Q & hiQ) | (INT16_MAX & ~hiQ);
-        new_Q = (new_Q & ~loQ) | (static_cast<int32_t>(-INT16_MAX) & loQ);
-        Q[i] = static_cast<int16_t>(new_Q);
+    } else {
+        // Step 5: CW 수동 차감 — ajc 비활성 시에만 (이중 차감 방지)
+        for (int i = 0; i < 64; ++i) {
+            const int32_t lut = static_cast<int32_t>(k_cw_lut8[i & 7u]);
+            int32_t new_I = static_cast<int32_t>(I[i]) - ((m_ja_I * lut) >> 8);
+            // branchless clamp to [-32767, 32767]
+            const int32_t hiI = (new_I - INT16_MAX) >> 31;
+            const int32_t loI = (new_I + INT16_MAX) >> 31;
+            new_I = (new_I & hiI) | (INT16_MAX & ~hiI);
+            new_I = (new_I & ~loI) | (static_cast<int32_t>(-INT16_MAX) & loI);
+            I[i] = static_cast<int16_t>(new_I);
+            int32_t new_Q = static_cast<int32_t>(Q[i]) - ((m_ja_Q * lut) >> 8);
+            const int32_t hiQ = (new_Q - INT16_MAX) >> 31;
+            const int32_t loQ = (new_Q + INT16_MAX) >> 31;
+            new_Q = (new_Q & hiQ) | (INT16_MAX & ~hiQ);
+            new_Q = (new_Q & ~loQ) | (static_cast<int32_t>(-INT16_MAX) & loQ);
+            Q[i] = static_cast<int16_t>(new_Q);
+        }
     }
 }
 // =====================================================================

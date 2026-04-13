@@ -831,6 +831,8 @@ void HTS_V400_Dispatcher::fhss_abort_rx_for_hop_() noexcept {
     wait_sync_head_ = 0;
     wait_sync_count_ = 0;
     pre_phase_ = 0;
+    first_c63_ = 0;
+    m63_gap_ = 0;
     hdr_count_ = 0;
     hdr_fail_ = 0;
     pay_recv_ = 0;
