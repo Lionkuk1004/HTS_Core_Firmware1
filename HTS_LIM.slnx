@@ -12,4 +12,5 @@
   <Project Path="HTS_TEST/HTS_검증_KCMVP.vcxproj" Id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" />
   <Project Path="HTS_TEST/HTS_검증_종합재밍.vcxproj" Id="b2c3d4e5-f6a7-8901-bcde-f12345678901" />
   <Project Path="HTS_검증_PLUTO_SDR/HTS_검증_PLUTO_SDR.vcxproj" Id="0f9fc64a-2461-4131-b71f-aa94298173b4" />
+  <Project Path="POLAR_TEST/POLAR_TEST.vcxproj" Id="576c6afa-da0b-469d-b7e7-872bb96decf4" />
 </Solution>

@@ -217,6 +217,7 @@
     </ClCompile>
     <ClCompile Include="HTS_Adaptive_BPS_Controller.cpp" />
     <ClCompile Include="HTS_Pipeline_V2_Dispatcher.cpp" />
+    <ClCompile Include="HTS_Polar_Codec.cpp" />
     <ClCompile Include="HTS_AES_Bridge.cpp" />
     <ClCompile Include="HTS_AMI_Protocol.cpp" />
     <ClCompile Include="host_aarch64\HTS_Anchor_Vault.cpp">
@@ -398,6 +399,7 @@
     <ClInclude Include="HTS_Physical_Entropy_Engine.h" />
     <ClInclude Include="HTS_Quantum_Decoy_VDF.h" />
     <ClInclude Include="HTS_Polymorphic_Shield.h" />
+    <ClInclude Include="HTS_Polar_Codec.h" />
     <ClInclude Include="HTS_Sparse_Recovery.h" />
     <ClInclude Include="HTS_Storage_Interface.h" />
     <ClInclude Include="HTS_TimeSpace_Guard.h" />

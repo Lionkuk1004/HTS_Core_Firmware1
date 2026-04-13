@@ -54,10 +54,13 @@ static_assert(sizeof(g_harq_ccm_union) >= sizeof(V400HarqCcmIr),
 static_assert(sizeof(int16_t) == 2, "int16_t must be 2 bytes");
 static_assert(sizeof(int32_t) == 4, "int32_t must be 4 bytes");
 static_assert(sizeof(uint64_t) == 8, "uint64_t required for FWHT energy");
-// IR 64칩 SIC: 다음 라운드 수신 칩에서 Walsh 예상 성분 감산 (CCM 외 정적, 칩
-// 버퍼와 동일 차원)
-alignas(64) static int16_t g_sic_exp_I[FEC_HARQ::NSYM64][FEC_HARQ::C64];
-alignas(64) static int16_t g_sic_exp_Q[FEC_HARQ::NSYM64][FEC_HARQ::C64];
+// SIC 1비트 압축: Walsh 칩 = ±amp (I=Q 동일), 부호만 저장
+// bit c = 1 → 음(−amp), bit c = 0 → 양(+amp)
+// NSYM64 × 8B (기존 int16 I/Q 각 NSYM64×64 대비 약 97% 절감)
+alignas(64) static uint64_t g_sic_bits[FEC_HARQ::NSYM64];
+static_assert(sizeof(g_sic_bits) == FEC_HARQ::NSYM64 * 8u,
+              "SIC bit-pack size mismatch");
+static_assert(FEC_HARQ::C64 == 64, "SIC bit-pack requires C64==64");
 // ── [BUG-FIX-PRE2] 프리앰블 연판정 누적 버퍼 ──
 //  pre_reps_ 반복 프리앰블의 칩 레벨 I/Q 누적
 //  FWHT는 누적 완료 후 1회만 수행 → 신호 coherent ×N, 잡음 √N
@@ -583,10 +586,8 @@ HTS_V400_Dispatcher::~HTS_V400_Dispatcher() noexcept {
     //       → 콜백/메트릭 무효화 → ajc_.Reset → ajc_ 스토리지 파쇄
     SecureMemory::secureWipe(static_cast<void *>(&g_harq_ccm_union),
                              sizeof(g_harq_ccm_union));
-    SecureMemory::secureWipe(static_cast<void *>(g_sic_exp_I),
-                             sizeof(g_sic_exp_I));
-    SecureMemory::secureWipe(static_cast<void *>(g_sic_exp_Q),
-                             sizeof(g_sic_exp_Q));
+    SecureMemory::secureWipe(static_cast<void *>(g_sic_bits),
+                             sizeof(g_sic_bits));
     full_reset_();
     SecureMemory::secureWipe(static_cast<void *>(buf_I_), sizeof(buf_I_));
     SecureMemory::secureWipe(static_cast<void *>(buf_Q_), sizeof(buf_Q_));
@@ -636,8 +637,7 @@ void HTS_V400_Dispatcher::Set_IR_SIC_Enabled(bool enable) noexcept {
     }
     sic_ir_enabled_ = enable;
     sic_expect_valid_ = false;
-    std::memset(g_sic_exp_I, 0, sizeof(g_sic_exp_I));
-    std::memset(g_sic_exp_Q, 0, sizeof(g_sic_exp_Q));
+    std::memset(g_sic_bits, 0, sizeof(g_sic_bits));
 }
 bool HTS_V400_Dispatcher::Get_IR_SIC_Enabled() const noexcept {
     return sic_ir_enabled_;
@@ -653,8 +653,7 @@ void HTS_V400_Dispatcher::fill_sic_expected_64_() noexcept {
     if (ir_state_->sic_tentative_valid == 0u) {
         return;
     }
-    std::memset(g_sic_exp_I, 0, sizeof(g_sic_exp_I));
-    std::memset(g_sic_exp_Q, 0, sizeof(g_sic_exp_Q));
+    std::memset(g_sic_bits, 0, sizeof(g_sic_bits));
     uint8_t *const syms = g_v400_sym_scratch;
     const int rv_fb = (ir_rv_ + 3) & 3;
     const uint32_t il = seed_ ^ (rx_seq_ * 0xA5A5A5A5u);
@@ -666,10 +665,18 @@ void HTS_V400_Dispatcher::fill_sic_expected_64_() noexcept {
                                  sizeof(g_v400_sym_scratch));
         return;
     }
+    // Walsh 부호 비트맵 — walsh_enc()와 동일: chip = amp×(1−2×(popc(sym&j)&1))
     for (int s = 0; s < enc_n; ++s) {
-        walsh_enc(syms[static_cast<std::size_t>(s)], 64, sic_walsh_amp_,
-                  &g_sic_exp_I[static_cast<std::size_t>(s)][0],
-                  &g_sic_exp_Q[static_cast<std::size_t>(s)][0]);
+        const uint32_t sym_u = static_cast<uint32_t>(
+            syms[static_cast<std::size_t>(s)]);
+        uint64_t bits = 0u;
+        for (int c = 0; c < 64; ++c) {
+            const uint32_t neg =
+                popc32(sym_u & static_cast<uint32_t>(c)) & 1u;
+            bits |= (static_cast<uint64_t>(neg)
+                     << static_cast<uint32_t>(c));
+        }
+        g_sic_bits[static_cast<std::size_t>(s)] = bits;
     }
     sic_expect_valid_ = true;
     SecureMemory::secureWipe(static_cast<void *>(syms),
@@ -794,8 +801,7 @@ void HTS_V400_Dispatcher::full_reset_() noexcept {
     ir_rv_ = 0;
     sic_expect_valid_ = false;
     retx_ready_ = false;
-    std::memset(g_sic_exp_I, 0, sizeof(g_sic_exp_I));
-    std::memset(g_sic_exp_Q, 0, sizeof(g_sic_exp_Q));
+    std::memset(g_sic_bits, 0, sizeof(g_sic_bits));
     // [BUG-FIX-PRE2] 프리앰블 누적 버퍼 초기화
     std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
     std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
@@ -1038,23 +1044,25 @@ void HTS_V400_Dispatcher::on_sym_() noexcept {
                         const int base = sym_idx_ * FEC_HARQ::C64;
                         const uint32_t use_sic_u =
                             static_cast<uint32_t>(sic_expect_valid_) & 1u;
+                        // SIC: 1비트 부호 비트맵에서 Walsh 칩 복원 (I=Q 동일)
+                        const uint64_t sic_sym_bits =
+                            g_sic_bits[static_cast<std::size_t>(sym_idx_)];
+                        const int32_t sic_amp =
+                            static_cast<int32_t>(sic_walsh_amp_);
                         for (int c = 0; c < nc; ++c) {
                             int32_t vi = static_cast<int32_t>(buf_I_[c]);
                             int32_t vq = static_cast<int32_t>(buf_Q_[c]);
-                            const int32_t subI =
-                                static_cast<int32_t>(
-                                    g_sic_exp_I[static_cast<std::size_t>(
-                                        sym_idx_)]
-                                               [static_cast<std::size_t>(c)]) *
+                            const uint32_t neg = static_cast<uint32_t>(
+                                (sic_sym_bits >>
+                                 static_cast<uint32_t>(c)) & 1u);
+                            const int32_t sic_chip =
+                                sic_amp - 2 * sic_amp *
+                                static_cast<int32_t>(neg);
+                            const int32_t sub =
+                                sic_chip *
                                 static_cast<int32_t>(use_sic_u);
-                            const int32_t subQ =
-                                static_cast<int32_t>(
-                                    g_sic_exp_Q[static_cast<std::size_t>(
-                                        sym_idx_)]
-                                               [static_cast<std::size_t>(c)]) *
-                                static_cast<int32_t>(use_sic_u);
-                            vi -= subI;
-                            vq -= subQ;
+                            vi -= sub;
+                            vq -= sub;
                             ir_chip_I_[base + c] = ssat16_dispatch_(vi);
                             ir_chip_Q_[base + c] = ssat16_dispatch_(vq);
                         }
