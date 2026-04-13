@@ -77,13 +77,17 @@ import numpy as np
 
 K_INFO = 64           # information bits per packet
 CRC_BITS = 16         # CRC-CCITT
-K_PAYLOAD = K_INFO + CRC_BITS  # 80 bits entering Polar
-N_POLAR = 128         # Polar codeword length (power of 2)
+K_PAYLOAD = K_INFO + CRC_BITS  # 80 bits entering inner code
+N_POLAR = 128         # Inner code length (power of 2 for Polar)
 N_CODED = 688         # coded bits delivered to modulator (TOTAL_CODED)
-# Rate expansion = repetition via ARX-keyed permutation.
-# Every polar bit is repeated ceil(N_CODED/N_POLAR) or floor(...) times;
-# distribution is balanced so max-min spread is <= 1.
-REP_AVG = N_CODED / N_POLAR   # ~= 5.375
+REP_AVG = N_CODED / N_POLAR   # recomputed by configure_dimensions()
+
+
+def configure_dimensions(n_inner: int) -> None:
+    """Reconfigure module-level dimensions for multi-architecture comparison."""
+    global N_POLAR, REP_AVG
+    N_POLAR = n_inner
+    REP_AVG = N_CODED / N_POLAR
 
 
 # ---------------------------------------------------------------------------
@@ -674,11 +678,14 @@ def selftest_arx128() -> None:
 
 
 def selftest_mask_balance(codec: Codec) -> None:
-    """Rep-map must be exactly balanced (min, max) in {5, 6}."""
+    """Rep-map must be exactly balanced (spread <= 1)."""
     counts = np.bincount(codec.masks, minlength=N_POLAR)
-    assert counts.min() >= 5 and counts.max() <= 6, \
-        f"unbalanced mask: {counts.min()}..{counts.max()}"
-    n_high = (counts == 6).sum()
+    low = N_CODED // N_POLAR
+    high = low + (1 if (N_CODED % N_POLAR) else 0)
+    lo_ok = (counts.min() == low) if (N_CODED % N_POLAR) else (counts.min() == low)
+    assert counts.max() - counts.min() <= 1 and counts.min() >= low, \
+        f"unbalanced mask: {counts.min()}..{counts.max()} (expected {low}..{high})"
+    n_high = (counts == high).sum()
     print(f"  [selftest] fractal mask balance .......... PASS "
           f"(rep min={counts.min()}, max={counts.max()}, "
           f"n_high={n_high})")
@@ -729,13 +736,18 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0xDEADBEEF)
     ap.add_argument("-L", "--list-size", type=int, default=4,
                     help="SCL list size (default 4)")
+    ap.add_argument("--n-polar", type=int, default=128,
+                    choices=[64, 128, 256, 512, 1024],
+                    help="inner Polar code length (default 128)")
     ap.add_argument("--verify", action="store_true",
                     help="run self-test suite only (no SNR sweep)")
     ap.add_argument("--waterfall", action="store_true",
                     help="dense sweep 1.5..4.0 dB by 0.25 dB for BER curve")
     args = ap.parse_args()
 
-    print("Building codec (Bhattacharyya frozen set + fractal masks) ...")
+    configure_dimensions(args.n_polar)
+    print(f"Building codec (Bhattacharyya frozen set + fractal masks, "
+          f"N_inner={N_POLAR}) ...")
     codec = Codec.build(seed=args.seed, target_ebn0_db=2.5)
     banner(codec)
     print(f"  SCL list size L   = {args.list_size}")
