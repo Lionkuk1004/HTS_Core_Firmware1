@@ -328,47 +328,144 @@ def sc_decode(llr_in: np.ndarray, frozen: np.ndarray) -> Tuple[np.ndarray, np.nd
 
 
 # ---------------------------------------------------------------------------
-#  Partial CRC-SC retry: flip L least-reliable info positions
+#  CRC-aided SC-List (CA-SCL) decoder  (L = 4 default)
+#
+#  Standard CA-SCL:
+#    * Maintain up to L candidate paths, each with its own (llr, ps, u_hat, pm)
+#    * At each non-frozen leaf, fork every live path into 2 children
+#      (u=0 and u=1); add the "wrong-sign" penalty |LLR| to whichever
+#      candidate disagrees with sign(LLR). Keep the L paths with smallest PM.
+#    * Frozen leaves: all paths take u=0; add |LLR| if LLR < 0.
+#    * At the end, select the path whose (info || CRC) satisfies CRC-16,
+#      ties broken by smallest PM. If no path passes, declare failure.
+#
+#  Memory per path: (depth+1) * N LLRs + (depth+1) * N partial sums + N u_hat
+#                 = 8 * 128 * 8B + 8 * 128 * 1B + 128 * 1B  ~= 9 KB (Python)
+#  With L=4: ~36 KB — acceptable for simulation, well under 192 KB SRAM.
 # ---------------------------------------------------------------------------
 
-def sc_decode_with_crc_retry(
+
+@dataclass
+class _Path:
+    llr: np.ndarray       # shape (depth+1, n)
+    ps: np.ndarray        # shape (depth+1, n) uint8
+    u_hat: np.ndarray     # shape (n,) uint8
+    pm: float             # path metric (sum of wrong-sign |LLR|)
+
+    def clone(self) -> "_Path":
+        return _Path(self.llr.copy(), self.ps.copy(),
+                     self.u_hat.copy(), self.pm)
+
+
+def _scl_decode(llr_in: np.ndarray, frozen: np.ndarray,
+                L: int) -> List[_Path]:
+    """Run CA-SCL and return the final L surviving paths (sorted by PM)."""
+    n = len(llr_in)
+    depth = int(math.log2(n))
+
+    # Seed with a single path.
+    root = _Path(
+        llr=np.zeros((depth + 1, n), dtype=np.float64),
+        ps=np.zeros((depth + 1, n), dtype=np.uint8),
+        u_hat=np.zeros(n, dtype=np.uint8),
+        pm=0.0,
+    )
+    root.llr[depth] = llr_in
+    paths: List[_Path] = [root]
+
+    def recurse(start: int, length: int, stage: int):
+        nonlocal paths
+        if length == 1:
+            if frozen[start]:
+                # no fork; all paths take u=0
+                for p in paths:
+                    v = p.llr[stage, start]
+                    if v < 0.0:
+                        p.pm += -v
+                    p.u_hat[start] = 0
+                    p.ps[stage, start] = 0
+                return
+
+            # Non-frozen: fork every path into 2 candidates.
+            cand: List[_Path] = []
+            for p in paths:
+                v = p.llr[stage, start]
+                abs_v = abs(v)
+                # u=0 candidate
+                c0 = p.clone()
+                c0.u_hat[start] = 0
+                c0.ps[stage, start] = 0
+                if v < 0.0:           # sign says 1 but we picked 0
+                    c0.pm += abs_v
+                # u=1 candidate
+                c1 = p.clone()
+                c1.u_hat[start] = 1
+                c1.ps[stage, start] = 1
+                if v >= 0.0:          # sign says 0 but we picked 1
+                    c1.pm += abs_v
+                cand.append(c0)
+                cand.append(c1)
+            cand.sort(key=lambda x: x.pm)
+            paths = cand[:L]
+            return
+
+        half = length // 2
+        # f-step on every live path
+        for p in paths:
+            for i in range(half):
+                a = p.llr[stage, start + i]
+                b = p.llr[stage, start + i + half]
+                p.llr[stage - 1, start + i] = f_node(a, b)
+        recurse(start, half, stage - 1)
+
+        # g-step (path-specific because it depends on partial sums)
+        for p in paths:
+            for i in range(half):
+                a = p.llr[stage, start + i]
+                b = p.llr[stage, start + i + half]
+                u = int(p.ps[stage - 1, start + i])
+                p.llr[stage - 1, start + i + half] = g_node(a, b, u)
+        recurse(start + half, half, stage - 1)
+
+        # combine partial sums upward
+        for p in paths:
+            for i in range(half):
+                p.ps[stage, start + i] = (
+                    p.ps[stage - 1, start + i] ^
+                    p.ps[stage - 1, start + i + half])
+                p.ps[stage, start + i + half] = \
+                    p.ps[stage - 1, start + i + half]
+
+    recurse(0, n, depth)
+    paths.sort(key=lambda x: x.pm)
+    return paths
+
+
+def scl_decode_with_crc(
     llr_in: np.ndarray,
     frozen: np.ndarray,
-    max_flips: int = 8,
-) -> Tuple[bool, np.ndarray]:
+    L: int = 4,
+) -> Tuple[bool, np.ndarray, int]:
     """
-    Returns (ok, info_bits[64]).
-    Tries up to 2^max_flips CRC checks, enumerated in increasing
-    Hamming-weight order (flip combinations of the weakest positions first).
+    CA-SCL outer wrapper.
+    Returns (ok, info_bits[64], winner_rank) where winner_rank is the
+    0-based PM-rank of the selected (CRC-passing) path, or -1 on failure.
     """
-    u_hat, _, dec_llr = sc_decode(llr_in, frozen)
+    paths = _scl_decode(llr_in, frozen, L)
     info_slots = np.where(~frozen)[0]
-    info = u_hat[info_slots]          # 80 bits in Polar-order
-    rx_info = info[:K_INFO]
-    rx_crc  = info[K_INFO:]
 
-    if np.array_equal(crc16_ccitt(rx_info), rx_crc):
-        return True, rx_info
+    # Scan paths in order of increasing PM; pick first CRC-pass.
+    for rank, p in enumerate(paths):
+        info = p.u_hat[info_slots]
+        rx_info = info[:K_INFO]
+        rx_crc  = info[K_INFO:]
+        if np.array_equal(crc16_ccitt(rx_info), rx_crc):
+            return True, rx_info, rank
 
-    # SC reliability: |decision LLR at the info leaf|
-    rel = np.abs(dec_llr[info_slots])
-    order = np.argsort(rel)                # weakest first
-    weak = order[:max_flips]
-
-    # Enumerate flip masks in order of Hamming weight (cheap-first search).
-    flip_masks = sorted(range(1, 1 << max_flips),
-                        key=lambda m: (bin(m).count('1'), m))
-    for mask in flip_masks:
-        trial = info.copy()
-        for b in range(max_flips):
-            if (mask >> b) & 1:
-                trial[weak[b]] ^= 1
-        t_info = trial[:K_INFO]
-        t_crc  = trial[K_INFO:]
-        if np.array_equal(crc16_ccitt(t_info), t_crc):
-            return True, t_info
-
-    return False, rx_info
+    # No path passed CRC; return the best-PM info anyway (for BER accounting).
+    best = paths[0]
+    info = best.u_hat[info_slots]
+    return False, info[:K_INFO], -1
 
 
 # ---------------------------------------------------------------------------
@@ -411,10 +508,11 @@ def encode(info: np.ndarray, codec: Codec) -> np.ndarray:
     return coded
 
 
-def decode(rx_llr_coded: np.ndarray, codec: Codec) -> Tuple[bool, np.ndarray]:
-    """688 soft LLRs -> 64 info bits + success flag."""
+def decode(rx_llr_coded: np.ndarray, codec: Codec,
+           L: int = 4) -> Tuple[bool, np.ndarray, int]:
+    """688 soft LLRs -> 64 info bits, success flag, winner rank."""
     polar_llr = fractal_combine_llr(rx_llr_coded, codec.masks)
-    return sc_decode_with_crc_retry(polar_llr, codec.frozen, max_flips=8)
+    return scl_decode_with_crc(polar_llr, codec.frozen, L=L)
 
 
 # ---------------------------------------------------------------------------
@@ -441,14 +539,28 @@ def awgn_bpsk(coded_bits: np.ndarray, ebn0_db: float, rate: float,
 # ---------------------------------------------------------------------------
 
 def run_point(ebn0_db: float, trials: int, codec: Codec,
-              seed: int = 0xC0FFEE) -> dict:
+              seed: int = 0xC0FFEE, L: int = 4) -> dict:
+    """
+    Simulate one Eb/N0 point.
+
+    Reports:
+      bler           : block-error rate on the true info bits
+      ber            : uncoded info BER on the true info bits
+      crc_fail_rate  : fraction of frames where no SCL path passed CRC
+      crc_fp_rate    : fraction of "CRC pass" frames where info was still wrong
+                        (CRC false-positive)
+      rank_hist      : histogram of winning path rank (0 = best PM)
+      decode_ms_avg  : mean wall-clock decode time per frame
+    """
     rng = np.random.default_rng(seed)
     rate = K_INFO / N_CODED
 
-    errors_block = 0
+    errors_block = 0      # wrong info bits (ground truth)
     errors_bit = 0
+    crc_fail = 0          # SCL returned ok=False
+    crc_fp = 0            # SCL returned ok=True but info differs from truth
     decode_time_total = 0.0
-    retry_count = 0
+    rank_hist = [0] * L
 
     for t in range(trials):
         info = rng.integers(0, 2, size=K_INFO, dtype=np.uint8)
@@ -456,28 +568,139 @@ def run_point(ebn0_db: float, trials: int, codec: Codec,
         llr = awgn_bpsk(coded, ebn0_db, rate, rng)
 
         t0 = time.perf_counter()
-        ok, info_hat = decode(llr, codec)
+        ok, info_hat, rank = decode(llr, codec, L=L)
         decode_time_total += time.perf_counter() - t0
 
-        if not ok:
-            errors_block += 1
-            errors_bit += int(np.sum(info_hat != info))
-        else:
-            # check that "ok" was truthful (CRC collisions are rare)
-            if not np.array_equal(info_hat, info):
-                # CRC false-positive: still count as block error on truth
+        truth_ok = np.array_equal(info_hat, info)
+
+        if ok:
+            rank_hist[rank] += 1
+            if not truth_ok:
+                crc_fp += 1
                 errors_block += 1
                 errors_bit += int(np.sum(info_hat != info))
-            # retry was invoked if first SC failed; we don't instrument that
-            # here but can be added if needed
+        else:
+            crc_fail += 1
+            if not truth_ok:
+                errors_block += 1
+                errors_bit += int(np.sum(info_hat != info))
 
     return dict(
         ebno=ebn0_db,
         trials=trials,
         bler=errors_block / trials,
         ber=errors_bit / (trials * K_INFO),
+        crc_fail_rate=crc_fail / trials,
+        crc_fp_rate=(crc_fp / (trials - crc_fail)) if (trials - crc_fail) else 0.0,
+        rank_hist=rank_hist,
         decode_ms_avg=1000.0 * decode_time_total / trials,
     )
+
+
+# ---------------------------------------------------------------------------
+#  Verification / self-test harness
+# ---------------------------------------------------------------------------
+
+def selftest_noiseless(codec: Codec, L: int = 4, n_trials: int = 64) -> None:
+    """encode -> hard-LLR (no noise) -> decode must be lossless."""
+    rng = np.random.default_rng(0xBADC0DE)
+    fails = 0
+    for _ in range(n_trials):
+        info = rng.integers(0, 2, size=K_INFO, dtype=np.uint8)
+        coded = encode(info, codec)
+        llr = np.where(coded == 0, 20.0, -20.0)
+        ok, info_hat, rank = decode(llr, codec, L=L)
+        if not ok or not np.array_equal(info, info_hat):
+            fails += 1
+    assert fails == 0, f"noiseless self-test FAILED ({fails}/{n_trials})"
+    print(f"  [selftest] noiseless lossless ............ PASS "
+          f"({n_trials}/{n_trials})")
+
+
+def selftest_polar_identity(design_db: float = 0.0, n_trials: int = 64) -> None:
+    """Direct Polar(128,80) SCL at very high SNR must be lossless."""
+    frozen = select_frozen(N_POLAR, K_PAYLOAD, design_db)
+    info_slots = np.where(~frozen)[0]
+    rng = np.random.default_rng(0xFEED)
+    fails = 0
+    for _ in range(n_trials):
+        payload = rng.integers(0, 2, size=K_PAYLOAD, dtype=np.uint8)
+        u = np.zeros(N_POLAR, dtype=np.uint8)
+        u[info_slots] = payload
+        x = polar_encode(u)
+        llr = np.where(x == 0, 50.0, -50.0)
+        paths = _scl_decode(llr, frozen, L=4)
+        got = paths[0].u_hat[info_slots]
+        if not np.array_equal(got, payload):
+            fails += 1
+    assert fails == 0, f"polar identity self-test FAILED ({fails}/{n_trials})"
+    print(f"  [selftest] polar(128,80) noiseless ....... PASS "
+          f"({n_trials}/{n_trials})")
+
+
+def selftest_crc(n_trials: int = 1000) -> None:
+    """crc16 check must accept matched bits and reject corrupted ones."""
+    rng = np.random.default_rng(0xCAFE)
+    accepts = 0
+    false_accepts = 0
+    for _ in range(n_trials):
+        info = rng.integers(0, 2, size=K_INFO, dtype=np.uint8)
+        crc = crc16_ccitt(info)
+        if np.array_equal(crc16_ccitt(info), crc):
+            accepts += 1
+        # corrupt a random bit and ensure rejection
+        bad = info.copy()
+        bad[rng.integers(0, K_INFO)] ^= 1
+        if np.array_equal(crc16_ccitt(bad), crc):
+            false_accepts += 1
+    assert accepts == n_trials
+    assert false_accepts == 0, f"CRC accepted {false_accepts} corrupted frames"
+    print(f"  [selftest] crc16 accept/reject ........... PASS "
+          f"({n_trials} accepts, 0 false-accepts)")
+
+
+def selftest_arx128() -> None:
+    """ARX128 must be deterministic and non-degenerate."""
+    a = ARX128(0x12345678)
+    b = ARX128(0x12345678)
+    seq_a = [a.step() for _ in range(1024)]
+    seq_b = [b.step() for _ in range(1024)]
+    assert seq_a == seq_b, "ARX128 not deterministic"
+    # non-degeneracy: at least 1000 unique 32-bit outputs in 1024 draws
+    assert len(set(seq_a)) > 1000, \
+        f"ARX128 degenerate: only {len(set(seq_a))} unique outputs"
+    print(f"  [selftest] ARX128 determinism/entropy .... PASS "
+          f"({len(set(seq_a))}/1024 unique)")
+
+
+def selftest_mask_balance(codec: Codec) -> None:
+    """Rep-map must be exactly balanced (min, max) in {5, 6}."""
+    counts = np.bincount(codec.masks, minlength=N_POLAR)
+    assert counts.min() >= 5 and counts.max() <= 6, \
+        f"unbalanced mask: {counts.min()}..{counts.max()}"
+    n_high = (counts == 6).sum()
+    print(f"  [selftest] fractal mask balance .......... PASS "
+          f"(rep min={counts.min()}, max={counts.max()}, "
+          f"n_high={n_high})")
+
+
+def run_selftests(codec: Codec) -> None:
+    print("-" * 64)
+    print(" SELF-TESTS")
+    print("-" * 64)
+    selftest_arx128()
+    selftest_crc()
+    selftest_mask_balance(codec)
+    selftest_polar_identity()
+    selftest_noiseless(codec)
+    print()
+
+
+def uncoded_bpsk_ber(ebn0_db: float) -> float:
+    """Closed form: Q(sqrt(2 Eb/N0))."""
+    ebn0 = 10 ** (ebn0_db / 10.0)
+    from math import erfc, sqrt
+    return 0.5 * erfc(sqrt(ebn0))
 
 
 def banner(codec: Codec) -> None:
@@ -504,11 +727,24 @@ def main() -> int:
                     help="single Eb/N0 point (dB)")
     ap.add_argument("--trials", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0xDEADBEEF)
+    ap.add_argument("-L", "--list-size", type=int, default=4,
+                    help="SCL list size (default 4)")
+    ap.add_argument("--verify", action="store_true",
+                    help="run self-test suite only (no SNR sweep)")
+    ap.add_argument("--waterfall", action="store_true",
+                    help="dense sweep 1.5..4.0 dB by 0.25 dB for BER curve")
     args = ap.parse_args()
 
     print("Building codec (Bhattacharyya frozen set + fractal masks) ...")
     codec = Codec.build(seed=args.seed, target_ebn0_db=2.5)
     banner(codec)
+    print(f"  SCL list size L   = {args.list_size}")
+    print("=" * 64)
+    print()
+
+    run_selftests(codec)
+    if args.verify:
+        return 0
 
     if args.ebno is not None:
         pts = [args.ebno]
@@ -516,22 +752,40 @@ def main() -> int:
     elif args.quick:
         pts = [1.0, 2.0, 3.0]
         trials = 500
+    elif args.waterfall:
+        pts = [1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0]
+        trials = args.trials
     else:
         pts = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
         trials = args.trials
 
-    print(f"\nRunning: trials={trials} per point")
-    print(f"{'Eb/N0(dB)':>10} {'BLER':>10} {'BER':>12} {'dec_ms':>10}")
-    print("-" * 44)
+    print(f"Running: trials={trials} per point, L={args.list_size}")
+    print(f"{'Eb/N0':>7} {'BLER':>9} {'BER':>11} {'uncoded':>10} "
+          f"{'CRC_fail':>9} {'CRC_FP':>9} {'rank0%':>7} {'ms':>8}")
+    print("-" * 80)
+    results = []
     for eb in pts:
-        r = run_point(eb, trials, codec, seed=0xC0FFEE + int(eb * 100))
-        print(f"{r['ebno']:>10.2f} {r['bler']:>10.4f} {r['ber']:>12.5e} "
-              f"{r['decode_ms_avg']:>10.3f}")
+        r = run_point(eb, trials, codec,
+                      seed=0xC0FFEE + int(eb * 100),
+                      L=args.list_size)
+        results.append(r)
+        rank0 = r['rank_hist'][0] / max(1, sum(r['rank_hist']))
+        unc = uncoded_bpsk_ber(eb)
+        print(f"{r['ebno']:>7.2f} {r['bler']:>9.4f} {r['ber']:>11.4e} "
+              f"{unc:>10.4e} {r['crc_fail_rate']:>9.4f} "
+              f"{r['crc_fp_rate']:>9.4f} {100*rank0:>6.1f}% "
+              f"{r['decode_ms_avg']:>8.2f}")
     print()
     print("Reference targets (K=64, N=688):")
     print("  Shannon finite-length limit : Eb/N0 ~= 1.8 dB @ BLER 1e-3")
     print("  CRC-Polar-SCL L=8           : Eb/N0 ~= 2.0 dB @ BLER 1e-3")
     print("  HTS-HFC v2 design target    : Eb/N0 <= 2.3 dB @ BLER 1e-3")
+    print()
+    print("Column legend:")
+    print("  uncoded  : closed-form uncoded-BPSK BER = Q(sqrt(2 Eb/N0))")
+    print("  CRC_fail : fraction of frames where no SCL path passed CRC")
+    print("  CRC_FP   : false-positive rate of CRC-pass claims vs truth")
+    print("  rank0%   : fraction of CRC-pass wins on the best-PM path")
     return 0
 
 
