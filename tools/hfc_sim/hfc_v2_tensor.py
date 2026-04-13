@@ -43,17 +43,36 @@ import hfc_v2_sim as H
 
 ROWS = 8
 N_ROW = 64
-K_ROW = 10                # Plain mode: 8 * 10 = 80 = K_PAYLOAD
+K_ROW = 10                # Plain mode: ROWS * K_ROW = K_PAYLOAD = 80
 N_MATRIX = ROWS * N_ROW   # 512 inner bits
-assert ROWS * K_ROW == H.K_PAYLOAD, "K_ROW * ROWS must equal K_PAYLOAD"
 
-# Cross-parity (holographic) mode:
+# Cross-parity (holographic) mode (only valid when ROWS == 8):
 #   7 INFO rows of Polar(64, K_ROW_XP=12)  -> 7*12 = 84 info slots
 #     (we pad payload to 84 with 4 zero bits)
 #   1 PARITY row: column-wise XOR of the 7 info rows' x-sides (not a Polar
 #   codeword); provides 64 extra parity equations (SPC on each column).
 INFO_ROWS_XP = 7
 K_ROW_XP = 12
+
+
+def configure_tensor(n_row: int) -> None:
+    """
+    Reconfigure tensor dims so that ROWS*N_ROW = 512 and ROWS*K_ROW = 80.
+
+    Valid N_ROW: 32 (16x5), 64 (8x10), 128 (4x20), 256 (2x40).
+    """
+    global ROWS, N_ROW, K_ROW, N_MATRIX
+    if 512 % n_row != 0:
+        raise ValueError(f"N_ROW={n_row} must divide 512")
+    rows = 512 // n_row
+    if H.K_PAYLOAD % rows != 0:
+        raise ValueError(f"K_PAYLOAD={H.K_PAYLOAD} not divisible by ROWS={rows}")
+    ROWS = rows
+    N_ROW = n_row
+    K_ROW = H.K_PAYLOAD // rows
+    N_MATRIX = ROWS * N_ROW
+    assert N_MATRIX == 512
+    assert ROWS * K_ROW == H.K_PAYLOAD
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +398,12 @@ def main() -> int:
     ap.add_argument("--design-db", type=float, default=2.5)
     ap.add_argument("--ebno-list", type=str, default="2.0,2.5,3.0,3.5")
     ap.add_argument("--ebno", type=float, default=None)
+    ap.add_argument("--n-row", type=int, default=64,
+                    choices=[32, 64, 128, 256],
+                    help="row Polar length (matrix stays 512 total)")
     ap.add_argument("--mode", choices=["plain", "xparity"], default="plain",
-                    help="plain = 8*Polar(64,10); xparity = 7+1 column-SPC")
+                    help="plain = ROWS*Polar(N_ROW,K_ROW); "
+                         "xparity = 7+1 column-SPC (N_ROW=64 only)")
     ap.add_argument("--spc-iters", type=int, default=1,
                     help="SPC-BP iteration count (xparity mode only)")
     args = ap.parse_args()
@@ -390,12 +413,17 @@ def main() -> int:
     else:
         pts = [float(s) for s in args.ebno_list.split(",")]
 
+    configure_tensor(args.n_row)
+    if args.mode == "xparity" and N_ROW != 64:
+        raise SystemExit("xparity mode requires --n-row 64")
+
     codec = TensorCodec.build(seed=args.seed, design_ebn0_db=args.design_db,
                               mode=args.mode, spc_iters=args.spc_iters)
 
     print("=" * 60)
     if args.mode == "plain":
-        print(f" HTS-HFC v2 Tensor FEC (8 x Polar(64,10) + ARX128 mix + rep688)")
+        print(f" HTS-HFC v2 Tensor FEC "
+              f"({ROWS} x Polar({N_ROW},{K_ROW}) + ARX128 mix + rep688)")
     else:
         print(f" HTS-HFC v2 Tensor FEC xparity "
               f"(7 x Polar(64,12) + col-SPC + BP{args.spc_iters} + rep688)")
