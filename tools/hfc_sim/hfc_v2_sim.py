@@ -171,6 +171,61 @@ def select_frozen(n: int, k: int, design_ebn0_db: float = 2.0) -> np.ndarray:
     return frozen
 
 
+def bhattacharyya_punct(n: int, design_ebn0_db: float,
+                        keep_mask: np.ndarray) -> np.ndarray:
+    """
+    Puncturing-aware Bhattacharyya Z values per u-channel.
+
+    Initial z[i] per OUTPUT-position x_i:
+      * kept (keep_mask[i] == True)     : z = exp(-Es/N0)
+      * punctured (keep_mask[i] == False): z = 1  (total erasure)
+
+    Recursion follows the same butterfly pattern as polar_encode() (which
+    is self-inverse over GF(2)), using the BEC-like asymmetric rules:
+      W- : z <- z_a + z_b - z_a * z_b   (worse channel)
+      W+ : z <- z_a * z_b               (better channel)
+    After log2(n) levels, z[i] is the Z of the i-th virtual u-channel.
+    """
+    ebn0 = 10 ** (design_ebn0_db / 10.0)
+    z0 = math.exp(-ebn0)
+    z = np.where(keep_mask, z0, 1.0).astype(np.float64)
+
+    stride = 1
+    while stride < n:
+        for i in range(0, n, 2 * stride):
+            for j in range(stride):
+                a = z[i + j]
+                b = z[i + j + stride]
+                z[i + j]          = a + b - a * b
+                z[i + j + stride] = a * b
+        stride *= 2
+
+    # Bit-reverse the index to match our encoder's u-ordering convention
+    # (aligns with bhattacharyya_polar() when keep_mask is all True).
+    depth = int(math.log2(n))
+    bit_rev = np.zeros(n, dtype=np.int64)
+    for i in range(n):
+        r = 0
+        v = i
+        for _ in range(depth):
+            r = (r << 1) | (v & 1)
+            v >>= 1
+        bit_rev[i] = r
+    return z[bit_rev]
+
+
+def select_frozen_punct(n: int, k: int,
+                        design_ebn0_db: float,
+                        keep_mask: np.ndarray) -> np.ndarray:
+    """Puncturing-aware frozen selection."""
+    z = bhattacharyya_punct(n, design_ebn0_db, keep_mask)
+    order = np.argsort(z)
+    info_positions = order[:k]
+    frozen = np.ones(n, dtype=bool)
+    frozen[info_positions] = False
+    return frozen
+
+
 # ---------------------------------------------------------------------------
 #  Polar encoder  (Arikan kernel F = [[1,0],[1,1]], Kronecker applied)
 # ---------------------------------------------------------------------------
@@ -259,6 +314,51 @@ def fractal_combine_llr(rx_llr: np.ndarray, masks: np.ndarray) -> np.ndarray:
     # np.add.at is the unbuffered indexed accumulation (correct for duplicates)
     np.add.at(combined, masks, rx_llr)
     return combined
+
+
+# ---------------------------------------------------------------------------
+#  Puncturing-mode rate matching: Mother Polar N_INNER -> N_CODED chips
+#
+#  Design:
+#    * ARX128 selects a deterministic subset of N_INNER - N_CODED positions
+#      to PUNCTURE (discard). No repetition -- the Polar kernel itself
+#      delivers all coding gain.
+#    * Encoder: compute full-length polar codeword, output the non-punctured
+#      positions in canonical (ascending-index) order.
+#    * Decoder: build a length-N_INNER LLR vector with 0 (erasure, no info)
+#      at punctured positions and the received LLR at the kept positions,
+#      then run the same SCL as the repetition path.
+#    * Zero LUT memory, ARX-keyed (cryptographic), TPE-friendly.
+# ---------------------------------------------------------------------------
+
+def build_puncture_mask(n_inner: int,
+                        n_coded: int,
+                        seed: int = 0xDEADBEEF) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Return (keep_mask, keep_positions):
+      keep_mask        bool array of length n_inner; True = transmitted,
+                       False = punctured (decoder sees LLR=0 here).
+      keep_positions   int array of length n_coded giving the ASCENDING
+                       indices of the n_coded transmitted bits, i.e.
+                       where the n_coded received LLRs belong in the
+                       length-n_inner buffer at the decoder.
+
+    Construction:
+      * Fisher-Yates shuffle [0..n_inner-1] with ARX128.
+      * First n_coded shuffled indices are "keep"; the rest are punctured.
+      * We return keep_positions SORTED so the encoder/decoder agree on
+        which chip index corresponds to which Polar output position.
+    """
+    assert 0 < n_coded <= n_inner
+    rng = ARX128(seed)
+    order = np.arange(n_inner, dtype=np.int32)
+    for i in range(n_inner - 1, 0, -1):
+        j = rng.step() % (i + 1)
+        order[i], order[j] = order[j], order[i]
+    keep_positions = np.sort(order[:n_coded]).astype(np.int32)
+    keep_mask = np.zeros(n_inner, dtype=bool)
+    keep_mask[keep_positions] = True
+    return keep_mask, keep_positions
 
 
 # ---------------------------------------------------------------------------
@@ -479,43 +579,83 @@ def scl_decode_with_crc(
 @dataclass
 class Codec:
     frozen: np.ndarray
+    # Repetition mode: index map polar_idx[N_CODED]. Puncturing mode: unused.
     masks: np.ndarray
+    mode: str = "rep"          # "rep" | "punct"
+    # Puncturing mode: bool[N_POLAR] keep mask + sorted keep indices[N_CODED].
+    keep_mask: np.ndarray = None
+    keep_positions: np.ndarray = None
 
     @classmethod
     def build(cls, seed: int = 0xDEADBEEF,
-              target_ebn0_db: float = 2.5) -> "Codec":
-        # Bhattacharyya design SNR = channel that the POLAR decoder actually
-        # sees, i.e. after matched-filter combining of REP_AVG repetitions.
-        #   polar_input_EsN0 = REP_AVG * rate_coded * Eb/N0_operating
-        # Express as dB for bhattacharyya_polar().
+              target_ebn0_db: float = 2.5,
+              mode: str = "rep") -> "Codec":
+        """
+        Build a codec for the currently configured (N_POLAR, N_CODED).
+
+        mode="rep"   : balanced permuted-repetition expansion (N_POLAR<=N_CODED)
+        mode="punct" : Mother-Polar puncturing (N_POLAR>=N_CODED); N_POLAR-N_CODED
+                       positions are erased by the channel model.
+        """
         rate_coded = K_INFO / N_CODED
         ebn0_lin = 10 ** (target_ebn0_db / 10.0)
-        polar_esn0_lin = REP_AVG * rate_coded * ebn0_lin
-        polar_esn0_db = 10.0 * math.log10(polar_esn0_lin)
-        frozen = select_frozen(N_POLAR, K_PAYLOAD, polar_esn0_db)
-        masks = build_fractal_masks(seed)
-        return cls(frozen=frozen, masks=masks)
+
+        if mode == "rep":
+            # Bhattacharyya design SNR = post-combining polar-input Es/N0
+            polar_esn0_lin = REP_AVG * rate_coded * ebn0_lin
+            polar_esn0_db = 10.0 * math.log10(polar_esn0_lin)
+            frozen = select_frozen(N_POLAR, K_PAYLOAD, polar_esn0_db)
+            masks = build_fractal_masks(seed)
+            return cls(frozen=frozen, masks=masks, mode="rep")
+
+        elif mode == "punct":
+            assert N_POLAR >= N_CODED, \
+                f"puncturing requires N_POLAR ({N_POLAR}) >= N_CODED ({N_CODED})"
+            # Build the ARX-keyed puncture pattern FIRST, then compute
+            # puncturing-aware Bhattacharyya so the frozen set accounts for
+            # which output positions are erased.
+            keep_mask, keep_positions = build_puncture_mask(
+                N_POLAR, N_CODED, seed=seed)
+            # Design SNR: per-chip Es/N0 at target operating Eb/N0.
+            polar_esn0_lin = rate_coded * ebn0_lin
+            polar_esn0_db = 10.0 * math.log10(polar_esn0_lin)
+            frozen = select_frozen_punct(N_POLAR, K_PAYLOAD,
+                                         polar_esn0_db, keep_mask)
+            return cls(frozen=frozen, masks=np.array([], dtype=np.int32),
+                       mode="punct",
+                       keep_mask=keep_mask,
+                       keep_positions=keep_positions)
+        else:
+            raise ValueError(f"unknown mode {mode!r}")
 
 
 def encode(info: np.ndarray, codec: Codec) -> np.ndarray:
-    """64 info bits -> 688 coded bits."""
+    """K_INFO info bits -> N_CODED chips."""
     assert len(info) == K_INFO
     crc = crc16_ccitt(info)
-    payload = np.concatenate([info, crc])         # 80 bits
+    payload = np.concatenate([info, crc])         # K_PAYLOAD bits
 
     u = np.zeros(N_POLAR, dtype=np.uint8)
     info_slots = np.where(~codec.frozen)[0]
     u[info_slots] = payload
 
-    polar_bits = polar_encode(u)                  # 128 bits
-    coded = fractal_expand(polar_bits, codec.masks)
-    return coded
+    polar_bits = polar_encode(u)                  # N_POLAR bits
+
+    if codec.mode == "rep":
+        return fractal_expand(polar_bits, codec.masks)
+    # puncturing: pick the kept positions in sorted index order
+    return polar_bits[codec.keep_positions].astype(np.uint8)
 
 
 def decode(rx_llr_coded: np.ndarray, codec: Codec,
            L: int = 4) -> Tuple[bool, np.ndarray, int]:
-    """688 soft LLRs -> 64 info bits, success flag, winner rank."""
-    polar_llr = fractal_combine_llr(rx_llr_coded, codec.masks)
+    """N_CODED soft LLRs -> K_INFO info bits, success flag, winner rank."""
+    if codec.mode == "rep":
+        polar_llr = fractal_combine_llr(rx_llr_coded, codec.masks)
+    else:
+        # puncturing: punctured positions = 0 (no info); received fill kept.
+        polar_llr = np.zeros(N_POLAR, dtype=np.float64)
+        polar_llr[codec.keep_positions] = rx_llr_coded
     return scl_decode_with_crc(polar_llr, codec.frozen, L=L)
 
 
@@ -678,17 +818,26 @@ def selftest_arx128() -> None:
 
 
 def selftest_mask_balance(codec: Codec) -> None:
-    """Rep-map must be exactly balanced (spread <= 1)."""
-    counts = np.bincount(codec.masks, minlength=N_POLAR)
-    low = N_CODED // N_POLAR
-    high = low + (1 if (N_CODED % N_POLAR) else 0)
-    lo_ok = (counts.min() == low) if (N_CODED % N_POLAR) else (counts.min() == low)
-    assert counts.max() - counts.min() <= 1 and counts.min() >= low, \
-        f"unbalanced mask: {counts.min()}..{counts.max()} (expected {low}..{high})"
-    n_high = (counts == high).sum()
-    print(f"  [selftest] fractal mask balance .......... PASS "
-          f"(rep min={counts.min()}, max={counts.max()}, "
-          f"n_high={n_high})")
+    """Rep-map balance (spread <= 1) OR puncture-mask integrity."""
+    if codec.mode == "rep":
+        counts = np.bincount(codec.masks, minlength=N_POLAR)
+        low = N_CODED // N_POLAR
+        high = low + (1 if (N_CODED % N_POLAR) else 0)
+        assert counts.max() - counts.min() <= 1 and counts.min() >= low, \
+            f"unbalanced mask: {counts.min()}..{counts.max()} (want {low}..{high})"
+        n_high = (counts == high).sum()
+        print(f"  [selftest] fractal mask balance .......... PASS "
+              f"(rep min={counts.min()}, max={counts.max()}, "
+              f"n_high={n_high})")
+    else:
+        assert codec.keep_mask.sum() == N_CODED, \
+            f"keep count {int(codec.keep_mask.sum())} != N_CODED {N_CODED}"
+        assert len(codec.keep_positions) == N_CODED
+        assert np.all(np.diff(codec.keep_positions) > 0), \
+            "keep_positions must be strictly increasing"
+        print(f"  [selftest] puncture mask integrity ....... PASS "
+              f"(keep={int(codec.keep_mask.sum())}, "
+              f"punct={N_POLAR - int(codec.keep_mask.sum())})")
 
 
 def run_selftests(codec: Codec) -> None:
@@ -739,6 +888,8 @@ def main() -> int:
     ap.add_argument("--n-polar", type=int, default=128,
                     choices=[64, 128, 256, 512, 1024],
                     help="inner Polar code length (default 128)")
+    ap.add_argument("--mode", choices=["rep", "punct"], default="rep",
+                    help="rate-matching mode: rep (N<=688) or punct (N>=688)")
     ap.add_argument("--verify", action="store_true",
                     help="run self-test suite only (no SNR sweep)")
     ap.add_argument("--waterfall", action="store_true",
@@ -746,9 +897,8 @@ def main() -> int:
     args = ap.parse_args()
 
     configure_dimensions(args.n_polar)
-    print(f"Building codec (Bhattacharyya frozen set + fractal masks, "
-          f"N_inner={N_POLAR}) ...")
-    codec = Codec.build(seed=args.seed, target_ebn0_db=2.5)
+    print(f"Building codec (N_inner={N_POLAR}, mode={args.mode}) ...")
+    codec = Codec.build(seed=args.seed, target_ebn0_db=2.5, mode=args.mode)
     banner(codec)
     print(f"  SCL list size L   = {args.list_size}")
     print("=" * 64)
