@@ -317,8 +317,6 @@ namespace ProtectedEngine {
         int     pre_phase_;             ///< 프리앰블 매칭 단계 (0 또는 1)
         int     pre_reps_ = 1;
         int     pre_boost_ = 1;  ///< 프리앰블 진폭 배수 (1=기존, 2=+6dB, 4=+12dB)
-        int32_t first_c63_ = 0;   // FPR: 프리앰블 첫 m=63 에너지
-        int32_t m63_gap_   = 0;   // FPR: m≠63 연속 횟수
         uint8_t hdr_syms_[2] = {};      ///< 수신된 헤더 심볼
         int     hdr_count_;             ///< 수신된 헤더 심볼 수
         int     hdr_fail_;              ///< 헤더 디코딩 연속 실패 수
@@ -455,6 +453,8 @@ namespace ProtectedEngine {
         int16_t orig_Q_[64] = {};       ///< 원본 Q (AJC 전, 현재 심볼)
 
         bool cw_cancel_enabled_{ true };  ///< CW 소거기 활성화 (양산 기본 true)
+        int32_t cw_ema_I_ = 0;   ///< CW 진폭 IIR 평활 I (α=1/4 누적 상태)
+        int32_t cw_ema_Q_ = 0;   ///< CW 진폭 IIR 평활 Q (α=1/4 누적 상태)
         SoftClipPolicy soft_clip_policy_ = SoftClipPolicy::ALWAYS;
         bool ajc_enabled_{ true };        ///< AJC 활성화 (양산 기본 true)
 
@@ -506,6 +506,9 @@ namespace ProtectedEngine {
         uint32_t scratch_mag_[64] = {};
         uint32_t scratch_sort_[64] = {};
 
+        int32_t first_c63_ = 0; ///< FPR: preamble first m=63 energy
+        int32_t m63_gap_ = 0;   ///< FPR: consecutive non-m63 gap count
+
         /// @brief Walsh 디코딩 결과 (심볼 + 에너지)
         struct SymDecResult {
             int8_t   sym;       ///< 디코딩된 심볼 (-1 = 실패)
@@ -532,9 +535,6 @@ namespace ProtectedEngine {
         SymDecResultSplit walsh_dec_split_(
             const int16_t* I, const int16_t* Q, int n) noexcept;
 
-        void soft_clip_iq(int16_t* I, int16_t* Q, int nc, uint32_t* mags,
-                          uint32_t* sorted) noexcept;
-
         /// @brief 블랙홀 처리 (아웃라이어 칩 소거)
         void blackhole_(int16_t* I, int16_t* Q, int nc) noexcept;
 
@@ -542,14 +542,13 @@ namespace ProtectedEngine {
         void cw_cancel_64_(int16_t* I, int16_t* Q) noexcept;
     };
 
-    // ── SRAM 예산 정적 검증 ─────────────────────────────────────
-    //  harq_Q_ (CCM)는 V400_Dispatcher 외부 배치이므로 sizeof에 미포함
-    //  sizeof(V400_Dispatcher) = SRAM 부분만 = ~120KB
+    // ── SRAM budget static checks ─────────────────────────────
+    //  harq_Q_ (CCM) is placed outside V400_Dispatcher; not in sizeof.
+    //  sizeof(V400_Dispatcher) counts SRAM-resident portion only (~120KiB).
     //
-    //  [모든 플랫폼 검증 — #if __arm__ 가드 제거]
-    //  PC(MSVC) 빌드에서도 오버플로우를 사전 탐지하기 위함
+    //  All platforms (no __arm__ guard): catch oversize on PC/MSVC too.
     static_assert(sizeof(HTS_V400_Dispatcher) < 128u * 1024u,
-        "Dispatcher SRAM portion exceeds 128KB (SRAM1+2 budget)");
+        "HTS_V400_Dispatcher exceeds 128 KiB static RAM budget");
     static_assert(FEC_HARQ::NSYM16 <= 256, "NSYM16 exceeds orig_acc_ buffer");
     static_assert(FEC_HARQ::NSYM64 <= 256, "NSYM64 exceeds orig_acc_ buffer");
 

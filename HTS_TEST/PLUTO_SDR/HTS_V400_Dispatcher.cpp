@@ -2,7 +2,7 @@
 // HTS_V400_Dispatcher.cpp — V400 동적 모뎀 디스패처 + 3층 항재밍 통합
 //
 // [동작 메모]
-//  cw_cancel_64_: ja_I/ja_Q 추정 후 ajc_.Seed_CW_Profile — 첫 심볼부터 CW 제거
+//  cw_cancel_64_: sin 상관 + IIR(α=1/4) → Seed_CW_Profile / 수동 차감
 //  try_decode_: Q채널 HARQ는 harq_Q_[0] (행 포인터)로 Decode_Core_Split에 전달
 //               (&harq_Q_[0][0] 금지 — 2차원 배열 타입과 혼동 시 HardFault)
 //
@@ -161,11 +161,8 @@ static void fwht_raw(int32_t *d, int n) noexcept {
 }
 //  스택 512B(sI[64]+sQ[64]) 제거, dec_wI_/dec_wQ_ 멤버 재활용
 alignas(64) static const int16_t k_walsh_dummy_iq_[64] = {};
-// ── [BUG-FIX-PRE1] 부호 상관 기반 심볼 검출 ──
-//  기존: max(fI²+fQ²) → 제곱이 부호 파괴 → 잡음 빈 63개 중 1개가 신호 초과 시
-//  오검출 수정: max(fI+fQ)   → TX가 I=Q 동일 전송 → 신호 항상 양수, 잡음 ±상쇄
-//  효과: 프리앰블·헤더·페이로드 심볼 검출 한계 ~10dB 확장
-//  best_e/second_e: AJC 호환용 에너지 (검출된 빈의 I²+Q² 그대로 산출)
+// ── PLUTO: walsh_dec_full_ non-coherent (>>8, sI²+sQ²) — 위상 무관 피크 탐색 ──
+//  페이로드/헤더/Phase 1 심볼 검출. best_e/second_e: 검출 빈 I²+Q² (AJC 호환).
 HTS_V400_Dispatcher::SymDecResult
 HTS_V400_Dispatcher::walsh_dec_full_(const int16_t *I, const int16_t *Q, int n,
                                      bool cap_search_to_bps) noexcept {
@@ -188,9 +185,7 @@ HTS_V400_Dispatcher::walsh_dec_full_(const int16_t *I, const int16_t *Q, int n,
         search = (valid < n_eff) ? valid : n_eff;
     }
     // ── Non-coherent 피크 탐색 (위상 무관) ──
-    //  에너지 = (fI>>8)² + (fQ>>8)² : 위상 θ에 무관
-    //  max|fI| = 64 × 32767 ≈ 2M, >>8 = 8192
-    //  max energy = 8192² × 2 = 134,217,728 < INT32_MAX ✓
+    //  에너지 = (fI>>8)² + (fQ>>8)²
     int32_t best_c = -1;
     int32_t second_c = -1;
     uint8_t dec = 0xFFu;
@@ -409,10 +404,9 @@ static inline int16_t ssat16_dispatch_(int32_t v) noexcept {
 //
 //  분위(clip)는 UDIV 없는 상수 시간 인접 정렬로 산출.
 //  초과 구간은 UDIV 비율 대신 L∞ 포화(±bl) + 비트마스크(고정 루프 비용).
-//  (본문: HTS_LIM/HTS_V400_Dispatcher.cpp 와 동일)
 // =====================================================================
-void HTS_V400_Dispatcher::soft_clip_iq(int16_t *I, int16_t *Q, int nc, uint32_t *mags,
-                                        uint32_t *sorted) noexcept {
+static void soft_clip_iq(int16_t *I, int16_t *Q, int nc, uint32_t *mags,
+                         uint32_t *sorted) noexcept {
     if (I == nullptr || Q == nullptr || mags == nullptr || sorted == nullptr) {
         return;
     }
@@ -500,54 +494,57 @@ void HTS_V400_Dispatcher::blackhole_(int16_t *I, int16_t *Q, int nc) noexcept {
 //   → ajc_enabled_ == false 시 시딩 생략 (벤치마크 분리 유지)
 //
 //  [처리 순서]
-//   1) 상관 계산: corr = Σ r[i] × lut[i%8]
-//   2) 진폭 추정: ja = corr >> 13
-//   3) 가드 체크: |ja_I| + |ja_Q| < 30 이면 조기 반환 (무간섭)
-//   4) AJC 시딩: ajc_.Seed_CW_Profile(ja_I, ja_Q)
-//   5) CW 제거: r[i] -= (ja × lut[i%8]) >> 8
+//   1) sin 상관 → ja_I, ja_Q (corr >> 13)
+//   2) IIR α=1/4 누적, 평활 출력 smooth = ema >> 2
+//   3) 노이즈 가드: |smooth_I|+|smooth_Q| vs TH
+//   4) AJC: Seed_CW_Profile — else: 수동 sin LUT 차감
 // =====================================================================
 void HTS_V400_Dispatcher::cw_cancel_64_(int16_t *I, int16_t *Q) noexcept {
-    if (!cw_cancel_enabled_) {
+    if (!cw_cancel_enabled_)
         return;
-    }
-    if (I == nullptr || Q == nullptr) {
+    if (I == nullptr || Q == nullptr)
         return;
-    }
-    // Step 1: 상관 계산 (Q8 기준)
+
+    // Step 1: sin 상관 (기존과 동일)
     int32_t corr_I = 0, corr_Q = 0;
     for (int i = 0; i < 64; ++i) {
         const int32_t lut = static_cast<int32_t>(k_cw_lut8[i & 7u]);
         corr_I += static_cast<int32_t>(I[i]) * lut;
         corr_Q += static_cast<int32_t>(Q[i]) * lut;
     }
-    // Step 2: 진폭 추정 (Σlut² ≈ 2^21, Q8 역정규화 = >>13)
     const int32_t ja_I = corr_I >> 13;
     const int32_t ja_Q = corr_Q >> 13;
-    // Step 3: 노이즈 가드 — 비트마스크 (조기 반환 제거)
+
+    // Step 2: IIR 평활 (α = 1/4, Walsh 오염 심볼 간 상쇄)
+    //  ema = ema - (ema >> 2) + sample
+    //  평활 출력 = ema >> 2
+    cw_ema_I_ = cw_ema_I_ - (cw_ema_I_ >> 2) + ja_I;
+    cw_ema_Q_ = cw_ema_Q_ - (cw_ema_Q_ >> 2) + ja_Q;
+    const int32_t smooth_I = cw_ema_I_ >> 2;
+    const int32_t smooth_Q = cw_ema_Q_ >> 2;
+
+    // Step 3: 노이즈 가드
     static constexpr int32_t CW_CANCEL_NOISE_TH = 30;
-    const uint32_t ja_sum = fast_abs(ja_I) + fast_abs(ja_Q);
-    // active = 0xFFFFFFFF if ja_sum >= TH, 0 if below (branchless)
+    const uint32_t ja_sum = fast_abs(smooth_I) + fast_abs(smooth_Q);
     const int32_t guard_diff =
         static_cast<int32_t>(ja_sum) - CW_CANCEL_NOISE_TH;
     const int32_t active = ~(guard_diff >> 31);
-    // 마스킹: 노이즈 수준이면 ja=0 → 제거량=0 (동작 동일, 타이밍 일정)
-    const int32_t m_ja_I = ja_I & active;
-    const int32_t m_ja_Q = ja_Q & active;
-    // Step 4: AJC 프로파일 시딩 (active 시에만 유효 값 전달)
+    const int32_t m_ja_I = smooth_I & active;
+    const int32_t m_ja_Q = smooth_Q & active;
+
+    // Step 4: AJC 시딩 또는 수동 차감
     if (ajc_enabled_) {
         ajc_.Seed_CW_Profile(m_ja_I, m_ja_Q);
     } else {
-        // 수동 차감 — ajc 비활성 시에만 (이중 차감 방지)
-        // Step 5: CW 제거 — branchless 포화 클램프
         for (int i = 0; i < 64; ++i) {
             const int32_t lut = static_cast<int32_t>(k_cw_lut8[i & 7u]);
             int32_t new_I = static_cast<int32_t>(I[i]) - ((m_ja_I * lut) >> 8);
-            // branchless clamp to [-32767, 32767]
             const int32_t hiI = (new_I - INT16_MAX) >> 31;
             const int32_t loI = (new_I + INT16_MAX) >> 31;
             new_I = (new_I & hiI) | (INT16_MAX & ~hiI);
             new_I = (new_I & ~loI) | (static_cast<int32_t>(-INT16_MAX) & loI);
             I[i] = static_cast<int16_t>(new_I);
+
             int32_t new_Q = static_cast<int32_t>(Q[i]) - ((m_ja_Q * lut) >> 8);
             const int32_t hiQ = (new_Q - INT16_MAX) >> 31;
             const int32_t loQ = (new_Q + INT16_MAX) >> 31;
@@ -771,6 +768,10 @@ void HTS_V400_Dispatcher::full_reset_() noexcept {
     cur_mode_ = PayloadMode::UNKNOWN;
     buf_idx_ = 0;
     pre_phase_ = 0;
+    first_c63_ = 0;
+    m63_gap_ = 0;
+    cw_ema_I_ = 0;
+    cw_ema_Q_ = 0;
     wait_sync_head_ = 0;
     wait_sync_count_ = 0;
     hdr_count_ = 0;
@@ -799,8 +800,6 @@ void HTS_V400_Dispatcher::full_reset_() noexcept {
     std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
     std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
     g_pre_acc_n = 0;
-    first_c63_ = 0;
-    m63_gap_   = 0;
     if (ir_mode_ && ir_state_ != nullptr) {
         FEC_HARQ::IR_Init(*ir_state_);
     }
@@ -973,12 +972,11 @@ void HTS_V400_Dispatcher::on_sym_() noexcept {
         if (nc == 16) {
             if (sym_idx_ < FEC_HARQ::NSYM16) {
                 if (ir_mode_) {
-                    /* BUG-FIX-IR2: IR 칩은 raw(orig) 누적 —
-                     * cw_cancel/AJC/soft_clip buf 변형 제외 */
+                    /* IR 칩: ECCM 후 buf (cw_cancel / AJC / soft_clip 반영) */
                     const int base = sym_idx_ * FEC_HARQ::C16;
                     for (int c = 0; c < nc; ++c) {
-                        ir_chip_I_[base + c] = orig_I_[c];
-                        ir_chip_Q_[base + c] = orig_Q_[c];
+                        ir_chip_I_[base + c] = buf_I_[c];
+                        ir_chip_Q_[base + c] = buf_Q_[c];
                     }
                 } else {
                     FEC_HARQ::Feed16_1sym(rx_.m16, buf_I_, buf_Q_, sym_idx_);
@@ -1036,14 +1034,13 @@ void HTS_V400_Dispatcher::on_sym_() noexcept {
                 // ── I=Q 동일 또는 IR-HARQ (칩 보관) ──
                 if (sym_idx_ < nsym64) {
                     if (ir_mode_) {
-                        /* BUG-FIX-IR2: IR 칩은 raw(orig) 기준 + SIC — buf
-                         * 전처리 경로 미사용 */
+                        /* IR 칩: ECCM 후 buf 기준 + SIC */
                         const int base = sym_idx_ * FEC_HARQ::C64;
                         const uint32_t use_sic_u =
                             static_cast<uint32_t>(sic_expect_valid_) & 1u;
                         for (int c = 0; c < nc; ++c) {
-                            int32_t vi = static_cast<int32_t>(orig_I_[c]);
-                            int32_t vq = static_cast<int32_t>(orig_Q_[c]);
+                            int32_t vi = static_cast<int32_t>(buf_I_[c]);
+                            int32_t vq = static_cast<int32_t>(buf_Q_[c]);
                             const int32_t subI =
                                 static_cast<int32_t>(
                                     g_sic_exp_I[static_cast<std::size_t>(
@@ -1850,9 +1847,7 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
             }
             fwht_raw(dec_wI_, 64);
             fwht_raw(dec_wQ_, 64);
-            // Non-coherent 프리앰블 검출 (위상 무관)
-            // 누적 후 값이 클 수 있음 (pre_reps_×2M = 16M)
-            // >>8 스케일: FWHT 출력 대비 에너지 c = sI²+sQ²
+            // PLUTO Phase 0: non-coherent (>>8, sI²+sQ²)
             int32_t best_c = -1;
             uint8_t best_m = 0u;
             for (int m = 0; m < 64; ++m) {
@@ -1876,13 +1871,13 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
                 if (first_c63_ == 0) {
                     first_c63_ = best_c;
                 } else if (static_cast<int64_t>(best_c) >
-                           static_cast<int64_t>(first_c63_) * 3LL) {
+                           static_cast<int64_t>(first_c63_) * 3) {
                     pre_phase_ = 1;
                     wait_sync_head_ = 0;
                     wait_sync_count_ = 0;
                     buf_idx_ = 0;
                     first_c63_ = 0;
-                    m63_gap_   = 0;
+                    m63_gap_ = 0;
                 }
             } else {
                 m63_gap_++;
@@ -1892,14 +1887,12 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
             }
 
             if (g_pre_acc_n >= pre_reps_ && pre_phase_ == 0) {
-                // 최대 누적 횟수 도달해도 미검출 → 리셋 후 1칩 슬라이드
                 std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
                 std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
                 g_pre_acc_n = 0;
                 wait_sync_head_ = (wait_sync_head_ + 1) & 63;
                 wait_sync_count_ = 63;
             } else if (pre_phase_ == 0 && g_pre_acc_n < pre_reps_) {
-                // 아직 누적 중 → 다음 64칩 수집 (정렬 유지)
                 wait_sync_head_ = 0;
                 wait_sync_count_ = 0;
             }
@@ -1929,7 +1922,7 @@ void HTS_V400_Dispatcher::Feed_Chip(int16_t rx_I, int16_t rx_Q) noexcept {
                 // 예상 외 심볼 → Phase 0 리셋
                 pre_phase_ = 0;
                 first_c63_ = 0;
-                m63_gap_   = 0;
+                m63_gap_ = 0;
                 std::memset(g_pre_acc_I, 0, sizeof(g_pre_acc_I));
                 std::memset(g_pre_acc_Q, 0, sizeof(g_pre_acc_Q));
                 g_pre_acc_n = 0;

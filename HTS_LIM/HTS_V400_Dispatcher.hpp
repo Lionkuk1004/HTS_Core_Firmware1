@@ -453,6 +453,8 @@ namespace ProtectedEngine {
         int16_t orig_Q_[64] = {};       ///< 원본 Q (AJC 전, 현재 심볼)
 
         bool cw_cancel_enabled_{ true };  ///< CW 소거기 활성화 (양산 기본 true)
+        int32_t cw_ema_I_ = 0;   ///< CW 진폭 IIR 평활 I (α=1/4, 4심볼 수렴)
+        int32_t cw_ema_Q_ = 0;   ///< CW 진폭 IIR 평활 Q
         SoftClipPolicy soft_clip_policy_ = SoftClipPolicy::ALWAYS;
         bool ajc_enabled_{ true };        ///< AJC 활성화 (양산 기본 true)
 

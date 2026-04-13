@@ -4,6 +4,7 @@
 #if defined(__arm__) || defined(__TARGET_ARCH_ARM)
 #error "[HTS_FATAL] PC 전용"
 #endif
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -470,77 +471,192 @@ static void test_T3(PlutoCtx &p, long long base) {
 static void test_T4(PlutoCtx &p) {
     std::printf("\n══ T4: 바라지 재밍 ══\n");
     const double js[] = {0,5,10,15,20,25,30};
-    const int bps=4, nc=64, nsym=FEC_HARQ::nsym_for_bps(bps), total=nsym*nc;
+    const int bps = 3, nc = 64;
+    const int nsym = FEC_HARQ::nsym_for_bps(bps);
+    const int total = nsym * nc;
+
     for (double j : js) {
-        int ok=0; double ar=0;
+        // DAC 클리핑 방지: 3σ < 2048 조건
+        // safe = 2047 / (1 + 3×√(10^(j/10)))
+        const double lin = std::pow(10.0, j / 10.0);
+        const double denom = 1.0 + 3.0 * std::sqrt(lin);
+        int16_t amp_t4 = static_cast<int16_t>(
+            std::min(static_cast<double>(kAmp), 2047.0 / denom));
+        if (amp_t4 < 30)
+            amp_t4 = 30; // Pluto 채널 SNR 하한
+
+        int ok = 0; double ar = 0;
         for (int t = 0; t < 10; ++t) {
-            uint32_t ts=0xDEAD00u^(uint32_t)(t*0x9E3779B9u);
-            uint32_t il=0xA5A5A5A5u^ts;
+            uint32_t ts = 0xDEAD00u ^ (uint32_t)(t * 0x9E3779B9u);
+            uint32_t il = 0xA5A5A5A5u ^ ts;
             uint8_t info[8]; gen_info(ts, info);
-            FEC_HARQ::IR_RxState ir{}; FEC_HARQ::IR_Init(ir);
-            bool dec=false; int rnd=0;
-            for (int rv=0; rv<32&&!dec; ++rv) {
+
+            HTS_V400_Dispatcher disp;
+            disp.Set_Seed(0xA5A5A5A5u ^ ts);
+            disp.Set_IR_Mode(true);
+            disp.Set_CW_Cancel(true);
+            disp.Set_AJC_Enabled(true);
+            disp.Set_SoftClip_Policy(SoftClipPolicy::ALWAYS);
+            disp.Set_Packet_Callback(on_pkt);
+            disp.Set_Lab_BPS64(bps);
+            disp.Set_Lab_IQ_Mode_Jam_Harness();
+
+            bool dec = false; int rnd = 0;
+            for (int rv = 0; rv < 32 && !dec; ++rv) {
+                g_last = DecodedPacket{};
+
+                // 페이로드만 인코딩
                 FEC_HARQ::WorkBuf wb{};
                 uint8_t syms[FEC_HARQ::NSYM64]{};
-                FEC_HARQ::Encode64_IR(info, 8, syms, il, bps, rv&3, wb);
+                std::memset(&wb, 0, sizeof(wb));
+                FEC_HARQ::Encode64_IR(info, 8, syms, il, bps, rv & 3, wb);
+
                 std::vector<int16_t> sI(total), sQ(total);
-                for (int s=0; s<nsym; ++s) walsh_enc(syms[s], nc, kAmp, &sI[s*nc], &sQ[s*nc]);
-                std::vector<int16_t> rI=sI, rQ=sQ;
-                std::mt19937 rng(ts^(uint32_t)(rv*0x85EBCA6Bu));
-                add_barrage(sI.data(), sQ.data(), total, j, rng);
+                for (int s = 0; s < nsym; ++s)
+                    walsh_enc(syms[s], nc, amp_t4, &sI[s * nc], &sQ[s * nc]);
+
+                // 재밍 추가 (페이로드에만) — amp_t4 기준 바라지
+                std::mt19937 rng(ts ^ (uint32_t)(rv * 0x85EBCA6Bu));
+                {
+                    double sigma_t4 =
+                        static_cast<double>(amp_t4) * std::sqrt(lin);
+                    std::normal_distribution<double> nd(0.0, sigma_t4);
+                    for (int i = 0; i < total; ++i) {
+                        double vi = (double)sI[i] + nd(rng);
+                        double vq = (double)sQ[i] + nd(rng);
+                        if (vi > 2047) vi = 2047;
+                        if (vi < -2048) vi = -2048;
+                        if (vq > 2047) vq = 2047;
+                        if (vq < -2048) vq = -2048;
+                        sI[i] = (int16_t)std::lround(vi);
+                        sQ[i] = (int16_t)std::lround(vq);
+                    }
+                }
+
+                // TX → RX
                 std::vector<int16_t> txI(PLUTO_BUF_SAMPLES), txQ(PLUTO_BUF_SAMPLES);
-                fill_tx_repeated(txI.data(), txQ.data(), PLUTO_BUF_SAMPLES, sI.data(), sQ.data(), total);
+                fill_tx_repeated(txI.data(), txQ.data(), PLUTO_BUF_SAMPLES,
+                                 sI.data(), sQ.data(), total);
                 std::vector<int16_t> rxI(PLUTO_BUF_SAMPLES), rxQ(PLUTO_BUF_SAMPLES);
-                int nr = pluto_tx_then_rx(p, txI.data(), txQ.data(), PLUTO_BUF_SAMPLES, rxI.data(), rxQ.data(), PLUTO_BUF_SAMPLES);
+                int nr = pluto_tx_then_rx(p, txI.data(), txQ.data(), PLUTO_BUF_SAMPLES,
+                                          rxI.data(), rxQ.data(), PLUTO_BUF_SAMPLES);
+                if (nr <= 0) break;
+
                 apply_digital_agc(rxI.data(), rxQ.data(), nr);
                 apply_phase_correction(rxI.data(), rxQ.data(), nr);
-                int ss = find_signal_start(rxI.data(), rxQ.data(), nr, rI.data(), rQ.data(), total);
-                if (ss+total>nr) ss=0;
-                std::memset(&wb, 0, sizeof(wb));
-                uint8_t out[8]{}; int ol=0;
-                dec = FEC_HARQ::Decode64_IR(&rxI[ss], &rxQ[ss], nsym, nc, bps, il, rv&3, ir, out, &ol, wb);
-                rnd=rv+1;
-                if (dec && (ol!=8||std::memcmp(out,info,8)!=0)) dec=false;
+
+                // 클린 레퍼런스로 정렬 (재밍 전 원본, amp_t4와 동일 진폭)
+                std::vector<int16_t> refI(total), refQ(total);
+                for (int s = 0; s < nsym; ++s)
+                    walsh_enc(syms[s], nc, amp_t4, &refI[s * nc], &refQ[s * nc]);
+                int ss = find_signal_start(rxI.data(), rxQ.data(), nr,
+                                           refI.data(), refQ.data(), total);
+                if (ss + total > nr) ss = 0;
+
+                // 디스패처: 동기 건너뛰고 페이로드 직접 진입
+                if (rv == 0) {
+                    disp.Inject_Payload_Phase(PayloadMode::DATA, bps);
+                }
+
+                // Feed — ECCM 파이프라인 경유
+                for (int i = 0; i < total; ++i) {
+                    if (rv == 0) {
+                        disp.Feed_Chip(rxI[ss + i], rxQ[ss + i]);
+                    } else {
+                        disp.Feed_Retx_Chip(rxI[ss + i], rxQ[ss + i]);
+                    }
+                }
+
+                dec = (g_last.success_mask == DecodedPacket::DECODE_MASK_OK);
+                rnd = rv + 1;
+                if (dec && (g_last.data_len != 8 ||
+                    std::memcmp(g_last.data, info, 8) != 0)) dec = false;
             }
-            if (dec) { ok++; ar+=rnd; }
+            if (dec) { ok++; ar += rnd; }
         }
-        if (ok>0) ar/=ok;
+        if (ok > 0) ar /= ok;
         std::printf("  J/S=%2.0f dB %d/10 avg %.1fR\n", j, ok, ar);
+        if (ok == 0) break;
     }
 }
 
 static void test_T5(PlutoCtx &p) {
     std::printf("\n══ T5: CW 재밍 ══\n");
     const double js[] = {0,5,10,15,20};
-    const int bps=4, nc=64, nsym=FEC_HARQ::nsym_for_bps(bps), total=nsym*nc;
+    const int bps = 4, nc = 64;
+    const int nsym = FEC_HARQ::nsym_for_bps(bps);
+    const int total = nsym * nc;
+
     for (double j : js) {
-        int ok=0;
-        for (int t=0; t<10; ++t) {
-            uint32_t ts=0xCCCC00u^(uint32_t)(t*0x9E3779B9u);
-            uint32_t il=0xA5A5A5A5u^ts;
+        int ok = 0; double ar = 0;
+        for (int t = 0; t < 10; ++t) {
+            uint32_t ts = 0xCCCC00u ^ (uint32_t)(t * 0x9E3779B9u);
+            uint32_t il = 0xA5A5A5A5u ^ ts;
             uint8_t info[8]; gen_info(ts, info);
-            FEC_HARQ::WorkBuf wb{};
-            uint8_t syms[FEC_HARQ::NSYM64]{};
-            FEC_HARQ::Encode64_IR(info, 8, syms, il, bps, 0, wb);
-            std::vector<int16_t> sI(total), sQ(total);
-            for (int s=0; s<nsym; ++s) walsh_enc(syms[s], nc, kAmp, &sI[s*nc], &sQ[s*nc]);
-            std::vector<int16_t> rI=sI, rQ=sQ;
-            add_cw(sI.data(), sQ.data(), total, j);
-            std::vector<int16_t> txI(PLUTO_BUF_SAMPLES), txQ(PLUTO_BUF_SAMPLES);
-            fill_tx_repeated(txI.data(), txQ.data(), PLUTO_BUF_SAMPLES, sI.data(), sQ.data(), total);
-            std::vector<int16_t> rxI(PLUTO_BUF_SAMPLES), rxQ(PLUTO_BUF_SAMPLES);
-            int nr = pluto_tx_then_rx(p, txI.data(), txQ.data(), PLUTO_BUF_SAMPLES, rxI.data(), rxQ.data(), PLUTO_BUF_SAMPLES);
-            apply_digital_agc(rxI.data(), rxQ.data(), nr);
-            apply_phase_correction(rxI.data(), rxQ.data(), nr);
-            int ss = find_signal_start(rxI.data(), rxQ.data(), nr, rI.data(), rQ.data(), total);
-            if (ss+total>nr) ss=0;
-            FEC_HARQ::IR_RxState ir{}; FEC_HARQ::IR_Init(ir);
-            std::memset(&wb, 0, sizeof(wb));
-            uint8_t out[8]{}; int ol=0;
-            bool dec = FEC_HARQ::Decode64_IR(&rxI[ss], &rxQ[ss], nsym, nc, bps, il, 0, ir, out, &ol, wb);
-            if (dec&&ol==8&&std::memcmp(out,info,8)==0) ok++;
+
+            HTS_V400_Dispatcher disp;
+            disp.Set_Seed(0xA5A5A5A5u ^ ts);
+            disp.Set_IR_Mode(true);
+            disp.Set_CW_Cancel(true);
+            disp.Set_AJC_Enabled(true);
+            disp.Set_SoftClip_Policy(SoftClipPolicy::ALWAYS);
+            disp.Set_Packet_Callback(on_pkt);
+            disp.Set_Lab_BPS64(bps);
+            disp.Set_Lab_IQ_Mode_Jam_Harness();
+
+            bool dec = false; int rnd = 0;
+            for (int rv = 0; rv < 32 && !dec; ++rv) {
+                g_last = DecodedPacket{};
+
+                FEC_HARQ::WorkBuf wb{};
+                uint8_t syms[FEC_HARQ::NSYM64]{};
+                std::memset(&wb, 0, sizeof(wb));
+                FEC_HARQ::Encode64_IR(info, 8, syms, il, bps, rv & 3, wb);
+
+                std::vector<int16_t> sI(total), sQ(total);
+                for (int s = 0; s < nsym; ++s)
+                    walsh_enc(syms[s], nc, kAmp, &sI[s * nc], &sQ[s * nc]);
+
+                std::vector<int16_t> refI = sI, refQ = sQ;
+
+                // 매 라운드 동일 CW (위상 연속)
+                add_cw(sI.data(), sQ.data(), total, j);
+
+                std::vector<int16_t> txI(PLUTO_BUF_SAMPLES), txQ(PLUTO_BUF_SAMPLES);
+                fill_tx_repeated(txI.data(), txQ.data(), PLUTO_BUF_SAMPLES,
+                                 sI.data(), sQ.data(), total);
+                std::vector<int16_t> rxI(PLUTO_BUF_SAMPLES), rxQ(PLUTO_BUF_SAMPLES);
+                int nr = pluto_tx_then_rx(p, txI.data(), txQ.data(), PLUTO_BUF_SAMPLES,
+                                          rxI.data(), rxQ.data(), PLUTO_BUF_SAMPLES);
+                if (nr <= 0) break;
+
+                apply_digital_agc(rxI.data(), rxQ.data(), nr);
+                apply_phase_correction(rxI.data(), rxQ.data(), nr);
+                int ss = find_signal_start(rxI.data(), rxQ.data(), nr,
+                                           refI.data(), refQ.data(), total);
+                if (ss + total > nr) ss = 0;
+
+                if (rv == 0) {
+                    disp.Inject_Payload_Phase(PayloadMode::DATA, bps);
+                }
+
+                for (int i = 0; i < total; ++i) {
+                    if (rv == 0)
+                        disp.Feed_Chip(rxI[ss + i], rxQ[ss + i]);
+                    else
+                        disp.Feed_Retx_Chip(rxI[ss + i], rxQ[ss + i]);
+                }
+
+                dec = (g_last.success_mask == DecodedPacket::DECODE_MASK_OK);
+                rnd = rv + 1;
+                if (dec && (g_last.data_len != 8 ||
+                    std::memcmp(g_last.data, info, 8) != 0)) dec = false;
+            }
+            if (dec) { ok++; ar += rnd; }
         }
-        std::printf("  CW J/S=%2.0f dB %d/10\n", j, ok);
+        if (ok > 0) ar /= ok;
+        std::printf("  CW J/S=%2.0f dB %d/10 avg %.1fR\n", j, ok, ar);
+        if (ok == 0) break;
     }
 }
 
@@ -581,41 +697,92 @@ static void test_T6(PlutoCtx &p) {
 
 static void test_T7(PlutoCtx &p) {
     std::printf("\n══ T7: IR-HARQ 바라지 20dB ══\n");
-    const int bps=4, nc=64, nsym=FEC_HARQ::nsym_for_bps(bps), total=nsym*nc;
-    int ok=0; double ar=0;
-    for (int t=0; t<10; ++t) {
-        uint32_t ts=0xBEEF00u^(uint32_t)(t*0x9E3779B9u);
-        uint32_t il=0xA5A5A5A5u^ts;
+    const int bps = 3, nc = 64;
+    const int nsym = FEC_HARQ::nsym_for_bps(bps);
+    const int total = nsym * nc;
+    int ok = 0; double ar = 0;
+
+    for (int t = 0; t < 10; ++t) {
+        uint32_t ts = 0xBEEF00u ^ (uint32_t)(t * 0x9E3779B9u);
+        uint32_t il = 0xA5A5A5A5u ^ ts;
         uint8_t info[8]; gen_info(ts, info);
-        FEC_HARQ::IR_RxState ir{}; FEC_HARQ::IR_Init(ir);
-        bool dec=false; int rnd=0;
-        for (int rv=0; rv<32&&!dec; ++rv) {
+
+        HTS_V400_Dispatcher disp;
+        disp.Set_Seed(0xA5A5A5A5u ^ ts);
+        disp.Set_IR_Mode(true);
+        disp.Set_CW_Cancel(true);
+        disp.Set_AJC_Enabled(true);
+        disp.Set_SoftClip_Policy(SoftClipPolicy::ALWAYS);
+        disp.Set_Packet_Callback(on_pkt);
+        disp.Set_Lab_BPS64(bps);
+        disp.Set_Lab_IQ_Mode_Jam_Harness();
+
+        bool dec = false; int rnd = 0;
+        for (int rv = 0; rv < 32 && !dec; ++rv) {
+            g_last = DecodedPacket{};
+
             FEC_HARQ::WorkBuf wb{};
             uint8_t syms[FEC_HARQ::NSYM64]{};
-            FEC_HARQ::Encode64_IR(info,8,syms,il,bps,rv&3,wb);
+            std::memset(&wb, 0, sizeof(wb));
+            FEC_HARQ::Encode64_IR(info, 8, syms, il, bps, rv & 3, wb);
+
             std::vector<int16_t> sI(total), sQ(total);
-            for (int s=0;s<nsym;++s) walsh_enc(syms[s],nc,kAmp,&sI[s*nc],&sQ[s*nc]);
-            std::vector<int16_t> rI=sI, rQ=sQ;
-            std::mt19937 rng(ts^(uint32_t)(rv*0x85EBCA6Bu));
-            add_barrage(sI.data(),sQ.data(),total,20.0,rng);
+            // DAC 클리핑 방지: J/S=20dB에서 3σ=1800 < 2048
+            static constexpr int16_t kAmpT7 = 60;
+            for (int s = 0; s < nsym; ++s)
+                walsh_enc(syms[s], nc, kAmpT7, &sI[s * nc], &sQ[s * nc]);
+
+            std::vector<int16_t> refI = sI, refQ = sQ;
+
+            std::mt19937 rng(ts ^ (uint32_t)(rv * 0x85EBCA6Bu));
+            // kAmpT7 기준 바라지 (kAmpD 대신 60.0)
+            {
+                double sigma_t7 = 60.0 * std::sqrt(std::pow(10.0, 20.0/10.0));
+                std::normal_distribution<double> nd(0.0, sigma_t7);
+                for (int i = 0; i < total; ++i) {
+                    double vi = (double)sI[i] + nd(rng);
+                    double vq = (double)sQ[i] + nd(rng);
+                    if (vi>2047) vi=2047; if (vi<-2048) vi=-2048;
+                    if (vq>2047) vq=2047; if (vq<-2048) vq=-2048;
+                    sI[i]=(int16_t)std::lround(vi);
+                    sQ[i]=(int16_t)std::lround(vq);
+                }
+            }
+
             std::vector<int16_t> txI(PLUTO_BUF_SAMPLES), txQ(PLUTO_BUF_SAMPLES);
-            fill_tx_repeated(txI.data(),txQ.data(),PLUTO_BUF_SAMPLES,sI.data(),sQ.data(),total);
+            fill_tx_repeated(txI.data(), txQ.data(), PLUTO_BUF_SAMPLES,
+                             sI.data(), sQ.data(), total);
             std::vector<int16_t> rxI(PLUTO_BUF_SAMPLES), rxQ(PLUTO_BUF_SAMPLES);
-            int nr = pluto_tx_then_rx(p,txI.data(),txQ.data(),PLUTO_BUF_SAMPLES,rxI.data(),rxQ.data(),PLUTO_BUF_SAMPLES);
-            apply_digital_agc(rxI.data(),rxQ.data(),nr);
-            apply_phase_correction(rxI.data(),rxQ.data(),nr);
-            int ss = find_signal_start(rxI.data(),rxQ.data(),nr,rI.data(),rQ.data(),total);
-            if (ss+total>nr) ss=0;
-            std::memset(&wb,0,sizeof(wb));
-            uint8_t out[8]{}; int ol=0;
-            dec = FEC_HARQ::Decode64_IR(&rxI[ss],&rxQ[ss],nsym,nc,bps,il,rv&3,ir,out,&ol,wb);
-            rnd=rv+1;
-            if (dec&&(ol!=8||std::memcmp(out,info,8)!=0)) dec=false;
+            int nr = pluto_tx_then_rx(p, txI.data(), txQ.data(), PLUTO_BUF_SAMPLES,
+                                      rxI.data(), rxQ.data(), PLUTO_BUF_SAMPLES);
+            if (nr <= 0) break;
+
+            apply_digital_agc(rxI.data(), rxQ.data(), nr);
+            apply_phase_correction(rxI.data(), rxQ.data(), nr);
+            int ss = find_signal_start(rxI.data(), rxQ.data(), nr,
+                                       refI.data(), refQ.data(), total);
+            if (ss + total > nr) ss = 0;
+
+            if (rv == 0) {
+                disp.Inject_Payload_Phase(PayloadMode::DATA, bps);
+            }
+
+            for (int i = 0; i < total; ++i) {
+                if (rv == 0)
+                    disp.Feed_Chip(rxI[ss + i], rxQ[ss + i]);
+                else
+                    disp.Feed_Retx_Chip(rxI[ss + i], rxQ[ss + i]);
+            }
+
+            dec = (g_last.success_mask == DecodedPacket::DECODE_MASK_OK);
+            rnd = rv + 1;
+            if (dec && (g_last.data_len != 8 ||
+                std::memcmp(g_last.data, info, 8) != 0)) dec = false;
         }
-        std::printf("  [%2d] %s R=%d\n", t, dec?"OK":"FAIL", rnd);
-        if (dec) { ok++; ar+=rnd; }
+        std::printf("  [%2d] %s R=%d\n", t, dec ? "OK" : "FAIL", rnd);
+        if (dec) { ok++; ar += rnd; }
     }
-    if (ok>0) ar/=ok;
+    if (ok > 0) ar /= ok;
     std::printf("  T7: %d/10 avg %.1fR\n", ok, ar);
 }
 
